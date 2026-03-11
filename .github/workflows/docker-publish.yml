@@ -9,6 +9,7 @@ on:
       - "Dockerfile"
       - "src/**"
       - "pyproject.toml"
+      - ".github/workflows/docker-publish.yml"
 
 env:
   REGISTRY: ghcr.io
