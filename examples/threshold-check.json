@@ -1,0 +1,32 @@
+{
+  "duration_sec": 6.007,
+  "connections": 5,
+  "total_requests": 386,
+  "total_errors": 1,
+  "requests_per_sec": 64.26,
+  "transfer_per_sec_bytes": 33842.11,
+  "total_bytes": 203280,
+  "content_length_errors": 0,
+  "status_codes": {
+    "200": 385
+  },
+  "error_types": {
+    "ClientConnectionError": 1
+  },
+  "latency": {
+    "min": 0.050134,
+    "max": 0.166766,
+    "mean": 0.065062,
+    "median": 0.055086,
+    "stdev": 0.026737
+  },
+  "percentiles": {
+    "p50": 0.05508,
+    "p75": 0.057209,
+    "p90": 0.114837,
+    "p95": 0.138788,
+    "p99": 0.164545,
+    "p99.9": 0.166766,
+    "p99.99": 0.166766
+  }
+}

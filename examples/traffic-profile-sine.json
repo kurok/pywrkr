@@ -1,0 +1,36 @@
+{
+  "duration_sec": 6.005,
+  "connections": 10,
+  "total_requests": 154,
+  "total_errors": 6,
+  "requests_per_sec": 25.64,
+  "transfer_per_sec_bytes": 13012.22,
+  "total_bytes": 78144,
+  "content_length_errors": 0,
+  "status_codes": {
+    "200": 148
+  },
+  "error_types": {
+    "RuntimeError": 5,
+    "ClientConnectionError": 1
+  },
+  "target_rps": 50.0,
+  "traffic_profile": "sine (cycles=2.0, min=20%)",
+  "rate_limit_waits": 153,
+  "latency": {
+    "min": 1.2e-05,
+    "max": 0.248545,
+    "mean": 0.068787,
+    "median": 0.055645,
+    "stdev": 0.039451
+  },
+  "percentiles": {
+    "p50": 0.055645,
+    "p75": 0.078085,
+    "p90": 0.127746,
+    "p95": 0.153603,
+    "p99": 0.200848,
+    "p99.9": 0.248545,
+    "p99.99": 0.248545
+  }
+}

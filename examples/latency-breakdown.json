@@ -1,0 +1,84 @@
+{
+  "duration_sec": 6.007,
+  "connections": 5,
+  "total_requests": 306,
+  "total_errors": 1,
+  "requests_per_sec": 50.94,
+  "transfer_per_sec_bytes": 26808.71,
+  "total_bytes": 161040,
+  "content_length_errors": 0,
+  "status_codes": {
+    "200": 305
+  },
+  "error_types": {
+    "ClientConnectionError": 1
+  },
+  "latency": {
+    "min": 0.05009,
+    "max": 0.382757,
+    "mean": 0.082019,
+    "median": 0.057186,
+    "stdev": 0.056297
+  },
+  "percentiles": {
+    "p50": 0.057152,
+    "p75": 0.080094,
+    "p90": 0.141454,
+    "p95": 0.185654,
+    "p99": 0.374693,
+    "p99.9": 0.382757,
+    "p99.99": 0.382757
+  },
+  "latency_breakdown": {
+    "new_connections": 5,
+    "reused_connections": 300,
+    "dns": {
+      "avg": 0.00011,
+      "min": 0.0,
+      "max": 0.009043,
+      "p50": 0.0,
+      "p95": 0.0,
+      "count": 305
+    },
+    "connect": {
+      "avg": 0.004863,
+      "min": 0.0,
+      "max": 0.297996,
+      "p50": 0.0,
+      "p95": 0.0,
+      "count": 305
+    },
+    "tls": {
+      "avg": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "count": 305
+    },
+    "ttfb": {
+      "avg": 0.076802,
+      "min": 0.050018,
+      "max": 0.277041,
+      "p50": 0.057061,
+      "p95": 0.149625,
+      "count": 305
+    },
+    "transfer": {
+      "avg": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "count": 305
+    },
+    "total": {
+      "avg": 0.081774,
+      "min": 0.050018,
+      "max": 0.391184,
+      "p50": 0.057061,
+      "p95": 0.185533,
+      "count": 305
+    }
+  }
+}

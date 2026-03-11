@@ -1,0 +1,92 @@
+Running user simulation: https://example.com/
+  5 virtual users, 5.00s duration
+  Ramp-up: 2.00s, Think time: 500.00ms (jitter: 50%)
+  Method: GET, Timeout: 30s, Keep-Alive: yes
+
+  [ 20.0%]        4 requests |      4.0 req/s | 0 errors |     3 users   [ 40.0%]       12 requests |      6.0 req/s | 0 errors |     5 users   [ 60.0%]       21 requests |      7.0 req/s | 0 errors |     5 users   [ 80.0%]       30 requests |      7.5 req/s | 0 errors |     5 users   [100.0%]       40 requests |      8.0 req/s | 0 errors |     5 users   [100.0%]       41 requests |      6.8 req/s | 0 errors |     0 users                                                                                 ======================================================================
+  BENCHMARK RESULTS
+======================================================================
+
+  Mode:              5 virtual users, 5.0s
+  Duration:          6.00s
+  Virtual Users:     5
+  Ramp-up:           2.00s
+  Think Time:        500.00ms (+/-50%)
+  Avg Reqs/User:     8.2
+  Keep-Alive:        yes
+  Total Requests:    41
+  Total Errors:      0
+  Requests/sec:      6.83
+  Transfer/sec:      3.52KB/s
+  Total Transfer:    21.14KB
+
+======================================================================
+  LATENCY STATISTICS
+======================================================================
+    Min:            22.90ms
+    Max:           198.89ms
+    Mean:           70.78ms
+    Median:         58.08ms
+    Stdev:          34.89ms
+
+  Latency Percentiles:
+    p50          58.08ms
+    p75          81.82ms
+    p90         103.23ms
+    p95         128.32ms
+    p99         198.89ms
+    p99.9       198.89ms
+    p99.99      198.89ms
+
+  Percentage of requests served within a certain time:
+     50%         58.08ms
+     66%         67.11ms
+     75%         81.82ms
+     80%         99.62ms
+     90%        103.23ms
+     95%        128.32ms
+     98%        198.89ms
+     99%        198.89ms
+    100%        198.89ms
+
+  Latency Distribution (histogram):
+       22.90ms -    31.69ms | #######                                  |      3 (  7.3%)
+       31.69ms -    40.49ms | ##                                       |      1 (  2.4%)
+       40.49ms -    49.29ms | ##                                       |      1 (  2.4%)
+       49.29ms -    58.09ms | ######################################## |     16 ( 39.0%)
+       58.09ms -    66.89ms | ###############                          |      6 ( 14.6%)
+       66.89ms -    75.69ms | #######                                  |      3 (  7.3%)
+       75.69ms -    84.49ms | ##                                       |      1 (  2.4%)
+       84.49ms -    93.29ms | ##                                       |      1 (  2.4%)
+       93.29ms -   102.09ms | #######                                  |      3 (  7.3%)
+      102.09ms -   110.89ms | #######                                  |      3 (  7.3%)
+      110.89ms -   119.69ms |                                          |      0 (  0.0%)
+      119.69ms -   128.49ms | ##                                       |      1 (  2.4%)
+      128.49ms -   137.29ms |                                          |      0 (  0.0%)
+      137.29ms -   146.09ms |                                          |      0 (  0.0%)
+      146.09ms -   154.89ms |                                          |      0 (  0.0%)
+      154.89ms -   163.69ms |                                          |      0 (  0.0%)
+      163.69ms -   172.49ms |                                          |      0 (  0.0%)
+      172.49ms -   181.29ms | ##                                       |      1 (  2.4%)
+      181.29ms -   190.09ms |                                          |      0 (  0.0%)
+      190.09ms -   198.89ms | ##                                       |      1 (  2.4%)
+
+======================================================================
+  STATUS CODE DISTRIBUTION
+======================================================================
+    200:         41 (100.0%)
+
+======================================================================
+  THROUGHPUT TIMELINE
+======================================================================
+  Requests/sec Timeline (1s buckets):
+       0s | ################                         |      4.0 req/s
+       1s | ################################         |      8.0 req/s
+       2s | ####################################     |      9.0 req/s
+       3s | ####################################     |      9.0 req/s
+       4s | ######################################## |     10.0 req/s
+       5s | ####                                     |      1.0 req/s
+
+======================================================================
+
+  JSON results written to: examples/user-simulation.json

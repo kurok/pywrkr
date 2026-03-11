@@ -1,0 +1,144 @@
+# pywrkr Examples
+
+Sample benchmark outputs generated against `https://example.com/`. These demonstrate all major output formats and modes.
+
+## Quick Reference
+
+### 1. Basic Benchmark (JSON + CSV + HTML Report)
+
+```bash
+pywrkr -c 10 -d 5 \
+    --json examples/basic-benchmark.json \
+    -e examples/percentiles.csv \
+    --html-report examples/report.html \
+    https://example.com/
+```
+
+**Output files:**
+- [`basic-benchmark-output.txt`](basic-benchmark-output.txt) — terminal output
+- [`basic-benchmark.json`](basic-benchmark.json) — structured JSON results
+- [`percentiles.csv`](percentiles.csv) — latency percentile table
+- [`report.html`](report.html) — interactive Gatling-style HTML report (open in browser)
+
+### 2. Rate-Limited Benchmark
+
+Send requests at a controlled, constant rate:
+
+```bash
+pywrkr --rate 50 -d 5 \
+    --json examples/rate-limited.json \
+    https://example.com/
+```
+
+**Output files:**
+- [`rate-limited-output.txt`](rate-limited-output.txt) — terminal output with Target RPS and Rate Limit Waits
+- [`rate-limited.json`](rate-limited.json) — JSON results
+
+### 3. Traffic Profile (Sine Wave)
+
+Shape traffic as a sine wave oscillating between 20% and 100% of base rate:
+
+```bash
+pywrkr --rate 50 -d 5 \
+    --traffic-profile "sine:cycles=2,min=0.2" \
+    --json examples/traffic-profile-sine.json \
+    https://example.com/
+```
+
+**Output files:**
+- [`traffic-profile-sine-output.txt`](traffic-profile-sine-output.txt) — terminal output showing traffic profile info
+- [`traffic-profile-sine.json`](traffic-profile-sine.json) — JSON results with `traffic_profile` field
+
+### 4. User Simulation
+
+Simulate 5 virtual users with think time and gradual ramp-up:
+
+```bash
+pywrkr -u 5 -d 5 \
+    --think-time 0.5 --ramp-up 2 \
+    --json examples/user-simulation.json \
+    https://example.com/
+```
+
+**Output files:**
+- [`user-simulation-output.txt`](user-simulation-output.txt) — terminal output with per-user stats
+- [`user-simulation.json`](user-simulation.json) — JSON results
+
+### 5. Latency Breakdown
+
+See where each request spends its time (DNS, TCP, TLS, TTFB, transfer):
+
+```bash
+pywrkr -c 5 -d 5 \
+    --latency-breakdown \
+    --json examples/latency-breakdown.json \
+    https://example.com/
+```
+
+**Output files:**
+- [`latency-breakdown-output.txt`](latency-breakdown-output.txt) — terminal output with per-phase breakdown
+- [`latency-breakdown.json`](latency-breakdown.json) — JSON results with `latency_breakdown` object
+
+### 6. SLO Threshold Checks
+
+Validate that latency and error rates meet your SLOs:
+
+```bash
+pywrkr -c 5 -d 5 \
+    --threshold "p95 < 500ms" \
+    --threshold "error_rate < 5%" \
+    --json examples/threshold-check.json \
+    https://example.com/
+```
+
+**Output files:**
+- [`threshold-check-output.txt`](threshold-check-output.txt) — terminal output with PASS/FAIL results
+- [`threshold-check.json`](threshold-check.json) — JSON results
+
+Exit code is `0` if all thresholds pass, `2` if any breach.
+
+## Other Traffic Profiles
+
+```bash
+# Step function: discrete load levels
+pywrkr --rate 100 -d 30 --traffic-profile "step:levels=20,50,100" https://example.com/
+
+# Spike: periodic bursts at 5x baseline
+pywrkr --rate 50 -d 30 --traffic-profile "spike:interval=10,multiplier=5" https://example.com/
+
+# Square wave: alternating high/low
+pywrkr --rate 50 -d 30 --traffic-profile "square:cycles=3,low=0.1" https://example.com/
+
+# Sawtooth: repeated ramps
+pywrkr --rate 50 -d 30 --traffic-profile "sawtooth:cycles=3" https://example.com/
+
+# Business hours: 24h pattern compressed into test duration
+pywrkr --rate 100 -d 60 --traffic-profile business-hours https://example.com/
+
+# CSV replay: custom traffic curve from file
+pywrkr --rate 100 -d 60 --traffic-profile "csv:traffic.csv" https://example.com/
+```
+
+## Sample CSV Traffic File
+
+Create `traffic.csv` for CSV replay:
+
+```csv
+time_sec,rate
+0,10
+15,50
+30,100
+45,50
+60,10
+```
+
+Or use multiplier mode:
+
+```csv
+time_sec,multiplier
+0,0.1
+15,0.5
+30,1.0
+45,0.5
+60,0.1
+```
