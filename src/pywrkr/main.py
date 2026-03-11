@@ -123,7 +123,8 @@ def parse_header(s: str) -> tuple[str, str]:
     return name.strip(), value.strip()
 
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
+    """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
         description="pywrkr - HTTP benchmarking tool with extended statistics (wrk + ab features)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -263,9 +264,11 @@ Examples:
                         help="Master/worker port (default: 9220)")
     parser.add_argument("--worker", default=None, metavar="HOST:PORT",
                         help="Run as worker node, connecting to master at HOST:PORT")
+    return parser
 
-    args = parser.parse_args()
 
+def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Namespace]:
+    """Parse arguments and return validated config with the raw args namespace."""
     # --- Worker mode: connect to master, no URL needed ---
     if args.worker is not None:
         if ":" not in args.worker:
@@ -284,7 +287,6 @@ Examples:
             url_entries = load_url_file(args.url_file)
         except (FileNotFoundError, ValueError) as e:
             parser.error(str(e))
-        # Validate all URLs in the file
         for entry in url_entries:
             p = urlparse(entry.url)
             if p.scheme not in ("http", "https"):
@@ -308,10 +310,8 @@ Examples:
 
     # Determine mode
     if args.autofind:
-        # Autofind mode: users/duration are managed internally
         pass
     elif args.users is not None:
-        # User simulation mode: duration is required
         if args.num_requests is not None:
             parser.error("Cannot use -n with -u (user simulation). Use -d for duration.")
         if args.duration is None:
@@ -415,9 +415,14 @@ Examples:
     if config.scenario and config.users is None and config.duration is None and config.num_requests is None:
         config.duration = 10.0
 
+    return config, args
+
+
+def _determine_and_run_mode(config, args):
+    """Determine which mode to run and execute."""
     if args.url_file is not None:
+        url_entries = load_url_file(args.url_file)
         results = asyncio.run(run_multi_url(url_entries, config))
-        # Exit code 2 if any endpoint had threshold breaches
         exit_code = max((r.exit_code for r in results), default=0)
         sys.exit(exit_code)
     elif args.master:
@@ -427,6 +432,7 @@ Examples:
             sys.exit(exit_code)
         sys.exit(1)
     elif args.autofind:
+        keepalive = not args.no_keepalive
         af_config = AutofindConfig(
             url=args.url,
             max_error_rate=args.max_error_rate,
@@ -449,6 +455,13 @@ Examples:
     else:
         _, exit_code = asyncio.run(run_benchmark(config))
         sys.exit(exit_code)
+
+
+def main():
+    parser = _build_parser()
+    args = parser.parse_args()
+    config, args = _parse_and_validate_args(parser, args)
+    _determine_and_run_mode(config, args)
 
 
 if __name__ == "__main__":
