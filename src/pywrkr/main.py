@@ -26,6 +26,7 @@ from pywrkr.config import (
     load_scenario,
 )
 from pywrkr.distributed import run_master, run_worker_node
+from pywrkr.har_import import HarImportConfig, convert_har
 from pywrkr.multi_url import load_url_file, run_multi_url
 from pywrkr.reporting import parse_threshold
 from pywrkr.traffic_profiles import parse_traffic_profile
@@ -173,6 +174,59 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
                         help="Run as worker node, connecting to master at HOST:PORT")
 
 
+
+def _build_har_import_parser() -> argparse.ArgumentParser:
+    """Create the argument parser for the har-import subcommand."""
+    parser = argparse.ArgumentParser(
+        prog="pywrkr har-import",
+        description="Convert a HAR file (browser recording) into a pywrkr scenario or URL file",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Convert HAR to scenario JSON:
+  pywrkr har-import recording.har -o scenario.json
+
+  # Convert HAR to URL file for --url-file mode:
+  pywrkr har-import recording.har --format url-file -o urls.txt
+
+  # Filter to specific domain, include static assets:
+  pywrkr har-import recording.har --domain api.example.com --include-static -o scenario.json
+
+  # Exclude patterns, preserve original headers:
+  pywrkr har-import recording.har --exclude '/analytics' --exclude '/tracking' \\
+      --preserve-headers -o scenario.json
+
+  # Assert recorded status codes, custom think time multiplier:
+  pywrkr har-import recording.har --assert-status --think-time-multiplier 0.5 -o scenario.json
+        """,
+    )
+    parser.add_argument("har_file", help="Path to the HAR file to convert")
+    parser.add_argument("-o", "--output", default=None, metavar="FILE",
+                        help="Output file path (default: print to stdout)")
+    parser.add_argument("--format", choices=["scenario", "url-file"], default="scenario",
+                        help="Output format (default: scenario)")
+    parser.add_argument("--name", default=None,
+                        help="Scenario name (default: derived from HAR filename)")
+    parser.add_argument("--include-static", action="store_true", default=False,
+                        help="Include static assets (CSS, JS, images, fonts)")
+    parser.add_argument("--domain", action="append", default=[], dest="domains",
+                        help="Only include requests to this domain (repeatable)")
+    parser.add_argument("--exclude", action="append", default=[], dest="exclude_patterns",
+                        help="Exclude URLs matching this regex pattern (repeatable)")
+    parser.add_argument("--include", action="append", default=[], dest="include_patterns",
+                        help="Only include URLs matching this regex pattern (repeatable)")
+    parser.add_argument("--preserve-headers", action="store_true", default=False,
+                        help="Preserve request headers from the HAR recording "
+                             "(default: only keep Content-Type for POST/PUT)")
+    parser.add_argument("--no-think-time", action="store_true", default=False,
+                        help="Don't derive think times from recorded request timing")
+    parser.add_argument("--think-time-multiplier", type=float, default=1.0,
+                        help="Multiply derived think times by this factor (default: 1.0)")
+    parser.add_argument("--assert-status", action="store_true", default=False,
+                        help="Add status code assertions from recorded responses")
+    return parser
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
@@ -199,6 +253,10 @@ Examples:
   # Cache-busting: append random query param to bypass HTTP caches:
   %(prog)s -R -c 100 -d 10 http://localhost:8080/
   %(prog)s -R -u 300 -d 300 --think-time 1.0 https://example.com/
+
+  # HAR import: convert browser recording to scenario:
+  %(prog)s har-import recording.har -o scenario.json
+  %(prog)s har-import recording.har --format url-file -o urls.txt
         """,
     )
     _add_core_options(parser)
@@ -416,8 +474,47 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
         sys.exit(exit_code)
 
 
+def _run_har_import(args: argparse.Namespace) -> None:
+    """Execute the har-import subcommand."""
+    config = HarImportConfig(
+        include_static=args.include_static,
+        exclude_patterns=args.exclude_patterns,
+        include_patterns=args.include_patterns,
+        allowed_domains=args.domains,
+        preserve_headers=args.preserve_headers,
+        add_think_time=not args.no_think_time,
+        think_time_multiplier=args.think_time_multiplier,
+        assert_status=args.assert_status,
+    )
+    try:
+        content = convert_har(
+            har_path=args.har_file,
+            output_path=args.output,
+            output_format=args.format,
+            config=config,
+            name=args.name,
+        )
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.output:
+        entries_word = "scenario" if args.format == "scenario" else "URL file"
+        print(f"Wrote {entries_word} to {args.output}")
+    else:
+        print(content, end="")
+
+
 def main() -> None:
     """CLI entry point for pywrkr."""
+    # Intercept subcommands before the main parser (which has a positional
+    # `url` argument that would swallow the subcommand name).
+    if len(sys.argv) > 1 and sys.argv[1] == "har-import":
+        parser = _build_har_import_parser()
+        args = parser.parse_args(sys.argv[2:])
+        _run_har_import(args)
+        return
+
     parser = _build_parser()
     args = parser.parse_args()
     config, args = _parse_and_validate_args(parser, args)

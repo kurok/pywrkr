@@ -97,6 +97,33 @@ pywrkr -c 5 -d 5 \
 
 Exit code is `0` if all thresholds pass, `2` if any breach.
 
+### 7. HAR Import (Browser Recording)
+
+Convert a browser-recorded HAR file into a pywrkr scenario or URL list:
+
+```bash
+# Convert HAR to scenario JSON (default: filters static assets, derives think times):
+pywrkr har-import examples/sample-recording.har -o examples/har-import-scenario.json
+
+# Convert HAR to URL file for --url-file mode:
+pywrkr har-import examples/sample-recording.har --format url-file -o examples/har-import-urls.txt
+
+# Include static assets and add status assertions:
+pywrkr har-import examples/sample-recording.har --include-static --assert-status \
+    -o examples/har-import-scenario-with-assertions.json
+
+# Then run the generated scenario:
+pywrkr --scenario examples/har-import-scenario.json -u 50 -d 30 https://api.example.com
+```
+
+**Input file:**
+- [`sample-recording.har`](sample-recording.har) — sample HAR file with GET, POST, PUT, DELETE requests plus static assets
+
+**Output files:**
+- [`har-import-scenario.json`](har-import-scenario.json) — generated scenario (API requests only, with think times)
+- [`har-import-urls.txt`](har-import-urls.txt) — generated URL file
+- [`har-import-scenario-with-assertions.json`](har-import-scenario-with-assertions.json) — scenario with static assets and status assertions
+
 ## Other Traffic Profiles
 
 ```bash

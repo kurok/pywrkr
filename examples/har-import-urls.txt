@@ -1,0 +1,5 @@
+https://api.example.com/users
+https://api.example.com/users/42
+POST https://api.example.com/users
+PUT https://api.example.com/users/42
+DELETE https://api.example.com/users/42
