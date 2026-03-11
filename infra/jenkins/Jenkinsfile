@@ -10,7 +10,7 @@
  *   - AWS credentials in Jenkins credential store (aws-access-key-id, aws-secret-access-key)
  *   - Terraform >= 1.6 on the Jenkins agent
  *   - aws-cli v2 on the Jenkins agent
- *   - HTML Publisher plugin (optional, for inline viewing)
+ *   - HTML Publisher plugin (optional, for inline report viewing)
  */
 
 pipeline {
@@ -186,10 +186,6 @@ enable_nat_gateway = false
                         script: "cd ${env.TF_DIR} && terraform output -raw worker_service_name",
                         returnStdout: true
                     ).trim()
-                    env.REPORTS_BUCKET = sh(
-                        script: "cd ${env.TF_DIR} && terraform output -raw reports_bucket",
-                        returnStdout: true
-                    ).trim()
 
                     sh """
                         echo "Waiting for master service to stabilize..."
@@ -239,11 +235,9 @@ enable_nat_gateway = false
             }
         }
 
-        stage('Collect Report') {
+        stage('Collect & Generate Report') {
             steps {
                 script {
-                    // Wait for the master task to finish and upload results to S3
-                    // The master prints "S3_REPORT_PATH=<timestamp>" before exiting
                     def masterLogGroup = sh(
                         script: "cd ${env.TF_DIR} && terraform output -raw master_log_group",
                         returnStdout: true
@@ -251,64 +245,74 @@ enable_nat_gateway = false
 
                     def startTime = System.currentTimeMillis() - (30 * 60 * 1000)
 
-                    // Poll CloudWatch for S3_REPORT_PATH marker (max 5 min)
-                    def reportPath = ''
+                    // Poll CloudWatch for the JSON results marker (max 5 min)
+                    def foundJson = false
                     for (int i = 0; i < 30; i++) {
-                        def logs = sh(
+                        def check = sh(
                             script: """
                                 aws logs filter-log-events \
                                     --log-group-name "${masterLogGroup}" \
                                     --start-time ${startTime} \
-                                    --filter-pattern "S3_REPORT_PATH" \
+                                    --filter-pattern "PYWRKR_JSON_END" \
                                     --region ${AWS_DEFAULT_REGION} \
                                     --no-cli-pager \
                                     --output text \
-                                    --query 'events[*].message'
+                                    --query 'events[0].message' 2>/dev/null || true
                             """,
                             returnStdout: true
                         ).trim()
 
-                        def match = (logs =~ /S3_REPORT_PATH=(\S+)/)
-                        if (match.find()) {
-                            reportPath = match.group(1)
-                            echo "Found report at S3 path: ${reportPath}"
+                        if (check.contains('PYWRKR_JSON_END')) {
+                            foundJson = true
+                            echo "JSON results available in CloudWatch"
                             break
                         }
-                        echo "Waiting for report upload... (${i + 1}/30)"
+                        echo "Waiting for test results... (${i + 1}/30)"
                         sleep 10
                     }
 
-                    if (!reportPath) {
-                        echo "WARNING: Could not find S3 report path in logs. Falling back to latest S3 object."
-                        reportPath = sh(
-                            script: """
-                                aws s3 ls s3://${env.REPORTS_BUCKET}/ \
-                                    --region ${AWS_DEFAULT_REGION} \
-                                    | sort | tail -1 | awk '{print \$NF}' | tr -d '/'
-                            """,
-                            returnStdout: true
-                        ).trim()
+                    if (!foundJson) {
+                        error("Timed out waiting for pywrkr results in CloudWatch logs")
                     }
 
-                    if (!reportPath) {
-                        error("No report found in S3 bucket ${env.REPORTS_BUCKET}")
-                    }
-
-                    // Download report and results from S3
+                    // Fetch all master logs and extract JSON between markers
                     sh """
                         mkdir -p pywrkr-report
-                        aws s3 cp s3://${env.REPORTS_BUCKET}/${reportPath}/report.html pywrkr-report/report.html \
-                            --region ${AWS_DEFAULT_REGION}
-                        aws s3 cp s3://${env.REPORTS_BUCKET}/${reportPath}/results.json pywrkr-report/results.json \
-                            --region ${AWS_DEFAULT_REGION}
-                        echo "Report downloaded to pywrkr-report/"
+
+                        # Get all log events as JSON array of messages
+                        aws logs filter-log-events \
+                            --log-group-name "${masterLogGroup}" \
+                            --start-time ${startTime} \
+                            --region ${AWS_DEFAULT_REGION} \
+                            --no-cli-pager \
+                            --output json \
+                            --query 'events[*].message' > raw_logs.json
+
+                        # Extract JSON between markers
+                        python3 -c "
+import json, re, sys
+messages = json.load(open('raw_logs.json'))
+full = '\\n'.join(messages)
+m = re.search(r'---PYWRKR_JSON_START---\\s*(.+?)\\s*---PYWRKR_JSON_END---', full, re.DOTALL)
+if not m:
+    print('ERROR: JSON markers not found in logs', file=sys.stderr)
+    sys.exit(1)
+data = json.loads(m.group(1))
+json.dump(data, open('pywrkr-report/results.json', 'w'), indent=2)
+print('Extracted results.json')
+"
+
+                        # Generate HTML report
+                        python3 infra/jenkins/generate_report.py pywrkr-report/results.json pywrkr-report/report.html
+
+                        echo "Report files:"
                         ls -la pywrkr-report/
                     """
 
-                    // Check for threshold breaches in the JSON results
+                    // Check for threshold breaches
                     def resultsJson = readFile('pywrkr-report/results.json')
-                    if (resultsJson.contains('"threshold_breached": true') || resultsJson.contains('"passed": false')) {
-                        echo "WARNING: SLO threshold breached. See HTML report for details."
+                    if (resultsJson.contains('"threshold_breached"') && resultsJson.contains('true')) {
+                        unstable("SLO threshold breached. See HTML report for details.")
                     }
                 }
             }
@@ -316,10 +320,8 @@ enable_nat_gateway = false
 
         stage('Publish Report') {
             steps {
-                // Archive as downloadable artifacts
                 archiveArtifacts artifacts: 'pywrkr-report/**', allowEmptyArchive: true
 
-                // Publish HTML report for inline viewing (requires HTML Publisher plugin)
                 publishHTML(target: [
                     allowMissing: true,
                     alwaysLinkToLastBuild: true,
@@ -368,10 +370,10 @@ enable_nat_gateway = false
 
     post {
         success {
-            echo "Load test completed successfully. View the HTML report in build artifacts."
+            echo "Load test completed. View the HTML report in build artifacts."
         }
         failure {
-            echo "Load test failed. Check CloudWatch logs and build console output."
+            echo "Load test failed. Check build console output."
         }
         always {
             node('') {
