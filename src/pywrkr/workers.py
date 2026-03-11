@@ -56,7 +56,7 @@ class LiveDashboard:
         self.start_time = start_time
         self.active_users = active_users
 
-    def _build_display(self) -> "Panel":
+    def _build_display(self) -> "Panel":  # noqa: F821
         """Build the rich Panel for the current dashboard state."""
         from rich.table import Table
         from rich.panel import Panel

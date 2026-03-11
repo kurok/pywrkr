@@ -70,7 +70,7 @@ class BenchmarkConfig:
     rate: float | None = None  # target requests per second (None = unlimited)
     rate_ramp: float | None = None  # ramp rate target: linearly increase from rate to rate_ramp over duration
     # Traffic profile (advanced traffic shaping)
-    traffic_profile: "TrafficProfile | None" = None
+    traffic_profile: "TrafficProfile | None" = None  # noqa: F821
     # Scenario mode
     scenario: "Scenario | None" = None
     # Latency breakdown mode

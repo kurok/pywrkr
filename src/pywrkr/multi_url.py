@@ -70,9 +70,10 @@ async def run_multi_url(
     results: list[MultiUrlResult] = []
 
     for i, entry in enumerate(url_entries, 1):
-        print(f"\n{'\u2500' * 70}")
+        sep = "\u2500" * 70
+        print(f"\n{sep}")
         print(f"  Endpoint {i}/{len(url_entries)}: {entry.method} {entry.url}")
-        print(f"{'\u2500' * 70}\n")
+        print(f"{sep}\n")
 
         # Clone config with this URL and method
         config = BenchmarkConfig(

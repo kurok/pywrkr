@@ -1097,7 +1097,7 @@ def print_autofind_summary(steps: list[StepResult], max_users: int | None):
 # Multi-URL reporting
 # ---------------------------------------------------------------------------
 
-def print_multi_url_summary(results: "list[MultiUrlResult]"):
+def print_multi_url_summary(results: "list[MultiUrlResult]"):  # noqa: F821
     """Print a comparison table across all URLs."""
     out = sys.stdout
     print(f"\n{'=' * 90}", file=out)
@@ -1107,8 +1107,9 @@ def print_multi_url_summary(results: "list[MultiUrlResult]"):
     # Header
     print(f"\n  {'#':>3}  {'Method':<7} {'URL':<40} {'Reqs':>7} {'RPS':>9} "
           f"{'p50':>9} {'p95':>9} {'p99':>9} {'Errs':>6}", file=out)
-    print(f"  {'\u2500' * 3}  {'\u2500' * 7} {'\u2500' * 40} {'\u2500' * 7} {'\u2500' * 9} "
-          f"{'\u2500' * 9} {'\u2500' * 9} {'\u2500' * 9} {'\u2500' * 6}", file=out)
+    d = "\u2500"
+    print(f"  {d * 3}  {d * 7} {d * 40} {d * 7} {d * 9} "
+          f"{d * 9} {d * 9} {d * 9} {d * 6}", file=out)
 
     for i, r in enumerate(results, 1):
         rps = r.stats.total_requests / r.duration if r.duration > 0 else 0
@@ -1141,7 +1142,7 @@ def print_multi_url_summary(results: "list[MultiUrlResult]"):
     print(f"{'=' * 90}\n", file=out)
 
 
-def build_multi_url_json(results: "list[MultiUrlResult]") -> dict:
+def build_multi_url_json(results: "list[MultiUrlResult]") -> dict:  # noqa: F821
     """Build a JSON-serializable dict for multi-URL results."""
     endpoints = []
     for r in results:
