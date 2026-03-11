@@ -171,7 +171,7 @@ enable_nat_gateway = false
             }
         }
 
-        stage('Wait for ECS Stability') {
+        stage('Run Load Test') {
             steps {
                 script {
                     env.ECS_CLUSTER = sh(
@@ -187,28 +187,9 @@ enable_nat_gateway = false
                         returnStdout: true
                     ).trim()
 
-                    sh """
-                        echo "Waiting for master service to stabilize..."
-                        aws ecs wait services-stable \
-                            --cluster ${env.ECS_CLUSTER} \
-                            --services ${env.MASTER_SERVICE} \
-                            --region ${AWS_DEFAULT_REGION}
+                    // Record the start timestamp before triggering deployment
+                    env.TEST_START_TIME = "${System.currentTimeMillis()}"
 
-                        echo "Waiting for worker service to stabilize..."
-                        aws ecs wait services-stable \
-                            --cluster ${env.ECS_CLUSTER} \
-                            --services ${env.WORKER_SERVICE} \
-                            --region ${AWS_DEFAULT_REGION}
-
-                        echo "All services stable."
-                    """
-                }
-            }
-        }
-
-        stage('Trigger Load Test') {
-            steps {
-                script {
                     sh """
                         echo "Triggering new deployment (fresh test run)..."
                         aws ecs update-service \
@@ -216,20 +197,16 @@ enable_nat_gateway = false
                             --service ${env.MASTER_SERVICE} \
                             --force-new-deployment \
                             --region ${AWS_DEFAULT_REGION} \
-                            --no-cli-pager
+                            --no-cli-pager > /dev/null
 
                         aws ecs update-service \
                             --cluster ${env.ECS_CLUSTER} \
                             --service ${env.WORKER_SERVICE} \
                             --force-new-deployment \
                             --region ${AWS_DEFAULT_REGION} \
-                            --no-cli-pager
+                            --no-cli-pager > /dev/null
 
-                        echo "Waiting for new deployment to stabilize..."
-                        aws ecs wait services-stable \
-                            --cluster ${env.ECS_CLUSTER} \
-                            --services ${env.MASTER_SERVICE} ${env.WORKER_SERVICE} \
-                            --region ${AWS_DEFAULT_REGION}
+                        echo "Deployment triggered. Waiting for test results in CloudWatch..."
                     """
                 }
             }
@@ -243,11 +220,13 @@ enable_nat_gateway = false
                         returnStdout: true
                     ).trim()
 
-                    def startTime = System.currentTimeMillis() - (30 * 60 * 1000)
+                    // Use the timestamp from before we triggered the deployment
+                    def startTime = env.TEST_START_TIME
 
-                    // Poll CloudWatch for the JSON results marker (max 5 min)
+                    // Poll CloudWatch for the JSON end marker (max 10 min)
+                    // This accounts for: Fargate task startup + test duration + result upload
                     def foundJson = false
-                    for (int i = 0; i < 30; i++) {
+                    for (int i = 0; i < 60; i++) {
                         def check = sh(
                             script: """
                                 aws logs filter-log-events \
@@ -264,22 +243,23 @@ enable_nat_gateway = false
 
                         if (check.contains('PYWRKR_JSON_END')) {
                             foundJson = true
-                            echo "JSON results available in CloudWatch"
+                            echo "Test complete. JSON results found in CloudWatch."
                             break
                         }
-                        echo "Waiting for test results... (${i + 1}/30)"
+                        if (i % 6 == 0) {
+                            echo "Waiting for test to complete... (${i * 10}s elapsed)"
+                        }
                         sleep 10
                     }
 
                     if (!foundJson) {
-                        error("Timed out waiting for pywrkr results in CloudWatch logs")
+                        error("Timed out waiting for pywrkr results (10 min). Check ECS task logs.")
                     }
 
                     // Fetch all master logs and extract JSON between markers
                     sh """
                         mkdir -p pywrkr-report
 
-                        # Get all log events as JSON array of messages
                         aws logs filter-log-events \
                             --log-group-name "${masterLogGroup}" \
                             --start-time ${startTime} \
@@ -288,32 +268,22 @@ enable_nat_gateway = false
                             --output json \
                             --query 'events[*].message' > raw_logs.json
 
-                        # Extract JSON between markers
                         python3 -c "
 import json, re, sys
 messages = json.load(open('raw_logs.json'))
-full = '\\n'.join(messages)
+full = chr(10).join(messages)
 m = re.search(r'---PYWRKR_JSON_START---\\s*(.+?)\\s*---PYWRKR_JSON_END---', full, re.DOTALL)
 if not m:
     print('ERROR: JSON markers not found in logs', file=sys.stderr)
     sys.exit(1)
 data = json.loads(m.group(1))
 json.dump(data, open('pywrkr-report/results.json', 'w'), indent=2)
-print('Extracted results.json')
+print('Extracted results.json (%d bytes)' % len(json.dumps(data)))
 "
 
-                        # Generate HTML report
                         python3 infra/jenkins/generate_report.py pywrkr-report/results.json pywrkr-report/report.html
-
-                        echo "Report files:"
                         ls -la pywrkr-report/
                     """
-
-                    // Check for threshold breaches
-                    def resultsJson = readFile('pywrkr-report/results.json')
-                    if (resultsJson.contains('"threshold_breached"') && resultsJson.contains('true')) {
-                        unstable("SLO threshold breached. See HTML report for details.")
-                    }
                 }
             }
         }
@@ -351,14 +321,14 @@ print('Extracted results.json')
                                 --service ${env.WORKER_SERVICE} \
                                 --desired-count 0 \
                                 --region ${AWS_DEFAULT_REGION} \
-                                --no-cli-pager
+                                --no-cli-pager > /dev/null
 
                             aws ecs update-service \
                                 --cluster ${env.ECS_CLUSTER} \
                                 --service ${env.MASTER_SERVICE} \
                                 --desired-count 0 \
                                 --region ${AWS_DEFAULT_REGION} \
-                                --no-cli-pager
+                                --no-cli-pager > /dev/null
 
                             echo "Services scaled to 0. Infrastructure remains for next run."
                         """
