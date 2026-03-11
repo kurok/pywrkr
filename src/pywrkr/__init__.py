@@ -13,6 +13,16 @@ from pywrkr.main import (  # noqa: F401
     Scenario,
     UrlEntry,
     MultiUrlResult,
+    # Traffic profiles
+    TrafficProfile,
+    SineProfile,
+    StepProfile,
+    SawtoothProfile,
+    SquareProfile,
+    SpikeProfile,
+    BusinessHoursProfile,
+    CsvProfile,
+    parse_traffic_profile,
     # Helpers
     RateLimiter,
     LiveDashboard,
@@ -80,4 +90,4 @@ from pywrkr.main import (  # noqa: F401
 # Re-export main function under a different name to avoid shadowing pywrkr.main module
 from pywrkr.main import main as cli_main  # noqa: F401
 
-__version__ = "0.9.5"
+__version__ = "1.0.0"

@@ -1365,6 +1365,254 @@ class TestBenchmarkConfigRate(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Traffic profile tests
+# ---------------------------------------------------------------------------
+
+
+class TestTrafficProfiles(unittest.TestCase):
+    """Unit tests for traffic shaping profiles."""
+
+    def test_sine_profile_basic(self):
+        p = pywrkr_main.SineProfile(cycles=1, min_factor=0.0)
+        # At start (t=0): sin(0) = 0, so factor = 0.5 + 0.5*0 = 0.5
+        self.assertAlmostEqual(p.rate_at(0, 60, 1000), 500.0, places=0)
+        # At quarter: sin(π/2) = 1, factor = 1.0
+        self.assertAlmostEqual(p.rate_at(15, 60, 1000), 1000.0, places=0)
+        # At half: sin(π) ≈ 0, factor = 0.5
+        self.assertAlmostEqual(p.rate_at(30, 60, 1000), 500.0, delta=1.0)
+        # At 3/4: sin(3π/2) = -1, factor = 0.0
+        self.assertAlmostEqual(p.rate_at(45, 60, 1000), 0.0, delta=1.0)
+
+    def test_sine_profile_min_factor(self):
+        p = pywrkr_main.SineProfile(cycles=1, min_factor=0.2)
+        # Min rate should never go below 0.2 * base
+        rates = [p.rate_at(t, 60, 1000) for t in range(61)]
+        self.assertGreaterEqual(min(rates), 199.0)  # ~200 with float tolerance
+        self.assertLessEqual(max(rates), 1001.0)
+
+    def test_step_profile(self):
+        p = pywrkr_main.StepProfile(levels=[100, 500, 1000])
+        # First third
+        self.assertEqual(p.rate_at(5, 60, 500), 100)
+        # Second third
+        self.assertEqual(p.rate_at(25, 60, 500), 500)
+        # Last third
+        self.assertEqual(p.rate_at(50, 60, 500), 1000)
+
+    def test_step_profile_ignores_base_rate(self):
+        """Step profile uses absolute levels, not base_rate."""
+        p = pywrkr_main.StepProfile(levels=[200, 800])
+        self.assertEqual(p.rate_at(0, 60, 9999), 200)
+
+    def test_sawtooth_profile(self):
+        p = pywrkr_main.SawtoothProfile(cycles=1, min_factor=0.0)
+        # Start: factor = 0 → rate = 0
+        self.assertAlmostEqual(p.rate_at(0, 60, 1000), 0.0, delta=1.0)
+        # Mid: factor = 0.5 → rate = 500
+        self.assertAlmostEqual(p.rate_at(30, 60, 1000), 500.0, delta=1.0)
+        # Near end: factor ≈ 1.0 → rate ≈ 1000
+        self.assertAlmostEqual(p.rate_at(59, 60, 1000), 983.0, delta=20.0)
+
+    def test_square_profile(self):
+        p = pywrkr_main.SquareProfile(cycles=1, low_factor=0.1)
+        # First half: high
+        self.assertEqual(p.rate_at(10, 60, 1000), 1000)
+        # Second half: low
+        self.assertAlmostEqual(p.rate_at(40, 60, 1000), 100.0, places=0)
+
+    def test_spike_profile(self):
+        p = pywrkr_main.SpikeProfile(interval=10, spike_dur=2, multiplier=5, baseline=0.1)
+        # During spike (t=0 to t=2)
+        self.assertEqual(p.rate_at(0, 60, 100), 500)
+        self.assertEqual(p.rate_at(1, 60, 100), 500)
+        # After spike
+        self.assertEqual(p.rate_at(3, 60, 100), 10)
+        self.assertEqual(p.rate_at(9, 60, 100), 10)
+        # Next spike
+        self.assertEqual(p.rate_at(10, 60, 100), 500)
+
+    def test_business_hours_profile(self):
+        p = pywrkr_main.BusinessHoursProfile()
+        # Night (start/end) should be low
+        self.assertLess(p.rate_at(0, 60, 1000), 100)
+        self.assertLess(p.rate_at(59, 60, 1000), 100)
+        # Midday (~50%) should be high
+        mid_rate = p.rate_at(30, 60, 1000)
+        self.assertGreater(mid_rate, 800)
+
+    def test_csv_profile_absolute(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write('time_sec,rate\n0,100\n30,500\n60,100\n')
+            path = f.name
+        try:
+            p = pywrkr_main.CsvProfile(path)
+            self.assertEqual(p.rate_at(0, 60, 9999), 100)  # base_rate ignored
+            self.assertAlmostEqual(p.rate_at(15, 60, 9999), 300.0)  # interpolated
+            self.assertEqual(p.rate_at(30, 60, 9999), 500)
+        finally:
+            os.unlink(path)
+
+    def test_csv_profile_multiplier(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write('time_sec,multiplier\n0,0.5\n60,2.0\n')
+            path = f.name
+        try:
+            p = pywrkr_main.CsvProfile(path)
+            self.assertTrue(p._is_multiplier)
+            self.assertAlmostEqual(p.rate_at(0, 60, 100), 50.0)
+            self.assertAlmostEqual(p.rate_at(30, 60, 100), 125.0)  # 0.5 + 0.75 = 1.25
+            self.assertAlmostEqual(p.rate_at(60, 60, 100), 200.0)
+        finally:
+            os.unlink(path)
+
+    def test_csv_profile_no_header(self):
+        """CSV without header should still work."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write('0,100\n10,200\n')
+            path = f.name
+        try:
+            p = pywrkr_main.CsvProfile(path)
+            self.assertFalse(p._is_multiplier)
+            self.assertEqual(p.rate_at(0, 60, 500), 100)
+        finally:
+            os.unlink(path)
+
+    def test_csv_profile_clamping(self):
+        """Before first and after last point, nearest value is held."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write('time_sec,rate\n10,200\n50,800\n')
+            path = f.name
+        try:
+            p = pywrkr_main.CsvProfile(path)
+            self.assertEqual(p.rate_at(0, 60, 500), 200)   # before first → hold
+            self.assertEqual(p.rate_at(60, 60, 500), 800)   # after last → hold
+        finally:
+            os.unlink(path)
+
+    def test_csv_empty_raises(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write('')
+            path = f.name
+        try:
+            with self.assertRaises(ValueError):
+                pywrkr_main.CsvProfile(path)
+        finally:
+            os.unlink(path)
+
+    def test_zero_duration_returns_base_rate(self):
+        """All profiles should handle duration=0 gracefully."""
+        for profile in [
+            pywrkr_main.SineProfile(),
+            pywrkr_main.SawtoothProfile(),
+            pywrkr_main.SquareProfile(),
+            pywrkr_main.BusinessHoursProfile(),
+        ]:
+            rate = profile.rate_at(5, 0, 500)
+            self.assertGreater(rate, 0)
+
+
+class TestParseTrafficProfile(unittest.TestCase):
+    """Tests for the parse_traffic_profile() function."""
+
+    def test_parse_builtin_default(self):
+        p = pywrkr_main.parse_traffic_profile("sine")
+        self.assertIsInstance(p, pywrkr_main.SineProfile)
+        self.assertEqual(p.cycles, 2.0)
+
+    def test_parse_builtin_with_params(self):
+        p = pywrkr_main.parse_traffic_profile("sine:cycles=4,min=0.3")
+        self.assertIsInstance(p, pywrkr_main.SineProfile)
+        self.assertEqual(p.cycles, 4.0)
+        self.assertEqual(p.min_factor, 0.3)
+
+    def test_parse_step_with_levels(self):
+        p = pywrkr_main.parse_traffic_profile("step:levels=100,500,1000")
+        self.assertIsInstance(p, pywrkr_main.StepProfile)
+        self.assertEqual(p.levels, [100.0, 500.0, 1000.0])
+
+    def test_parse_step_without_prefix(self):
+        p = pywrkr_main.parse_traffic_profile("step:100,500,1000")
+        self.assertIsInstance(p, pywrkr_main.StepProfile)
+        self.assertEqual(p.levels, [100.0, 500.0, 1000.0])
+
+    def test_parse_spike_with_params(self):
+        p = pywrkr_main.parse_traffic_profile("spike:interval=15,multiplier=3")
+        self.assertIsInstance(p, pywrkr_main.SpikeProfile)
+        self.assertEqual(p.interval, 15.0)
+        self.assertEqual(p.multiplier, 3.0)
+
+    def test_parse_csv(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write('time_sec,rate\n0,100\n60,500\n')
+            path = f.name
+        try:
+            p = pywrkr_main.parse_traffic_profile(f"csv:{path}")
+            self.assertIsInstance(p, pywrkr_main.CsvProfile)
+        finally:
+            os.unlink(path)
+
+    def test_parse_csv_missing_path(self):
+        with self.assertRaises(ValueError):
+            pywrkr_main.parse_traffic_profile("csv:")
+
+    def test_parse_unknown_profile(self):
+        with self.assertRaises(ValueError):
+            pywrkr_main.parse_traffic_profile("nonexistent")
+
+    def test_parse_square_params(self):
+        p = pywrkr_main.parse_traffic_profile("square:cycles=5,low=0.3")
+        self.assertIsInstance(p, pywrkr_main.SquareProfile)
+        self.assertEqual(p.cycles, 5.0)
+        self.assertEqual(p.low_factor, 0.3)
+
+    def test_parse_business_hours(self):
+        p = pywrkr_main.parse_traffic_profile("business-hours")
+        self.assertIsInstance(p, pywrkr_main.BusinessHoursProfile)
+
+
+class TestRateLimiterWithProfile(unittest.TestCase):
+    """Test RateLimiter integration with traffic profiles."""
+
+    def test_rate_limiter_uses_profile(self):
+        """RateLimiter should delegate to traffic profile for rate calculation."""
+        profile = pywrkr_main.StepProfile(levels=[100, 1000])
+        rl = pywrkr_main.RateLimiter(
+            rate=500, traffic_profile=profile, duration=60.0,
+        )
+        # Simulate start time
+        rl._start_time = 100.0
+        # First half: rate = 100
+        self.assertEqual(rl._current_rate(110.0), 100)
+        # Second half: rate = 1000
+        self.assertEqual(rl._current_rate(140.0), 1000)
+
+    def test_profile_overrides_ramp(self):
+        """Traffic profile should take precedence over linear ramp."""
+        profile = pywrkr_main.StepProfile(levels=[42])
+        rl = pywrkr_main.RateLimiter(
+            rate=500, end_rate=1000, ramp_duration=60.0,
+            traffic_profile=profile, duration=60.0,
+        )
+        rl._start_time = 100.0
+        self.assertEqual(rl._current_rate(130.0), 42)
+
+    def test_describe_methods(self):
+        """All profiles should have a describe() method returning a non-empty string."""
+        profiles = [
+            pywrkr_main.SineProfile(),
+            pywrkr_main.StepProfile(levels=[100]),
+            pywrkr_main.SawtoothProfile(),
+            pywrkr_main.SquareProfile(),
+            pywrkr_main.SpikeProfile(),
+            pywrkr_main.BusinessHoursProfile(),
+        ]
+        for p in profiles:
+            desc = p.describe()
+            self.assertIsInstance(desc, str)
+            self.assertGreater(len(desc), 0)
+
+
+# ---------------------------------------------------------------------------
 # Integration tests for rate limiting
 # ---------------------------------------------------------------------------
 
@@ -2269,7 +2517,7 @@ class TestPackaging(unittest.TestCase):
             return
         self.assertIn("project", data)
         self.assertEqual(data["project"]["name"], "pywrkr")
-        self.assertEqual(data["project"]["version"], "0.9.5")
+        self.assertEqual(data["project"]["version"], "1.0.0")
 
     def test_entry_point_defined(self):
         """Test that the pywrkr entry point is configured."""
