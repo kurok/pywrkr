@@ -127,6 +127,8 @@ class BenchmarkConfig:
     scenario: "Scenario | None" = None
     # Latency breakdown mode
     latency_breakdown: bool = False
+    # Gatling-style HTML report
+    html_report: str | None = None  # file path for interactive HTML report
     # Autofind mode: suppress output when used as a sub-step
     _quiet: bool = False
     # Observability export
@@ -944,6 +946,405 @@ def generate_html_report(stats: WorkerStats, duration: float, connections: int) 
     )
 
 
+def generate_gatling_html_report(
+    stats: WorkerStats,
+    duration: float,
+    connections: int,
+    config: BenchmarkConfig | None = None,
+    rate_limiter: RateLimiter | None = None,
+    start_time: float = 0.0,
+) -> str:
+    """Generate a Gatling-style interactive HTML report with charts.
+
+    Produces a self-contained HTML file using Chart.js (loaded from CDN)
+    with:
+    - Summary indicators (requests, errors, RPS, mean/p95/p99 latency)
+    - Response time distribution histogram
+    - Response time percentiles chart
+    - Requests per second timeline
+    - Status code breakdown (pie chart)
+    - Latency breakdown by phase (if available)
+    """
+    results = build_results_dict(stats, duration, connections, config, rate_limiter)
+    latency = results.get("latency", {})
+    percentiles = results.get("percentiles", {})
+    status_codes = results.get("status_codes", {})
+    error_types = results.get("error_types", {})
+
+    # ── Histogram buckets ──
+    hist_labels: list[str] = []
+    hist_counts: list[int] = []
+    hist_colors: list[str] = []
+    if stats.latencies:
+        sorted_lat = sorted(stats.latencies)
+        # Create ~20 buckets
+        lo, hi = sorted_lat[0], sorted_lat[-1]
+        n_buckets = min(30, max(10, len(sorted_lat) // 50))
+        step = (hi - lo) / n_buckets if n_buckets > 0 and hi > lo else 1
+        if step <= 0:
+            step = 1
+        buckets_hist: list[int] = [0] * n_buckets
+        for lat in sorted_lat:
+            idx = min(int((lat - lo) / step), n_buckets - 1)
+            buckets_hist[idx] += 1
+        for i in range(n_buckets):
+            edge_ms = (lo + i * step) * 1000
+            hist_labels.append(f"{edge_ms:.0f}")
+            hist_counts.append(buckets_hist[i])
+            # Color by latency: green < p50, yellow < p95, red >= p95
+            p50 = percentiles.get("p50", 0)
+            p95 = percentiles.get("p95", 0)
+            edge_s = lo + i * step
+            if edge_s < p50:
+                hist_colors.append("rgba(76, 175, 80, 0.8)")
+            elif edge_s < p95:
+                hist_colors.append("rgba(255, 193, 7, 0.8)")
+            else:
+                hist_colors.append("rgba(244, 67, 54, 0.8)")
+
+    # ── Percentile curve ──
+    pct_labels = ["p50", "p75", "p90", "p95", "p99"]
+    pct_values = [round(percentiles.get(p, 0) * 1000, 2) for p in pct_labels]
+
+    # ── RPS timeline ──
+    rps_labels: list[str] = []
+    rps_values: list[float] = []
+    if stats.rps_timeline:
+        bucket_size = max(1, int(duration / 40))
+        time_buckets: dict[int, int] = defaultdict(int)
+        for ts, count in stats.rps_timeline:
+            bucket = int((ts - start_time) / bucket_size)
+            time_buckets[bucket] += count
+        for b in sorted(time_buckets.keys()):
+            rps_labels.append(f"{b * bucket_size}s")
+            rps_values.append(round(time_buckets[b] / bucket_size, 1))
+
+    # ── Status code pie ──
+    sc_labels = [str(c) for c in sorted(status_codes.keys())]
+    sc_values = [status_codes[int(c)] for c in sc_labels]
+    sc_colors = []
+    for c in sc_labels:
+        code = int(c)
+        if 200 <= code < 300:
+            sc_colors.append("rgba(76, 175, 80, 0.85)")
+        elif 300 <= code < 400:
+            sc_colors.append("rgba(33, 150, 243, 0.85)")
+        elif 400 <= code < 500:
+            sc_colors.append("rgba(255, 152, 0, 0.85)")
+        else:
+            sc_colors.append("rgba(244, 67, 54, 0.85)")
+
+    # ── Latency breakdown ──
+    bd = results.get("latency_breakdown", {})
+    bd_phases = ["dns", "connect", "tls", "ttfb", "transfer"]
+    bd_labels = ["DNS", "Connect", "TLS", "TTFB", "Transfer"]
+    bd_values = [round(bd.get(p, {}).get("avg", 0) * 1000, 2) for p in bd_phases]
+    has_breakdown = any(v > 0 for v in bd_values)
+
+    # ── Error rate ──
+    error_rate = (stats.errors / stats.total_requests * 100) if stats.total_requests else 0
+
+    # ── Mode description ──
+    mode = "Duration mode"
+    if config:
+        if config.users:
+            mode = f"{config.users} virtual users"
+        elif config.num_requests:
+            mode = f"{config.num_requests:,} requests"
+        elif config.rate:
+            mode = f"Rate: {config.rate} req/s"
+
+    url = config.url if config else "N/A"
+    method = config.method if config else "GET"
+    timestamp = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    import json as _json
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pywrkr Report &mdash; {_html_escape(url)}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  :root {{
+    --bg: #1a1a2e; --surface: #16213e; --card: #0f3460;
+    --accent: #e94560; --green: #4caf50; --yellow: #ffc107;
+    --text: #eee; --muted: #999; --border: #234;
+  }}
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+         background: var(--bg); color: var(--text); padding: 0; }}
+  .header {{ background: linear-gradient(135deg, var(--surface), var(--card));
+             padding: 24px 32px; border-bottom: 3px solid var(--accent); }}
+  .header h1 {{ font-size: 1.6em; font-weight: 600; }}
+  .header h1 span {{ color: var(--accent); }}
+  .header .meta {{ color: var(--muted); font-size: 0.85em; margin-top: 6px; }}
+  .container {{ max-width: 1200px; margin: 0 auto; padding: 24px; }}
+  .indicators {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+                 gap: 16px; margin-bottom: 28px; }}
+  .indicator {{ background: var(--surface); border-radius: 10px; padding: 18px 20px;
+               border-left: 4px solid var(--accent); }}
+  .indicator .label {{ font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px;
+                       color: var(--muted); margin-bottom: 6px; }}
+  .indicator .value {{ font-size: 1.6em; font-weight: 700; }}
+  .indicator .value.green {{ color: var(--green); }}
+  .indicator .value.red {{ color: var(--accent); }}
+  .indicator .value.yellow {{ color: var(--yellow); }}
+  .charts {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 28px; }}
+  .chart-card {{ background: var(--surface); border-radius: 10px; padding: 20px; }}
+  .chart-card h3 {{ font-size: 0.95em; margin-bottom: 14px; color: var(--muted);
+                    text-transform: uppercase; letter-spacing: 0.5px; }}
+  .chart-card.full {{ grid-column: 1 / -1; }}
+  .errors-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+  .errors-table th, .errors-table td {{ padding: 8px 12px; text-align: left;
+                                        border-bottom: 1px solid var(--border); }}
+  .errors-table th {{ color: var(--muted); font-size: 0.8em; text-transform: uppercase; }}
+  .footer {{ text-align: center; padding: 20px; color: var(--muted); font-size: 0.8em; }}
+  .footer a {{ color: var(--accent); text-decoration: none; }}
+  @media (max-width: 768px) {{ .charts {{ grid-template-columns: 1fr; }} }}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1><span>pywrkr</span> Benchmark Report</h1>
+  <div class="meta">
+    {_html_escape(method)} {_html_escape(url)} &bull; {mode} &bull;
+    {connections} connections &bull; {timestamp}
+  </div>
+</div>
+<div class="container">
+
+<!-- Indicators -->
+<div class="indicators">
+  <div class="indicator">
+    <div class="label">Total Requests</div>
+    <div class="value">{stats.total_requests:,}</div>
+  </div>
+  <div class="indicator">
+    <div class="label">Duration</div>
+    <div class="value">{duration:.1f}s</div>
+  </div>
+  <div class="indicator">
+    <div class="label">Requests/sec</div>
+    <div class="value green">{results.get('requests_per_sec', 0):,.1f}</div>
+  </div>
+  <div class="indicator">
+    <div class="label">Errors</div>
+    <div class="value {'red' if stats.errors else 'green'}">{stats.errors:,} ({error_rate:.1f}%)</div>
+  </div>
+  <div class="indicator">
+    <div class="label">Mean Latency</div>
+    <div class="value">{format_duration(latency.get('mean', 0))}</div>
+  </div>
+  <div class="indicator">
+    <div class="label">p95 Latency</div>
+    <div class="value {'yellow' if percentiles.get('p95', 0) > 1 else ''}">{format_duration(percentiles.get('p95', 0))}</div>
+  </div>
+  <div class="indicator">
+    <div class="label">p99 Latency</div>
+    <div class="value {'red' if percentiles.get('p99', 0) > 2 else ''}">{format_duration(percentiles.get('p99', 0))}</div>
+  </div>
+  <div class="indicator">
+    <div class="label">Transfer</div>
+    <div class="value">{format_bytes(results.get('transfer_per_sec_bytes', 0))}/s</div>
+  </div>
+</div>
+
+<!-- Charts -->
+<div class="charts">
+  <!-- Response Time Distribution -->
+  <div class="chart-card">
+    <h3>Response Time Distribution</h3>
+    <canvas id="histChart"></canvas>
+  </div>
+  <!-- Percentiles -->
+  <div class="chart-card">
+    <h3>Response Time Percentiles</h3>
+    <canvas id="pctChart"></canvas>
+  </div>
+  <!-- RPS Timeline -->
+  <div class="chart-card full">
+    <h3>Requests per Second Over Time</h3>
+    <canvas id="rpsChart" height="80"></canvas>
+  </div>
+  <!-- Status Codes -->
+  <div class="chart-card">
+    <h3>Status Code Distribution</h3>
+    <canvas id="scChart"></canvas>
+  </div>
+  <!-- Latency Breakdown -->
+  <div class="chart-card" id="bdCard" style="{'display:block' if has_breakdown else 'display:none'}">
+    <h3>Latency Breakdown (avg)</h3>
+    <canvas id="bdChart"></canvas>
+  </div>
+</div>
+
+<!-- Error Details -->
+{"" if not error_types else '''
+<div class="chart-card full" style="margin-bottom:28px">
+  <h3>Error Details</h3>
+  <table class="errors-table">
+    <tr><th>Error</th><th>Count</th></tr>
+    ''' + "".join(f'<tr><td>{_html_escape(e)}</td><td>{c:,}</td></tr>' for e, c in sorted(error_types.items(), key=lambda x: -x[1])) + '''
+  </table>
+</div>
+'''}
+
+</div>
+<div class="footer">
+  Generated by <a href="https://github.com/kurok/pywrkr">pywrkr</a> &mdash; Python HTTP benchmarking tool
+</div>
+
+<script>
+const chartDefaults = {{
+  color: '#999',
+  borderColor: 'rgba(255,255,255,0.1)',
+  font: {{ family: "'Segoe UI', system-ui, sans-serif" }}
+}};
+Chart.defaults.color = chartDefaults.color;
+Chart.defaults.borderColor = chartDefaults.borderColor;
+
+// Response Time Distribution
+new Chart(document.getElementById('histChart'), {{
+  type: 'bar',
+  data: {{
+    labels: {_json.dumps(hist_labels)},
+    datasets: [{{
+      label: 'Requests',
+      data: {_json.dumps(hist_counts)},
+      backgroundColor: {_json.dumps(hist_colors)},
+      borderRadius: 3,
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{
+      legend: {{ display: false }},
+      tooltip: {{ callbacks: {{ title: (items) => items[0].label + ' ms' }} }}
+    }},
+    scales: {{
+      x: {{ title: {{ display: true, text: 'Response Time (ms)' }},
+            ticks: {{ maxRotation: 45, autoSkip: true, maxTicksLimit: 15 }} }},
+      y: {{ title: {{ display: true, text: 'Count' }}, beginAtZero: true }}
+    }}
+  }}
+}});
+
+// Percentile Chart
+new Chart(document.getElementById('pctChart'), {{
+  type: 'line',
+  data: {{
+    labels: {_json.dumps(pct_labels)},
+    datasets: [{{
+      label: 'Latency (ms)',
+      data: {_json.dumps(pct_values)},
+      borderColor: '#e94560',
+      backgroundColor: 'rgba(233,69,96,0.15)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: 5,
+      pointBackgroundColor: '#e94560',
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{ legend: {{ display: false }} }},
+    scales: {{
+      y: {{ title: {{ display: true, text: 'Response Time (ms)' }}, beginAtZero: true }}
+    }}
+  }}
+}});
+
+// RPS Timeline
+new Chart(document.getElementById('rpsChart'), {{
+  type: 'line',
+  data: {{
+    labels: {_json.dumps(rps_labels)},
+    datasets: [{{
+      label: 'Req/s',
+      data: {_json.dumps(rps_values)},
+      borderColor: '#4caf50',
+      backgroundColor: 'rgba(76,175,80,0.12)',
+      fill: true,
+      tension: 0.2,
+      pointRadius: 2,
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{ legend: {{ display: false }} }},
+    scales: {{
+      x: {{ title: {{ display: true, text: 'Time' }},
+            ticks: {{ autoSkip: true, maxTicksLimit: 20 }} }},
+      y: {{ title: {{ display: true, text: 'Requests/sec' }}, beginAtZero: true }}
+    }}
+  }}
+}});
+
+// Status Codes
+new Chart(document.getElementById('scChart'), {{
+  type: 'doughnut',
+  data: {{
+    labels: {_json.dumps(sc_labels)},
+    datasets: [{{
+      data: {_json.dumps(sc_values)},
+      backgroundColor: {_json.dumps(sc_colors)},
+      borderWidth: 0,
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{
+      legend: {{ position: 'right', labels: {{ padding: 16 }} }}
+    }}
+  }}
+}});
+
+// Latency Breakdown
+if ({_json.dumps(has_breakdown)}) {{
+  new Chart(document.getElementById('bdChart'), {{
+    type: 'bar',
+    data: {{
+      labels: {_json.dumps(bd_labels)},
+      datasets: [{{
+        label: 'Avg (ms)',
+        data: {_json.dumps(bd_values)},
+        backgroundColor: [
+          'rgba(33,150,243,0.8)', 'rgba(76,175,80,0.8)', 'rgba(156,39,176,0.8)',
+          'rgba(255,152,0,0.8)', 'rgba(0,188,212,0.8)'
+        ],
+        borderRadius: 4,
+      }}]
+    }},
+    options: {{
+      indexAxis: 'y',
+      responsive: true,
+      plugins: {{ legend: {{ display: false }} }},
+      scales: {{
+        x: {{ title: {{ display: true, text: 'Time (ms)' }}, beginAtZero: true }}
+      }}
+    }}
+  }});
+}}
+</script>
+</body>
+</html>"""
+    return html
+
+
+def _html_escape(s: str) -> str:
+    """Escape HTML special characters."""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def write_html_report(path: str, html: str) -> None:
+    """Write HTML report to a file."""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+
 def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
     """Export benchmark metrics to an OpenTelemetry collector via OTLP/HTTP."""
     if not OTEL_AVAILABLE:
@@ -1204,6 +1605,13 @@ def print_results(stats: WorkerStats, duration: float, connections: int, start_t
     if config.html_output:
         html = generate_html_report(stats, duration, connections)
         print(f"\n{html}", file=out)
+
+    # Interactive HTML report (Gatling-style)
+    if config.html_report:
+        html = generate_gatling_html_report(
+            stats, duration, connections, config, rate_limiter, start_time)
+        write_html_report(config.html_report, html)
+        print(f"\n  HTML report written to: {config.html_report}", file=out)
 
     # Observability exports
     if config.otel_endpoint or config.prom_remote_write:
@@ -2601,6 +3009,8 @@ Examples:
                         help="Print results as HTML table (ab-style)")
     parser.add_argument("--json", default=None, metavar="FILE",
                         help="Write JSON results to FILE")
+    parser.add_argument("--html-report", default=None, metavar="FILE",
+                        help="Generate interactive Gatling-style HTML report to FILE")
     # User simulation mode
     parser.add_argument("-u", "--users", type=int, default=None,
                         help="Number of virtual users (enables user simulation mode)")
@@ -2780,6 +3190,7 @@ Examples:
         csv_output=args.csv,
         html_output=args.html,
         json_output=args.json,
+        html_report=args.html_report,
         users=args.users,
         ramp_up=args.ramp_up,
         think_time=args.think_time,

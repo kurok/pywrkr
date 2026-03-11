@@ -240,6 +240,223 @@ class TestHtmlReport(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Unit tests for Gatling-style HTML report
+# ---------------------------------------------------------------------------
+
+class TestGatlingHtmlReport(unittest.TestCase):
+    """Tests for the interactive Gatling-style HTML report generator."""
+
+    def _make_stats(self, n=100):
+        """Create a WorkerStats with realistic data."""
+        import random
+        random.seed(42)
+        stats = pywrkr.WorkerStats()
+        stats.total_requests = n
+        stats.total_bytes = n * 500
+        stats.errors = 2
+        stats.latencies = [random.uniform(0.01, 0.5) for _ in range(n)]
+        stats.status_codes = defaultdict(int, {200: n - 3, 404: 1, 500: 2})
+        stats.error_types = defaultdict(int, {"ConnectionError": 2})
+        # RPS timeline: simulate 1-second buckets over 10 seconds
+        base = 1000.0
+        stats.rps_timeline = [(base + i, random.randint(5, 15)) for i in range(10)]
+        return stats
+
+    def test_basic_html_structure(self):
+        """Report contains required HTML structure."""
+        stats = self._make_stats()
+        config = pywrkr.BenchmarkConfig(url="http://localhost:8080/api")
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 50, config)
+        self.assertIn("<!DOCTYPE html>", html)
+        self.assertIn("<html", html)
+        self.assertIn("</html>", html)
+        self.assertIn("chart.js", html.lower())
+        self.assertIn("pywrkr", html)
+
+    def test_contains_summary_indicators(self):
+        """Report shows key metrics in indicator cards."""
+        stats = self._make_stats()
+        config = pywrkr.BenchmarkConfig(url="http://example.com/")
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 50, config)
+        self.assertIn("Total Requests", html)
+        self.assertIn("Requests/sec", html)
+        self.assertIn("Errors", html)
+        self.assertIn("Mean Latency", html)
+        self.assertIn("p95 Latency", html)
+        self.assertIn("p99 Latency", html)
+        self.assertIn("Transfer", html)
+        self.assertIn("Duration", html)
+
+    def test_contains_chart_canvases(self):
+        """Report has all chart canvas elements."""
+        stats = self._make_stats()
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 10)
+        self.assertIn('id="histChart"', html)
+        self.assertIn('id="pctChart"', html)
+        self.assertIn('id="rpsChart"', html)
+        self.assertIn('id="scChart"', html)
+
+    def test_url_in_header(self):
+        """Report header shows the target URL and method."""
+        stats = self._make_stats()
+        config = pywrkr.BenchmarkConfig(url="http://myapi.com/v1/test", method="POST")
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 20, config)
+        self.assertIn("myapi.com/v1/test", html)
+        self.assertIn("POST", html)
+
+    def test_html_escaping(self):
+        """Special characters in URL are escaped."""
+        stats = self._make_stats(10)
+        config = pywrkr.BenchmarkConfig(url="http://example.com/<script>alert(1)</script>")
+        html = pywrkr.generate_gatling_html_report(stats, 5.0, 5, config)
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_user_simulation_mode_label(self):
+        """Report shows virtual user count for user simulation mode."""
+        stats = self._make_stats()
+        config = pywrkr.BenchmarkConfig(url="http://localhost/", users=500)
+        html = pywrkr.generate_gatling_html_report(stats, 60.0, 500, config)
+        self.assertIn("500 virtual users", html)
+
+    def test_rate_mode_label(self):
+        """Report shows rate for rate-limited mode."""
+        stats = self._make_stats()
+        config = pywrkr.BenchmarkConfig(url="http://localhost/", rate=1000.0)
+        html = pywrkr.generate_gatling_html_report(stats, 30.0, 50, config)
+        self.assertIn("Rate:", html)
+
+    def test_request_count_mode_label(self):
+        """Report shows request count for -n mode."""
+        stats = self._make_stats()
+        config = pywrkr.BenchmarkConfig(url="http://localhost/", num_requests=5000)
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 50, config)
+        self.assertIn("5,000 requests", html)
+
+    def test_empty_latencies(self):
+        """Report handles empty latencies gracefully."""
+        stats = pywrkr.WorkerStats()
+        stats.total_requests = 0
+        stats.status_codes = defaultdict(int)
+        html = pywrkr.generate_gatling_html_report(stats, 0.0, 10)
+        self.assertIn("<!DOCTYPE html>", html)
+        self.assertIn("Total Requests", html)
+
+    def test_error_details_table(self):
+        """Report shows error details when errors exist."""
+        stats = self._make_stats()
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 10)
+        self.assertIn("Error Details", html)
+        self.assertIn("ConnectionError", html)
+
+    def test_no_error_table_when_clean(self):
+        """Report omits error details section when there are no errors."""
+        stats = self._make_stats()
+        stats.errors = 0
+        stats.error_types = defaultdict(int)
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 10)
+        # The error table HTML element should not be rendered (CSS class still in style is OK)
+        self.assertNotIn("<table class", html)
+
+    def test_latency_breakdown_hidden_when_absent(self):
+        """Breakdown chart is hidden when no breakdown data exists."""
+        stats = self._make_stats()
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 10)
+        self.assertIn("display:none", html)
+
+    def test_latency_breakdown_shown_when_present(self):
+        """Breakdown chart is visible when breakdown data exists."""
+        stats = self._make_stats()
+        stats.breakdowns = [
+            pywrkr.LatencyBreakdown(dns=0.002, connect=0.01, tls=0.03, ttfb=0.05, transfer=0.02),
+            pywrkr.LatencyBreakdown(dns=0.001, connect=0.008, tls=0.025, ttfb=0.04, transfer=0.015),
+        ]
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 10)
+        self.assertIn("display:block", html)
+        self.assertIn("Latency Breakdown", html)
+
+    def test_rps_timeline_data(self):
+        """Report includes RPS timeline chart data."""
+        stats = self._make_stats()
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 10, start_time=1000.0)
+        self.assertIn("Requests per Second", html)
+        self.assertIn("rpsChart", html)
+
+    def test_status_code_colors(self):
+        """Status codes get appropriate colors."""
+        stats = self._make_stats()
+        stats.status_codes = defaultdict(int, {200: 90, 301: 5, 404: 3, 500: 2})
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 10)
+        # 200 should be green, 500 should be red
+        self.assertIn("76, 175, 80", html)   # green for 2xx
+        self.assertIn("244, 67, 54", html)   # red for 5xx
+
+    def test_footer_link(self):
+        """Report footer links to project."""
+        stats = self._make_stats()
+        html = pywrkr.generate_gatling_html_report(stats, 10.0, 10)
+        self.assertIn("github.com/kurok/pywrkr", html)
+
+
+class TestWriteHtmlReport(unittest.TestCase):
+    """Tests for writing HTML report to file."""
+
+    def test_write_html_file(self):
+        """Report is written to disk correctly."""
+        stats = pywrkr.WorkerStats()
+        stats.total_requests = 50
+        stats.total_bytes = 25000
+        stats.latencies = [0.1 * i for i in range(1, 51)]
+        stats.status_codes = defaultdict(int, {200: 50})
+        html = pywrkr.generate_gatling_html_report(stats, 5.0, 10)
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
+            path = f.name
+        try:
+            pywrkr.write_html_report(path, html)
+            with open(path) as f:
+                content = f.read()
+            self.assertIn("<!DOCTYPE html>", content)
+            self.assertIn("chart.js", content.lower())
+            self.assertTrue(len(content) > 1000, "Report should be substantial")
+        finally:
+            os.unlink(path)
+
+    def test_print_results_writes_html_report(self):
+        """print_results writes HTML report file when config.html_report is set."""
+        stats = pywrkr.WorkerStats()
+        stats.total_requests = 20
+        stats.total_bytes = 10000
+        stats.latencies = [0.05 * i for i in range(1, 21)]
+        stats.status_codes = defaultdict(int, {200: 20})
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            path = f.name
+        try:
+            config = pywrkr.BenchmarkConfig(
+                url="http://localhost/",
+                html_report=path,
+            )
+            with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                pywrkr.print_results(stats, 5.0, 20, 0.0, config)
+            self.assertIn("HTML report written to", mock_out.getvalue())
+            with open(path) as f:
+                content = f.read()
+            self.assertIn("<!DOCTYPE html>", content)
+        finally:
+            os.unlink(path)
+
+
+class TestHtmlEscape(unittest.TestCase):
+    """Tests for _html_escape helper."""
+
+    def test_escapes_special_chars(self):
+        self.assertEqual(pywrkr._html_escape('<b>"Tom & Jerry"</b>'),
+                         '&lt;b&gt;&quot;Tom &amp; Jerry&quot;&lt;/b&gt;')
+
+    def test_plain_text_unchanged(self):
+        self.assertEqual(pywrkr._html_escape("hello world"), "hello world")
+
+
+# ---------------------------------------------------------------------------
 # Unit tests for BenchmarkConfig
 # ---------------------------------------------------------------------------
 
@@ -2052,7 +2269,7 @@ class TestPackaging(unittest.TestCase):
             return
         self.assertIn("project", data)
         self.assertEqual(data["project"]["name"], "pywrkr")
-        self.assertEqual(data["project"]["version"], "0.9.2")
+        self.assertEqual(data["project"]["version"], "0.9.5")
 
     def test_entry_point_defined(self):
         """Test that the pywrkr entry point is configured."""

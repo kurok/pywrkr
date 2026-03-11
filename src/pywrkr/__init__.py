@@ -33,6 +33,9 @@ from pywrkr.main import (  # noqa: F401
     write_csv_output,
     write_json_output,
     generate_html_report,
+    generate_gatling_html_report,
+    write_html_report,
+    _html_escape,
     export_to_otel,
     export_to_prometheus,
     print_results,
@@ -77,4 +80,4 @@ from pywrkr.main import (  # noqa: F401
 # Re-export main function under a different name to avoid shadowing pywrkr.main module
 from pywrkr.main import main as cli_main  # noqa: F401
 
-__version__ = "0.9.2"
+__version__ = "0.9.5"
