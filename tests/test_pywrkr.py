@@ -2401,9 +2401,11 @@ class TestLiveDashboard(unittest.TestCase):
 
     def test_dashboard_fallback_when_rich_unavailable(self):
         """Test that --live falls back gracefully when rich is not installed."""
-        original = pywrkr_main.RICH_AVAILABLE
+        original_main = pywrkr_main.RICH_AVAILABLE
+        original_reporting = pywrkr.reporting.RICH_AVAILABLE
         try:
             pywrkr_main.RICH_AVAILABLE = False
+            pywrkr.reporting.RICH_AVAILABLE = False
             config = pywrkr.BenchmarkConfig(
                 url="http://example.com/", live_dashboard=True
             )
@@ -2412,7 +2414,8 @@ class TestLiveDashboard(unittest.TestCase):
             self.assertTrue(config.live_dashboard)
             self.assertFalse(pywrkr_main.RICH_AVAILABLE)
         finally:
-            pywrkr_main.RICH_AVAILABLE = original
+            pywrkr_main.RICH_AVAILABLE = original_main
+            pywrkr.reporting.RICH_AVAILABLE = original_reporting
 
     def test_live_flag_in_config(self):
         """Test that live_dashboard field works in BenchmarkConfig."""
@@ -2472,9 +2475,11 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_benchmark_with_live_flag_no_rich(self):
         """Test benchmark falls back when rich is unavailable."""
-        original = pywrkr_main.RICH_AVAILABLE
+        original_main = pywrkr_main.RICH_AVAILABLE
+        original_reporting = pywrkr.reporting.RICH_AVAILABLE
         try:
             pywrkr_main.RICH_AVAILABLE = False
+            pywrkr.reporting.RICH_AVAILABLE = False
             config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 connections=2,
@@ -2490,7 +2495,8 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
             output = buf.getvalue()
             self.assertIn("Warning", output)
         finally:
-            pywrkr_main.RICH_AVAILABLE = original
+            pywrkr_main.RICH_AVAILABLE = original_main
+            pywrkr.reporting.RICH_AVAILABLE = original_reporting
 
 
 # ---------------------------------------------------------------------------
@@ -3257,15 +3263,15 @@ class TestOtelExport(unittest.TestCase):
 
     def test_graceful_when_otel_not_installed(self):
         """Should warn gracefully when OTel packages are missing."""
-        original = pywrkr_main.OTEL_AVAILABLE
+        original = pywrkr.reporting.OTEL_AVAILABLE
         try:
-            pywrkr_main.OTEL_AVAILABLE = False
+            pywrkr.reporting.OTEL_AVAILABLE = False
             buf = StringIO()
             with patch("sys.stdout", buf):
                 pywrkr.export_to_otel(self._make_results(), "http://localhost:4318", {})
             self.assertIn("opentelemetry packages not installed", buf.getvalue())
         finally:
-            pywrkr_main.OTEL_AVAILABLE = original
+            pywrkr.reporting.OTEL_AVAILABLE = original
 
     @unittest.skipUnless(pywrkr_main.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_export_constructs_metrics(self):
@@ -3273,9 +3279,9 @@ class TestOtelExport(unittest.TestCase):
         results = self._make_results()
         tags = {"environment": "test", "service": "myapp"}
 
-        with patch("pywrkr.main.OTLPMetricExporter") as mock_exporter, \
-             patch("pywrkr.main.PeriodicExportingMetricReader") as mock_reader, \
-             patch("pywrkr.main.MeterProvider") as mock_provider_cls:
+        with patch("pywrkr.reporting.OTLPMetricExporter") as mock_exporter, \
+             patch("pywrkr.reporting.PeriodicExportingMetricReader") as mock_reader, \
+             patch("pywrkr.reporting.MeterProvider") as mock_provider_cls:
             mock_provider = MagicMock()
             mock_meter = MagicMock()
             mock_provider.get_meter.return_value = mock_meter
@@ -3307,9 +3313,9 @@ class TestOtelExport(unittest.TestCase):
         results = self._make_results()
         tags = {"env": "prod", "region": "us-east-1"}
 
-        with patch("pywrkr.main.OTLPMetricExporter"), \
-             patch("pywrkr.main.PeriodicExportingMetricReader"), \
-             patch("pywrkr.main.MeterProvider") as mock_provider_cls:
+        with patch("pywrkr.reporting.OTLPMetricExporter"), \
+             patch("pywrkr.reporting.PeriodicExportingMetricReader"), \
+             patch("pywrkr.reporting.MeterProvider") as mock_provider_cls:
             mock_provider = MagicMock()
             mock_meter = MagicMock()
             mock_provider.get_meter.return_value = mock_meter
@@ -3331,7 +3337,7 @@ class TestOtelExport(unittest.TestCase):
     @unittest.skipUnless(pywrkr_main.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_graceful_on_connection_error(self):
         """Should not crash on connection errors."""
-        with patch("pywrkr.main.OTLPMetricExporter", side_effect=Exception("connection refused")):
+        with patch("pywrkr.reporting.OTLPMetricExporter", side_effect=Exception("connection refused")):
             buf = StringIO()
             with patch("sys.stdout", buf):
                 pywrkr.export_to_otel(self._make_results(), "http://bad:4318", {})
@@ -3562,7 +3568,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             otel_endpoint="http://localhost:4318",
             tags={"env": "test"},
         )
-        with patch("pywrkr.main.export_to_otel") as mock_otel, \
+        with patch("pywrkr.reporting.export_to_otel") as mock_otel, \
              patch("sys.stdout", new_callable=StringIO):
             stats, _ = await pywrkr.run_benchmark(config)
         mock_otel.assert_called_once()
@@ -3585,7 +3591,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             prom_remote_write="http://pushgateway:9091",
             tags={"service": "myapp"},
         )
-        with patch("pywrkr.main.export_to_prometheus") as mock_prom, \
+        with patch("pywrkr.reporting.export_to_prometheus") as mock_prom, \
              patch("sys.stdout", new_callable=StringIO):
             stats, _ = await pywrkr.run_benchmark(config)
         mock_prom.assert_called_once()
@@ -3606,8 +3612,8 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             otel_endpoint="http://otel:4318",
             prom_remote_write="http://prom:9091",
         )
-        with patch("pywrkr.main.export_to_otel") as mock_otel, \
-             patch("pywrkr.main.export_to_prometheus") as mock_prom, \
+        with patch("pywrkr.reporting.export_to_otel") as mock_otel, \
+             patch("pywrkr.reporting.export_to_prometheus") as mock_prom, \
              patch("sys.stdout", new_callable=StringIO):
             stats, _ = await pywrkr.run_benchmark(config)
         mock_otel.assert_called_once()
@@ -3624,8 +3630,8 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             threads=1,
             timeout_sec=5,
         )
-        with patch("pywrkr.main.export_to_otel") as mock_otel, \
-             patch("pywrkr.main.export_to_prometheus") as mock_prom, \
+        with patch("pywrkr.reporting.export_to_otel") as mock_otel, \
+             patch("pywrkr.reporting.export_to_prometheus") as mock_prom, \
              patch("sys.stdout", new_callable=StringIO):
             stats, _ = await pywrkr.run_benchmark(config)
         mock_otel.assert_not_called()
@@ -3643,7 +3649,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             timeout_sec=5,
             otel_endpoint="http://localhost:4318",
         )
-        with patch("pywrkr.main.export_to_otel") as mock_otel, \
+        with patch("pywrkr.reporting.export_to_otel") as mock_otel, \
              patch("sys.stdout", new_callable=StringIO):
             stats, _ = await pywrkr.run_user_simulation(config)
         mock_otel.assert_called_once()
