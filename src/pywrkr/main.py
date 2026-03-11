@@ -315,18 +315,22 @@ class LiveDashboard:
             pct = min(elapsed / duration * 100, 100.0)
             bar_filled = int(pct / 100 * 20)
             bar_empty = 20 - bar_filled
+            filled = "\u2588" * bar_filled
+            empty = "\u2591" * bar_empty
             progress_str = (
                 f"Elapsed: {elapsed:.1f}s / {duration:.1f}s  "
-                f"[{'\u2588' * bar_filled}{'\u2591' * bar_empty}] {pct:.1f}%"
+                f"[{filled}{empty}] {pct:.1f}%"
             )
         elif self.config.num_requests:
             total_n = self.config.num_requests
             pct = min(total_req / total_n * 100, 100.0) if total_n > 0 else 100.0
             bar_filled = int(pct / 100 * 20)
             bar_empty = 20 - bar_filled
+            filled = "\u2588" * bar_filled
+            empty = "\u2591" * bar_empty
             progress_str = (
                 f"Progress: {total_req}/{total_n}  "
-                f"[{'\u2588' * bar_filled}{'\u2591' * bar_empty}] {pct:.1f}%"
+                f"[{filled}{empty}] {pct:.1f}%"
             )
         else:
             progress_str = f"Elapsed: {elapsed:.1f}s"

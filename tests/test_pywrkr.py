@@ -2517,7 +2517,7 @@ class TestPackaging(unittest.TestCase):
             return
         self.assertIn("project", data)
         self.assertEqual(data["project"]["name"], "pywrkr")
-        self.assertEqual(data["project"]["version"], "1.0.0")
+        self.assertEqual(data["project"]["version"], "1.0.1")
 
     def test_entry_point_defined(self):
         """Test that the pywrkr entry point is configured."""
