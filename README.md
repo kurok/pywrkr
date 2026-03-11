@@ -4,6 +4,7 @@ A Python HTTP benchmarking tool inspired by [wrk](https://github.com/wg/wrk) and
 
 ## Features
 
+- **HAR import** (`har-import`): convert browser-recorded HAR files into pywrkr scenarios or URL lists — dramatically cuts test authoring time
 - **Five benchmarking modes:**
   - **Duration mode** (`-d`): wrk-style, run for N seconds
   - **Request-count mode** (`-n`): ab-style, send exactly N requests
@@ -21,6 +22,71 @@ A Python HTTP benchmarking tool inspired by [wrk](https://github.com/wg/wrk) and
 - **SLO-aware thresholds** (`--threshold`): pass/fail criteria like `p95 < 300ms`, `error_rate < 1%` with non-zero exit code on breach — CI-ready
 - **Native observability export:** OpenTelemetry (`--otel-endpoint`) and Prometheus remote write (`--prom-remote-write`)
 - **Test metadata tags** (`--tag`): attach environment, build, region labels to metrics and JSON output
+
+### HAR / Browser-Recording Import
+
+Convert browser-recorded [HAR files](http://www.softwareishard.com/blog/har-12-spec/) (from Chrome DevTools, Firefox, Charles Proxy, Fiddler, etc.) into pywrkr scenarios or URL lists. Similar to k6's HAR converter and JMeter's HTTP(S) Test Script Recorder.
+
+```bash
+# Convert HAR to a pywrkr scenario (JSON):
+pywrkr har-import recording.har -o scenario.json
+
+# Then run the generated scenario:
+pywrkr --scenario scenario.json -u 100 -d 60 https://api.example.com
+
+# Or convert to a URL file for --url-file mode:
+pywrkr har-import recording.har --format url-file -o urls.txt
+pywrkr --url-file urls.txt -c 50 -d 30
+```
+
+**Recording a HAR file:**
+
+1. Open Chrome DevTools (F12) → Network tab
+2. Navigate through your application
+3. Right-click the network log → "Save all as HAR with content"
+
+**Filtering options:**
+
+```bash
+# Only include requests to specific domain(s):
+pywrkr har-import recording.har --domain api.example.com -o scenario.json
+
+# Include static assets (CSS, JS, images — excluded by default):
+pywrkr har-import recording.har --include-static -o scenario.json
+
+# Exclude analytics/tracking URLs:
+pywrkr har-import recording.har --exclude '/analytics' --exclude '/tracking' -o scenario.json
+
+# Only include specific URL patterns:
+pywrkr har-import recording.har --include '/api/v2' -o scenario.json
+
+# Preserve original request headers (default: only Content-Type):
+pywrkr har-import recording.har --preserve-headers -o scenario.json
+
+# Add status code assertions from recorded responses:
+pywrkr har-import recording.har --assert-status -o scenario.json
+
+# Adjust think time (inter-request delay derived from recording):
+pywrkr har-import recording.har --think-time-multiplier 0.5 -o scenario.json   # 2x faster
+pywrkr har-import recording.har --no-think-time -o scenario.json               # no delays
+```
+
+**HAR import options:**
+
+| Flag | Description |
+|------|-------------|
+| `har_file` | Path to the HAR file (positional, required) |
+| `-o` / `--output` | Output file path (default: print to stdout) |
+| `--format` | Output format: `scenario` (default) or `url-file` |
+| `--name` | Scenario name (default: derived from filename) |
+| `--include-static` | Include static assets (CSS, JS, images, fonts) |
+| `--domain` | Only include requests to this domain (repeatable) |
+| `--exclude` | Exclude URLs matching regex pattern (repeatable) |
+| `--include` | Only include URLs matching regex pattern (repeatable) |
+| `--preserve-headers` | Keep original request headers |
+| `--no-think-time` | Don't derive think times from recorded timing |
+| `--think-time-multiplier` | Scale derived think times (default: 1.0) |
+| `--assert-status` | Assert recorded 2xx/3xx status codes |
 
 ## Requirements
 

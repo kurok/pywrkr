@@ -1,0 +1,67 @@
+{
+  "name": "sample-recording",
+  "think_time": 0.0,
+  "steps": [
+    {
+      "name": "GET /users",
+      "path": "/users",
+      "method": "GET",
+      "assert_status": 200
+    },
+    {
+      "name": "GET /users/42",
+      "path": "/users/42",
+      "method": "GET",
+      "assert_status": 200,
+      "think_time": 0.12
+    },
+    {
+      "name": "POST /users",
+      "path": "/users",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "name": "Alice",
+        "email": "alice@example.com"
+      },
+      "assert_status": 201,
+      "think_time": 0.09
+    },
+    {
+      "name": "GET /styles/main.css",
+      "path": "/styles/main.css",
+      "method": "GET",
+      "assert_status": 200,
+      "think_time": 0.15
+    },
+    {
+      "name": "GET /logo.png",
+      "path": "/logo.png",
+      "method": "GET",
+      "assert_status": 200,
+      "think_time": 0.04
+    },
+    {
+      "name": "PUT /users/42",
+      "path": "/users/42",
+      "method": "PUT",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "name": "Alice Updated"
+      },
+      "assert_status": 200,
+      "think_time": 0.04
+    },
+    {
+      "name": "DELETE /users/42",
+      "path": "/users/42",
+      "method": "DELETE",
+      "assert_status": 204,
+      "think_time": 0.2
+    }
+  ]
+}

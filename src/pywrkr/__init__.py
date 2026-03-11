@@ -81,6 +81,14 @@ __all__ = [
     "MultiUrlResult",
     "load_url_file",
     "run_multi_url",
+    # pywrkr.har_import
+    "HarEntry",
+    "HarImportConfig",
+    "parse_har",
+    "filter_entries",
+    "har_to_scenario",
+    "har_to_url_file",
+    "convert_har",
     # pywrkr.main
     "parse_header",
     "cli_main",
@@ -180,8 +188,18 @@ from pywrkr.multi_url import (
     run_multi_url,
 )
 
+from pywrkr.har_import import (
+    HarEntry,
+    HarImportConfig,
+    parse_har,
+    filter_entries,
+    har_to_scenario,
+    har_to_url_file,
+    convert_har,
+)
+
 from pywrkr.main import parse_header
 # Re-export main function under a different name to avoid shadowing pywrkr.main module
 from pywrkr.main import main as cli_main
 
-__version__ = "1.0.2"
+__version__ = "1.0.5"

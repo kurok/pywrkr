@@ -1,0 +1,48 @@
+{
+  "name": "sample-recording",
+  "think_time": 0.0,
+  "steps": [
+    {
+      "name": "GET /users",
+      "path": "/users",
+      "method": "GET"
+    },
+    {
+      "name": "GET /users/42",
+      "path": "/users/42",
+      "method": "GET",
+      "think_time": 0.12
+    },
+    {
+      "name": "POST /users",
+      "path": "/users",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "name": "Alice",
+        "email": "alice@example.com"
+      },
+      "think_time": 0.09
+    },
+    {
+      "name": "PUT /users/42",
+      "path": "/users/42",
+      "method": "PUT",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "name": "Alice Updated"
+      },
+      "think_time": 0.15
+    },
+    {
+      "name": "DELETE /users/42",
+      "path": "/users/42",
+      "method": "DELETE",
+      "think_time": 0.2
+    }
+  ]
+}
