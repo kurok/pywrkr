@@ -700,6 +700,19 @@ async def user_worker(
         active_users["count"] -= 1
 
 
+def _prepare_step_body(step_body, headers: dict) -> bytes | None:
+    """Serialize a scenario step body and set Content-Type if needed."""
+    if step_body is None:
+        return None
+    if isinstance(step_body, dict):
+        if "Content-Type" not in headers:
+            headers["Content-Type"] = "application/json"
+        return json.dumps(step_body).encode()
+    if isinstance(step_body, str):
+        return step_body.encode()
+    return step_body
+
+
 async def scenario_worker(
     user_id: int,
     config: BenchmarkConfig,
@@ -744,17 +757,7 @@ async def scenario_worker(
 
                     req_headers = dict(base_headers)
                     req_headers.update(step.headers)
-
-                    body = None
-                    if step.body is not None:
-                        if isinstance(step.body, dict):
-                            body = json.dumps(step.body).encode()
-                            if "Content-Type" not in req_headers:
-                                req_headers["Content-Type"] = "application/json"
-                        elif isinstance(step.body, str):
-                            body = step.body.encode()
-                        else:
-                            body = step.body
+                    body = _prepare_step_body(step.body, req_headers)
 
                     step_name = step.name or f"{step.method} {step.path}"
 
@@ -828,6 +831,101 @@ async def show_progress(
 
 
 # ---------------------------------------------------------------------------
+# Shared runner helpers
+# ---------------------------------------------------------------------------
+
+
+def _setup_signal_handlers(stop_event: asyncio.Event) -> None:
+    """Register SIGINT/SIGTERM handlers that set the stop event."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_event.set)
+
+
+def _create_rate_limiter(config: BenchmarkConfig, duration: float | None) -> RateLimiter | None:
+    """Create a rate limiter from config, or None if rate limiting is disabled."""
+    if config.rate is None:
+        return None
+    ramp_duration = duration if config.rate_ramp is not None else None
+    return RateLimiter(
+        rate=config.rate,
+        end_rate=config.rate_ramp,
+        ramp_duration=ramp_duration,
+        traffic_profile=config.traffic_profile,
+        duration=duration,
+    )
+
+
+def _create_progress_task(
+    config: BenchmarkConfig,
+    all_stats: list[WorkerStats],
+    start_time: float,
+    stop_event: asyncio.Event,
+    *,
+    duration: float | None = None,
+    num_requests: int | None = None,
+    active_users: dict | None = None,
+    quiet: bool = False,
+) -> asyncio.Task:
+    """Create the progress display or live dashboard task."""
+    if quiet:
+
+        async def _wait_stop(stop):
+            await stop.wait()
+
+        return asyncio.create_task(_wait_stop(stop_event))
+
+    if config.live_dashboard and _reporting.RICH_AVAILABLE:
+        dashboard = LiveDashboard(all_stats, config, start_time, active_users)
+        return asyncio.create_task(dashboard.run(stop_event))
+
+    if config.live_dashboard and not _reporting.RICH_AVAILABLE:
+        logger.warning("--live requires 'rich' package. Install with: pip install pywrkr[tui]")
+        logger.warning("Falling back to standard progress display.")
+
+    return asyncio.create_task(
+        show_progress(start_time, duration, num_requests, all_stats, stop_event, active_users)
+    )
+
+
+async def _finalize_run(
+    tasks: list[asyncio.Task],
+    stop_event: asyncio.Event,
+    progress_task: asyncio.Task,
+    connector: aiohttp.TCPConnector,
+    all_stats: list[WorkerStats],
+    start_time: float,
+    config: BenchmarkConfig,
+    rate_limiter: RateLimiter | None,
+    concurrency: int,
+    *,
+    quiet: bool = False,
+) -> tuple[WorkerStats, int]:
+    """Await workers, merge stats, print results, and evaluate thresholds."""
+    await asyncio.gather(*tasks, return_exceptions=True)
+    stop_event.set()
+    await progress_task
+    await connector.close()
+
+    end_time = time.monotonic()
+    actual_duration = end_time - start_time
+    merged = _merge_all_stats(all_stats)
+
+    if not quiet:
+        print_results(merged, actual_duration, concurrency, start_time, config, rate_limiter)
+
+    exit_code = 0
+    if config.thresholds:
+        th_results = evaluate_thresholds(config.thresholds, merged, actual_duration)
+        if not quiet:
+            print_threshold_results(th_results, file=sys.stdout)
+        if any(not passed for _, _, passed in th_results):
+            exit_code = 2
+
+    return merged, exit_code
+
+
+# ---------------------------------------------------------------------------
 # Main benchmark runner
 # ---------------------------------------------------------------------------
 
@@ -884,22 +982,9 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     logger.info("")
 
     stop_event = asyncio.Event()
+    _setup_signal_handlers(stop_event)
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_event.set)
-
-    # Create rate limiter if requested (shared across all workers)
-    rate_limiter: RateLimiter | None = None
-    if config.rate is not None:
-        ramp_duration = config.duration if config.rate_ramp is not None else None
-        rate_limiter = RateLimiter(
-            rate=config.rate,
-            end_rate=config.rate_ramp,
-            ramp_duration=ramp_duration,
-            traffic_profile=config.traffic_profile,
-            duration=config.duration,
-        )
+    rate_limiter = _create_rate_limiter(config, config.duration)
 
     # Distribute connections across worker groups
     conns_per_group = max(1, config.connections // config.threads)
@@ -915,8 +1000,6 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     start_time = time.monotonic()
     ssl_ctx = _create_ssl_context(config)
 
-    # Share a single TCPConnector across all worker groups for efficient
-    # connection reuse.  The total pool limit equals the requested concurrency.
     connector = aiohttp.TCPConnector(
         limit=config.connections,
         ssl=ssl_ctx,
@@ -955,40 +1038,26 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
                     )
                 )
 
-    if config.live_dashboard and _reporting.RICH_AVAILABLE:
-        dashboard = LiveDashboard(all_stats, config, start_time)
-        progress_task = asyncio.create_task(dashboard.run(stop_event))
-    else:
-        if config.live_dashboard and not _reporting.RICH_AVAILABLE:
-            logger.warning("--live requires 'rich' package. Install with: pip install pywrkr[tui]")
-            logger.warning("Falling back to standard progress display.")
-        progress_task = asyncio.create_task(
-            show_progress(start_time, config.duration, config.num_requests, all_stats, stop_event)
-        )
+    progress_task = _create_progress_task(
+        config,
+        all_stats,
+        start_time,
+        stop_event,
+        duration=config.duration,
+        num_requests=config.num_requests,
+    )
 
-    await asyncio.gather(*tasks, return_exceptions=True)
-    stop_event.set()
-    await progress_task
-
-    # Clean up the shared connector
-    await connector.close()
-
-    end_time = time.monotonic()
-    actual_duration = end_time - start_time
-
-    merged = _merge_all_stats(all_stats)
-
-    print_results(merged, actual_duration, config.connections, start_time, config, rate_limiter)
-
-    # Evaluate SLO thresholds
-    exit_code = 0
-    if config.thresholds:
-        th_results = evaluate_thresholds(config.thresholds, merged, actual_duration)
-        print_threshold_results(th_results, file=sys.stdout)
-        if any(not passed for _, _, passed in th_results):
-            exit_code = 2
-
-    return merged, exit_code
+    return await _finalize_run(
+        tasks,
+        stop_event,
+        progress_task,
+        connector,
+        all_stats,
+        start_time,
+        config,
+        rate_limiter,
+        config.connections,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1046,22 +1115,9 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         logger.info("")
 
     stop_event = asyncio.Event()
+    _setup_signal_handlers(stop_event)
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_event.set)
-
-    # Create rate limiter if requested (shared across all user workers)
-    rate_limiter: RateLimiter | None = None
-    if config.rate is not None:
-        ramp_duration = duration if config.rate_ramp is not None else None
-        rate_limiter = RateLimiter(
-            rate=config.rate,
-            end_rate=config.rate_ramp,
-            ramp_duration=ramp_duration,
-            traffic_profile=config.traffic_profile,
-            duration=duration,
-        )
+    rate_limiter = _create_rate_limiter(config, duration)
 
     ssl_ctx = _create_ssl_context(config)
 
@@ -1084,22 +1140,15 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
     # Ramp-up: stagger user launches
     ramp_delay = config.ramp_up / num_users if config.ramp_up > 0 and num_users > 1 else 0
 
-    if quiet:
-        # In quiet mode, create a minimal stop-waiter instead of progress display
-        async def _wait_stop(stop):
-            await stop.wait()
-
-        progress_task = asyncio.create_task(_wait_stop(stop_event))
-    elif config.live_dashboard and _reporting.RICH_AVAILABLE:
-        dashboard = LiveDashboard(all_stats, config, start_time, active_users)
-        progress_task = asyncio.create_task(dashboard.run(stop_event))
-    else:
-        if config.live_dashboard and not _reporting.RICH_AVAILABLE:
-            logger.warning("--live requires 'rich' package. Install with: pip install pywrkr[tui]")
-            logger.warning("Falling back to standard progress display.")
-        progress_task = asyncio.create_task(
-            show_progress(start_time, duration, None, all_stats, stop_event, active_users)
-        )
+    progress_task = _create_progress_task(
+        config,
+        all_stats,
+        start_time,
+        stop_event,
+        duration=duration,
+        active_users=active_users,
+        quiet=quiet,
+    )
 
     for i in range(num_users):
         if stop_event.is_set():
@@ -1123,29 +1172,18 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         if ramp_delay > 0 and i < num_users - 1:
             await asyncio.sleep(ramp_delay)
 
-    await asyncio.gather(*tasks, return_exceptions=True)
-    stop_event.set()
-    await progress_task
-    await connector.close()
-
-    end_time = time.monotonic()
-    actual_duration = end_time - start_time
-
-    merged = _merge_all_stats(all_stats)
-
-    if not quiet:
-        print_results(merged, actual_duration, num_users, start_time, config, rate_limiter)
-
-    # Evaluate SLO thresholds
-    exit_code = 0
-    if config.thresholds:
-        th_results = evaluate_thresholds(config.thresholds, merged, actual_duration)
-        if not quiet:
-            print_threshold_results(th_results, file=sys.stdout)
-        if any(not passed for _, _, passed in th_results):
-            exit_code = 2
-
-    return merged, exit_code
+    return await _finalize_run(
+        tasks,
+        stop_event,
+        progress_task,
+        connector,
+        all_stats,
+        start_time,
+        config,
+        rate_limiter,
+        num_users,
+        quiet=quiet,
+    )
 
 
 # ---------------------------------------------------------------------------

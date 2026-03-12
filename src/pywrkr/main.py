@@ -513,18 +513,12 @@ Examples:
     return parser
 
 
-def _parse_and_validate_args(
+def _validate_url_and_mode(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
-) -> tuple[BenchmarkConfig, argparse.Namespace]:
-    """Validate parsed CLI arguments and build a BenchmarkConfig.
-
-    Handles early-exit modes (worker), validates mutually exclusive options,
-    resolves defaults, and constructs the config object. Returns both the
-    config and the raw namespace (needed by _determine_and_run_mode for
-    mode-specific fields like autofind thresholds and distributed bind/port).
-    """
-    # --- Early exit: worker mode connects to a master and needs no URL ---
+) -> None:
+    """Validate URL, worker/master mode, and mutually exclusive options."""
+    # Early exit: worker mode connects to a master and needs no URL
     if args.worker is not None:
         if ":" not in args.worker:
             parser.error("--worker requires HOST:PORT format (e.g. --worker 192.168.1.1:9220)")
@@ -536,26 +530,25 @@ def _parse_and_validate_args(
         asyncio.run(run_worker_node(host, w_port))
         sys.exit(0)
 
-    # --- Multi-URL mode: URLs come from a file, positional url is optional ---
+    # Multi-URL mode: URLs come from a file
     if args.url_file is not None:
         try:
-            url_entries = load_url_file(args.url_file)
+            load_url_file(args.url_file)
         except (FileNotFoundError, ValueError) as e:
             parser.error(str(e))
-        # Validate every URL in the file has a supported scheme
-        for entry in url_entries:
+        for entry in load_url_file(args.url_file):
             p = urlparse(entry.url)
             if p.scheme not in ("http", "https"):
                 parser.error(f"Invalid URL scheme in url-file: {entry.url}")
 
-    # --- Master mode needs both a URL and a worker count ---
+    # Master mode needs both a URL and a worker count
     if args.master:
         if args.expect_workers is None or args.expect_workers < 1:
             parser.error("--master requires --expect-workers N (N >= 1)")
         if args.url is None:
             parser.error("--master requires a target URL")
 
-    # --- URL is required for all remaining modes ---
+    # URL is required for all remaining modes
     if args.url is None and args.url_file is None:
         parser.error("the following arguments are required: url (or --url-file)")
 
@@ -564,9 +557,12 @@ def _parse_and_validate_args(
         if parsed.scheme not in ("http", "https"):
             parser.error(f"Invalid URL scheme: {parsed.scheme}. Use http:// or https://")
 
-    # --- Validate mutually exclusive mode options ---
-    # Three modes: autofind (manages its own load), user simulation (-u),
-    # and standard benchmark (-n or -d). Only one may be active.
+
+def _validate_load_params(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> float | None:
+    """Validate load mode options and return effective duration."""
     if args.autofind:
         if args.max_users <= args.start_users:
             parser.error(
@@ -576,7 +572,6 @@ def _parse_and_validate_args(
         if args.step_multiplier <= 1.0:
             parser.error(f"--step-multiplier ({args.step_multiplier}) must be greater than 1.0")
     elif args.users is not None:
-        # User simulation requires duration, not request count
         if args.num_requests is not None:
             parser.error("Cannot use -n with -u (user simulation). Use -d for duration.")
         if args.duration is None:
@@ -584,11 +579,9 @@ def _parse_and_validate_args(
     elif args.num_requests is not None and args.duration is not None:
         parser.error("Cannot use both -n (request count) and -d (duration). Pick one.")
 
-    # --- Validate rate and ramp-up ---
     if args.rate is not None and args.rate <= 0:
         parser.error("--rate must be greater than 0")
 
-    # Fall back to default duration when no load parameter is specified
     duration = args.duration
     if args.users is None and args.num_requests is None and duration is None:
         duration = DEFAULT_DURATION
@@ -596,32 +589,53 @@ def _parse_and_validate_args(
     if args.ramp_up and duration is not None and args.ramp_up >= duration:
         parser.error(f"--ramp-up ({args.ramp_up}s) must be less than duration ({duration}s)")
 
-    # --- Resolve request body: file takes precedence over inline string ---
-    body = None
+    return duration
+
+
+def _validate_rate_and_traffic(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    config: BenchmarkConfig,
+) -> None:
+    """Validate rate limiting and traffic profile cross-field constraints."""
+    if config.rate_ramp is not None and config.rate is None:
+        parser.error("--rate-ramp requires --rate")
+    if config.rate_ramp is not None and config.duration is None:
+        parser.error("--rate-ramp requires -d (duration)")
+
+    if args.traffic_profile is not None:
+        if config.rate is None:
+            parser.error("--traffic-profile requires --rate (used as base/peak rate)")
+        if config.duration is None:
+            parser.error("--traffic-profile requires -d (duration)")
+        if config.rate_ramp is not None:
+            parser.error("--traffic-profile cannot be combined with --rate-ramp")
+        try:
+            config.traffic_profile = parse_traffic_profile(args.traffic_profile)
+        except (ValueError, FileNotFoundError, OSError) as e:
+            parser.error(f"Invalid --traffic-profile: {e}")
+
+
+def _resolve_body(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> bytes | None:
+    """Resolve request body from --post-file or --body."""
     if args.post_file:
         if not os.path.isfile(args.post_file):
             parser.error(f"Post file not found: {args.post_file}")
         with open(args.post_file, "rb") as f:
-            body = f.read()
+            return f.read()
     elif args.body:
-        body = args.body.encode()
+        return args.body.encode()
+    return None
 
-    # --- Load scenario file (JSON or YAML) if provided ---
-    scenario = None
-    if hasattr(args, "scenario") and args.scenario:
-        scenario = load_scenario(args.scenario)
 
-    headers = dict(args.headers)
-    keepalive = not args.no_keepalive
-
-    # --- Build SSL config from CLI args + environment ---
-    env_ssl = SSLConfig.from_env()
-    ssl_config = SSLConfig(
-        verify=args.ssl_verify or env_ssl.verify,
-        ca_bundle=args.ca_bundle or env_ssl.ca_bundle,
-    )
-
-    # --- Parse structured CLI values that need validation ---
+def _parse_tags_and_thresholds(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> tuple[dict[str, str], list[Threshold]]:
+    """Parse and validate --tag and --threshold CLI values."""
     tags: dict[str, str] = {}
     for tag_str in args.tags:
         if "=" not in tag_str:
@@ -636,7 +650,37 @@ def _parse_and_validate_args(
         except ValueError as e:
             parser.error(str(e))
 
-    # --- Build config; traffic_profile is set after cross-field validation ---
+    return tags, thresholds
+
+
+def _parse_and_validate_args(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> tuple[BenchmarkConfig, argparse.Namespace]:
+    """Validate parsed CLI arguments and build a BenchmarkConfig.
+
+    Delegates to focused sub-validators, then constructs the config object.
+    Returns both the config and the raw namespace (needed by
+    _determine_and_run_mode for mode-specific fields).
+    """
+    _validate_url_and_mode(parser, args)
+
+    duration = _validate_load_params(parser, args)
+    body = _resolve_body(parser, args)
+    tags, thresholds = _parse_tags_and_thresholds(parser, args)
+
+    # Load scenario file (JSON or YAML) if provided
+    scenario = None
+    if hasattr(args, "scenario") and args.scenario:
+        scenario = load_scenario(args.scenario)
+
+    # Build SSL config from CLI args + environment
+    env_ssl = SSLConfig.from_env()
+    ssl_config = SSLConfig(
+        verify=args.ssl_verify or env_ssl.verify,
+        ca_bundle=args.ca_bundle or env_ssl.ca_bundle,
+    )
+
     config = BenchmarkConfig(
         url=args.url or "",
         connections=args.connections,
@@ -644,10 +688,10 @@ def _parse_and_validate_args(
         num_requests=args.num_requests,
         threads=args.threads,
         method=args.method.upper(),
-        headers=headers,
+        headers=dict(args.headers),
         body=body,
         timeout_sec=args.timeout,
-        keepalive=keepalive,
+        keepalive=not args.no_keepalive,
         ssl_config=ssl_config,
         basic_auth=args.basic_auth,
         cookies=args.cookies,
@@ -674,25 +718,7 @@ def _parse_and_validate_args(
         thresholds=thresholds,
     )
 
-    # --- Cross-field validation for rate limiting options ---
-    if config.rate_ramp is not None and config.rate is None:
-        parser.error("--rate-ramp requires --rate")
-    if config.rate_ramp is not None and config.duration is None:
-        parser.error("--rate-ramp requires -d (duration)")
-
-    # Traffic profile requires --rate as the base/peak rate and conflicts
-    # with --rate-ramp (they are alternative ways to shape load over time)
-    if args.traffic_profile is not None:
-        if config.rate is None:
-            parser.error("--traffic-profile requires --rate (used as base/peak rate)")
-        if config.duration is None:
-            parser.error("--traffic-profile requires -d (duration)")
-        if config.rate_ramp is not None:
-            parser.error("--traffic-profile cannot be combined with --rate-ramp")
-        try:
-            config.traffic_profile = parse_traffic_profile(args.traffic_profile)
-        except (ValueError, FileNotFoundError, OSError) as e:
-            parser.error(f"Invalid --traffic-profile: {e}")
+    _validate_rate_and_traffic(parser, args, config)
 
     # Scenario mode defaults to 10s if no duration/count is specified
     if (
