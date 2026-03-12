@@ -14,9 +14,9 @@ from pywrkr.config import (
     DEFAULT_TIMEOUT,
     BenchmarkConfig,
     LatencyBreakdown,
-    SSLConfig,
     Scenario,
     ScenarioStep,
+    SSLConfig,
     Threshold,
     WorkerStats,
 )
@@ -43,29 +43,46 @@ def _deserialize_ssl_config(data: dict | None) -> SSLConfig:
 
 
 def _serialize_threshold(th: Threshold) -> dict:
-    return {"metric": th.metric, "operator": th.operator, "value": th.value, "raw_expr": th.raw_expr}
+    return {
+        "metric": th.metric,
+        "operator": th.operator,
+        "value": th.value,
+        "raw_expr": th.raw_expr,
+    }
 
 
 def _deserialize_threshold(data: dict) -> Threshold:
-    return Threshold(metric=data["metric"], operator=data["operator"],
-                     value=data["value"], raw_expr=data["raw_expr"])
+    return Threshold(
+        metric=data["metric"],
+        operator=data["operator"],
+        value=data["value"],
+        raw_expr=data["raw_expr"],
+    )
 
 
 def _serialize_scenario_step(step: ScenarioStep) -> dict:
     return {
-        "path": step.path, "method": step.method, "body": step.body,
-        "headers": dict(step.headers), "assert_status": step.assert_status,
+        "path": step.path,
+        "method": step.method,
+        "body": step.body,
+        "headers": dict(step.headers),
+        "assert_status": step.assert_status,
         "assert_body_contains": step.assert_body_contains,
-        "think_time": step.think_time, "name": step.name,
+        "think_time": step.think_time,
+        "name": step.name,
     }
 
 
 def _deserialize_scenario_step(data: dict) -> ScenarioStep:
     return ScenarioStep(
-        path=data["path"], method=data.get("method", "GET"), body=data.get("body"),
-        headers=data.get("headers", {}), assert_status=data.get("assert_status"),
+        path=data["path"],
+        method=data.get("method", "GET"),
+        body=data.get("body"),
+        headers=data.get("headers", {}),
+        assert_status=data.get("assert_status"),
         assert_body_contains=data.get("assert_body_contains"),
-        think_time=data.get("think_time"), name=data.get("name"),
+        think_time=data.get("think_time"),
+        name=data.get("name"),
     )
 
 
@@ -186,8 +203,14 @@ def _serialize_stats(stats: WorkerStats) -> dict:
         # Previously missing:
         "step_latencies": {k: v for k, v in stats.step_latencies.items()},
         "breakdowns": [
-            {"dns": b.dns, "connect": b.connect, "tls": b.tls,
-             "ttfb": b.ttfb, "transfer": b.transfer, "is_reused": b.is_reused}
+            {
+                "dns": b.dns,
+                "connect": b.connect,
+                "tls": b.tls,
+                "ttfb": b.ttfb,
+                "transfer": b.transfer,
+                "is_reused": b.is_reused,
+            }
             for b in stats.breakdowns
         ],
         "breakdowns_total_seen": getattr(stats.breakdowns, "total_seen", len(stats.breakdowns)),
@@ -197,6 +220,7 @@ def _serialize_stats(stats: WorkerStats) -> dict:
 def _deserialize_stats(data: dict) -> WorkerStats:
     """Deserialize a dict back into WorkerStats."""
     from pywrkr.config import ReservoirSampler
+
     ws = WorkerStats()
     ws.total_requests = data.get("total_requests", 0)
     ws.total_bytes = data.get("total_bytes", 0)
@@ -215,11 +239,16 @@ def _deserialize_stats(data: dict) -> WorkerStats:
         ws.step_latencies[k] = v
     bd_items = []
     for b in data.get("breakdowns", []):
-        bd_items.append(LatencyBreakdown(
-            dns=b.get("dns", 0.0), connect=b.get("connect", 0.0),
-            tls=b.get("tls", 0.0), ttfb=b.get("ttfb", 0.0),
-            transfer=b.get("transfer", 0.0), is_reused=b.get("is_reused", False),
-        ))
+        bd_items.append(
+            LatencyBreakdown(
+                dns=b.get("dns", 0.0),
+                connect=b.get("connect", 0.0),
+                tls=b.get("tls", 0.0),
+                ttfb=b.get("ttfb", 0.0),
+                transfer=b.get("transfer", 0.0),
+                is_reused=b.get("is_reused", False),
+            )
+        )
     bd_seen = data.get("breakdowns_total_seen", len(bd_items))
     ws.breakdowns = ReservoirSampler.from_list(bd_items, total_seen=bd_seen)
     return ws

@@ -5,12 +5,12 @@ import statistics
 import unittest
 
 from pywrkr.config import (
+    DEFAULT_MAX_ERROR_TYPES,
+    DEFAULT_RESERVOIR_SIZE,
     CappedErrorDict,
     LatencyBreakdown,
     ReservoirSampler,
     WorkerStats,
-    DEFAULT_MAX_ERROR_TYPES,
-    DEFAULT_RESERVOIR_SIZE,
 )
 
 

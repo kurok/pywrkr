@@ -433,6 +433,7 @@ class TestDistributedSerialization(unittest.TestCase):
     def test_config_round_trip_all_fields(self):
         """Verify all config fields survive serialization round-trip."""
         from pywrkr.config import Scenario, ScenarioStep, Threshold
+
         config = BenchmarkConfig(
             url="http://example.com/api",
             connections=50,
@@ -461,12 +462,23 @@ class TestDistributedSerialization(unittest.TestCase):
             otel_endpoint="http://otel:4318",
             prom_remote_write="http://prom:9090/write",
             thresholds=[Threshold(metric="p95", operator="<", value=0.3, raw_expr="p95 < 300ms")],
-            scenario=Scenario(name="Test", think_time=1.5, steps=[
-                ScenarioStep(path="/api/v1", method="GET", name="List items"),
-                ScenarioStep(path="/api/v1", method="POST", body={"key": "val"},
-                             headers={"X-Step": "1"}, assert_status=201,
-                             assert_body_contains="created", think_time=0.5, name="Create item"),
-            ]),
+            scenario=Scenario(
+                name="Test",
+                think_time=1.5,
+                steps=[
+                    ScenarioStep(path="/api/v1", method="GET", name="List items"),
+                    ScenarioStep(
+                        path="/api/v1",
+                        method="POST",
+                        body={"key": "val"},
+                        headers={"X-Step": "1"},
+                        assert_status=201,
+                        assert_body_contains="created",
+                        think_time=0.5,
+                        name="Create item",
+                    ),
+                ],
+            ),
             html_report="/tmp/report.html",
             csv_output="/tmp/out.csv",
             json_output="/tmp/out.json",
@@ -548,6 +560,7 @@ class TestDistributedSerialization(unittest.TestCase):
     def test_stats_round_trip_all_fields(self):
         """Verify step_latencies, breakdowns, and error_types survive round-trip."""
         from pywrkr.config import LatencyBreakdown
+
         ws = WorkerStats()
         ws.total_requests = 100
         ws.total_bytes = 50000
@@ -562,8 +575,12 @@ class TestDistributedSerialization(unittest.TestCase):
         ws.step_latencies["GET /api"].extend([0.1, 0.15])
         ws.step_latencies["POST /api"].extend([0.2])
         ws.breakdowns = [
-            LatencyBreakdown(dns=0.01, connect=0.02, tls=0.03, ttfb=0.05, transfer=0.01, is_reused=False),
-            LatencyBreakdown(dns=0.0, connect=0.0, tls=0.0, ttfb=0.03, transfer=0.005, is_reused=True),
+            LatencyBreakdown(
+                dns=0.01, connect=0.02, tls=0.03, ttfb=0.05, transfer=0.01, is_reused=False
+            ),
+            LatencyBreakdown(
+                dns=0.0, connect=0.0, tls=0.0, ttfb=0.03, transfer=0.005, is_reused=True
+            ),
         ]
 
         serialized = pywrkr._serialize_stats(ws)
@@ -683,7 +700,7 @@ class TestMultiUrlConfigCloning(unittest.TestCase):
 
     def test_all_config_fields_preserved(self):
         """Verify dataclasses.replace() preserves all BenchmarkConfig fields."""
-        from dataclasses import fields, replace
+        from dataclasses import replace
 
         base = BenchmarkConfig(
             url="http://original.com",
