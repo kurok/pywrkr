@@ -1,12 +1,11 @@
-from __future__ import annotations
-
 """Traffic shaping profiles and rate limiter for pywrkr."""
+
+from __future__ import annotations
 
 import asyncio
 import csv
 import math
 import time
-
 
 # ---------------------------------------------------------------------------
 # Traffic profiles -- advanced traffic shaping
@@ -89,7 +88,7 @@ class StepProfile(TrafficProfile):
         return self.levels[idx]
 
     def describe(self) -> str:
-        return f"step (levels={','.join(f'{l:.0f}' for l in self.levels)})"
+        return f"step (levels={','.join(f'{lv:.0f}' for lv in self.levels)})"
 
 
 class SawtoothProfile(TrafficProfile):
@@ -153,8 +152,13 @@ class SpikeProfile(TrafficProfile):
 
     name = "spike"
 
-    def __init__(self, interval: float = 10.0, spike_dur: float = 2.0,
-                 multiplier: float = 5.0, baseline: float = 0.2):
+    def __init__(
+        self,
+        interval: float = 10.0,
+        spike_dur: float = 2.0,
+        multiplier: float = 5.0,
+        baseline: float = 0.2,
+    ):
         if interval <= 0:
             raise ValueError(
                 f"SpikeProfile interval must be greater than 0, got {interval}"
@@ -173,8 +177,10 @@ class SpikeProfile(TrafficProfile):
         return base_rate * self.baseline
 
     def describe(self) -> str:
-        return (f"spike (interval={self.interval}s, dur={self.spike_dur}s, "
-                f"x{self.multiplier}, baseline={self.baseline:.0%})")
+        return (
+            f"spike (interval={self.interval}s, dur={self.spike_dur}s, "
+            f"x{self.multiplier}, baseline={self.baseline:.0%})"
+        )
 
 
 class BusinessHoursProfile(TrafficProfile):
@@ -367,6 +373,7 @@ def parse_traffic_profile(spec: str) -> TrafficProfile:
 # Rate limiter
 # ---------------------------------------------------------------------------
 
+
 class RateLimiter:
     """Token-bucket-style rate limiter that distributes requests evenly over time.
 
@@ -387,7 +394,6 @@ class RateLimiter:
         self.ramp_duration = ramp_duration
         self.traffic_profile = traffic_profile
         self.duration = duration or 0.0
-        self._lock = asyncio.Lock()
         self._start_time: float | None = None
         self._last_time: float = 0.0
         self.waits: int = 0  # how many times we actually slept
@@ -417,21 +423,29 @@ class RateLimiter:
 
         Uses a token bucket approach: calculates the required interval between
         requests based on the current rate, and sleeps if the next request
-        would arrive too early. Thread-safe via asyncio.Lock.
-        """
-        async with self._lock:
-            now = time.monotonic()
-            if self._start_time is None:
-                self._start_time = now
-                self._last_time = now
-                return
+        would arrive too early.
 
-            rate = self._current_rate(now)
-            if rate <= 0:
-                return
-            interval = 1.0 / rate
-            wait = self._last_time + interval - now
-            if wait > 0:
-                self.waits += 1
-                await asyncio.sleep(wait)
-            self._last_time = time.monotonic()
+        Since asyncio runs in a single thread, state updates between await
+        points are atomic -- no lock is needed.  The scheduled send time
+        (``_last_time``) is advanced *before* sleeping so that concurrent
+        coroutines each claim their own time slot without contention.
+        """
+        now = time.monotonic()
+        if self._start_time is None:
+            self._start_time = now
+            self._last_time = now
+            return
+
+        rate = self._current_rate(now)
+        if rate <= 0:
+            return
+        interval = 1.0 / rate
+        target = self._last_time + interval
+        # Reserve our slot immediately so the next caller gets the
+        # slot after ours -- this is safe without a lock because
+        # there is no await between the read and the write.
+        self._last_time = max(target, now)
+        wait = target - now
+        if wait > 0:
+            self.waits += 1
+            await asyncio.sleep(wait)

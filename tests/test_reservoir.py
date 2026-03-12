@@ -5,12 +5,12 @@ import statistics
 import unittest
 
 from pywrkr.config import (
+    DEFAULT_MAX_ERROR_TYPES,
+    DEFAULT_RESERVOIR_SIZE,
     CappedErrorDict,
     LatencyBreakdown,
     ReservoirSampler,
     WorkerStats,
-    DEFAULT_MAX_ERROR_TYPES,
-    DEFAULT_RESERVOIR_SIZE,
 )
 
 
@@ -101,9 +101,10 @@ class TestReservoirSampler(unittest.TestCase):
             if true_val > 0:
                 rel_err = abs(sample_val - true_val) / true_val
                 self.assertLess(
-                    rel_err, 0.02,
-                    f"p{int(pct*100)}: true={true_val:.6f}, sample={sample_val:.6f}, "
-                    f"rel_err={rel_err:.4f}"
+                    rel_err,
+                    0.02,
+                    f"p{int(pct * 100)}: true={true_val:.6f}, sample={sample_val:.6f}, "
+                    f"rel_err={rel_err:.4f}",
                 )
 
     def test_bool_truthiness(self):
