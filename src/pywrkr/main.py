@@ -331,7 +331,15 @@ def _parse_and_validate_args(
     # Three modes: autofind (manages its own load), user simulation (-u),
     # and standard benchmark (-n or -d). Only one may be active.
     if args.autofind:
-        pass  # autofind manages users/duration internally
+        if args.max_users <= args.start_users:
+            parser.error(
+                f"--max-users ({args.max_users}) must be greater than "
+                f"--start-users ({args.start_users})"
+            )
+        if args.step_multiplier <= 1.0:
+            parser.error(
+                f"--step-multiplier ({args.step_multiplier}) must be greater than 1.0"
+            )
     elif args.users is not None:
         # User simulation requires duration, not request count
         if args.num_requests is not None:
@@ -341,10 +349,17 @@ def _parse_and_validate_args(
     elif args.num_requests is not None and args.duration is not None:
         parser.error("Cannot use both -n (request count) and -d (duration). Pick one.")
 
+    # --- Validate rate and ramp-up ---
+    if args.rate is not None and args.rate <= 0:
+        parser.error("--rate must be greater than 0")
+
     # Fall back to default duration when no load parameter is specified
     duration = args.duration
     if args.users is None and args.num_requests is None and duration is None:
         duration = DEFAULT_DURATION
+
+    if args.ramp_up and duration is not None and args.ramp_up >= duration:
+        parser.error(f"--ramp-up ({args.ramp_up}s) must be less than duration ({duration}s)")
 
     # --- Resolve request body: file takes precedence over inline string ---
     body = None

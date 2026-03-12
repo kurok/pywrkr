@@ -41,6 +41,10 @@ class SineProfile(TrafficProfile):
     name = "sine"
 
     def __init__(self, cycles: float = 2.0, min_factor: float = 0.1):
+        if not (0 <= min_factor <= 1):
+            raise ValueError(
+                f"SineProfile min_factor must be between 0 and 1, got {min_factor}"
+            )
         self.cycles = cycles
         self.min_factor = min_factor
 
@@ -70,6 +74,11 @@ class StepProfile(TrafficProfile):
     def __init__(self, levels: list[float]):
         if not levels:
             raise ValueError("step profile requires at least one level")
+        for i, level in enumerate(levels):
+            if level < 0:
+                raise ValueError(
+                    f"StepProfile levels must be non-negative, got {level} at index {i}"
+                )
         self.levels = levels
 
     def rate_at(self, elapsed: float, duration: float, base_rate: float) -> float:
@@ -146,6 +155,10 @@ class SpikeProfile(TrafficProfile):
 
     def __init__(self, interval: float = 10.0, spike_dur: float = 2.0,
                  multiplier: float = 5.0, baseline: float = 0.2):
+        if interval <= 0:
+            raise ValueError(
+                f"SpikeProfile interval must be greater than 0, got {interval}"
+            )
         self.interval = interval
         self.spike_dur = spike_dur
         self.multiplier = multiplier
