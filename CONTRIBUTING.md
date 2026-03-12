@@ -17,7 +17,7 @@ git clone https://github.com/kurok/pywrkr.git
 cd pywrkr
 
 # Install in development mode with all extras
-pip install -e ".[dev,otel,tui]"
+pip install -e ".[dev,lint,otel,tui]"
 
 # Verify everything works
 pytest
@@ -67,9 +67,10 @@ pywrkr/
    ```bash
    pytest
    ```
-5. **Run the linter**:
+5. **Run the linter and formatter**:
    ```bash
-   flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+   ruff check .
+   ruff format --check .
    ```
 6. **Push** your branch and open a **Pull Request**
 

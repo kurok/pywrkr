@@ -649,8 +649,8 @@ pip install pywrkr[all]
 ## Development Setup
 
 ```bash
-# Install in editable mode with dev dependencies (pytest + pytest-xdist)
-pip install -e ".[dev]"
+# Install in editable mode with dev + lint dependencies
+pip install -e ".[dev,lint]"
 ```
 
 ## Testing
