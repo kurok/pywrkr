@@ -55,9 +55,7 @@ def _make_entry(
 
 def _write_har(har_dict):
     """Write a HAR dict to a temp file and return its path."""
-    f = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".har", delete=False, encoding="utf-8"
-    )
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".har", delete=False, encoding="utf-8")
     json.dump(har_dict, f)
     f.close()
     return f.name
@@ -67,11 +65,18 @@ class TestParseHar(unittest.TestCase):
     """Tests for parse_har()."""
 
     def test_parse_basic_har(self):
-        har = _make_har([
-            _make_entry(url="https://example.com/a", method="GET", status=200, time_ms=50),
-            _make_entry(url="https://example.com/b", method="POST", status=201, time_ms=100,
-                        post_data={"mimeType": "application/json", "text": '{"key": "val"}'}),
-        ])
+        har = _make_har(
+            [
+                _make_entry(url="https://example.com/a", method="GET", status=200, time_ms=50),
+                _make_entry(
+                    url="https://example.com/b",
+                    method="POST",
+                    status=201,
+                    time_ms=100,
+                    post_data={"mimeType": "application/json", "text": '{"key": "val"}'},
+                ),
+            ]
+        )
         path = _write_har(har)
         try:
             entries = parse_har(path)
@@ -133,9 +138,13 @@ class TestParseHar(unittest.TestCase):
             os.unlink(path)
 
     def test_parse_extracts_started_datetime(self):
-        har = _make_har([
-            _make_entry(url="https://example.com/a", started_datetime="2025-01-15T10:00:00.000Z"),
-        ])
+        har = _make_har(
+            [
+                _make_entry(
+                    url="https://example.com/a", started_datetime="2025-01-15T10:00:00.000Z"
+                ),
+            ]
+        )
         path = _write_har(har)
         try:
             entries = parse_har(path)
@@ -144,14 +153,16 @@ class TestParseHar(unittest.TestCase):
             os.unlink(path)
 
     def test_parse_extracts_headers(self):
-        har = _make_har([
-            _make_entry(
-                headers=[
-                    {"name": "Authorization", "value": "Bearer token123"},
-                    {"name": "Content-Type", "value": "application/json"},
-                ],
-            ),
-        ])
+        har = _make_har(
+            [
+                _make_entry(
+                    headers=[
+                        {"name": "Authorization", "value": "Bearer token123"},
+                        {"name": "Content-Type", "value": "application/json"},
+                    ],
+                ),
+            ]
+        )
         path = _write_har(har)
         try:
             entries = parse_har(path)
@@ -170,7 +181,9 @@ class TestFilterEntries(unittest.TestCase):
             HarEntry(url="https://api.example.com/orders", method="POST", status=201, time_ms=150),
             HarEntry(url="https://cdn.example.com/style.css", method="GET", status=200, time_ms=50),
             HarEntry(url="https://cdn.example.com/logo.png", method="GET", status=200, time_ms=30),
-            HarEntry(url="https://analytics.tracker.com/pixel", method="GET", status=200, time_ms=20),
+            HarEntry(
+                url="https://analytics.tracker.com/pixel", method="GET", status=200, time_ms=20
+            ),
         ]
 
     def test_default_filters_static(self):
@@ -193,6 +206,7 @@ class TestFilterEntries(unittest.TestCase):
         result = filter_entries(self._entries(), config)
         self.assertEqual(len(result), 2)
         from urllib.parse import urlparse
+
         self.assertTrue(all(urlparse(e.url).hostname == "api.example.com" for e in result))
 
     def test_exclude_pattern(self):
@@ -278,10 +292,18 @@ class TestHarToScenario(unittest.TestCase):
         # Entry 1 starts at T=0, takes 200ms, Entry 2 starts at T=500ms
         # Think time = 500ms - (0ms + 200ms) = 300ms = 0.3s
         entries = [
-            HarEntry(url="https://api.example.com/a", method="GET", time_ms=200,
-                     started_datetime="2025-01-15T10:00:00.000Z"),
-            HarEntry(url="https://api.example.com/b", method="GET", time_ms=100,
-                     started_datetime="2025-01-15T10:00:00.500Z"),
+            HarEntry(
+                url="https://api.example.com/a",
+                method="GET",
+                time_ms=200,
+                started_datetime="2025-01-15T10:00:00.000Z",
+            ),
+            HarEntry(
+                url="https://api.example.com/b",
+                method="GET",
+                time_ms=100,
+                started_datetime="2025-01-15T10:00:00.500Z",
+            ),
         ]
         config = HarImportConfig()
         scenario = har_to_scenario(entries, config)
@@ -313,10 +335,18 @@ class TestHarToScenario(unittest.TestCase):
     def test_think_time_multiplier(self):
         # With timestamps: gap = 2000ms - (0 + 1000ms) = 1000ms, * 0.5 = 500ms
         entries = [
-            HarEntry(url="https://api.example.com/a", method="GET", time_ms=1000,
-                     started_datetime="2025-01-15T10:00:00.000Z"),
-            HarEntry(url="https://api.example.com/b", method="GET", time_ms=100,
-                     started_datetime="2025-01-15T10:00:02.000Z"),
+            HarEntry(
+                url="https://api.example.com/a",
+                method="GET",
+                time_ms=1000,
+                started_datetime="2025-01-15T10:00:00.000Z",
+            ),
+            HarEntry(
+                url="https://api.example.com/b",
+                method="GET",
+                time_ms=100,
+                started_datetime="2025-01-15T10:00:02.000Z",
+            ),
         ]
         config = HarImportConfig(think_time_multiplier=0.5)
         scenario = har_to_scenario(entries, config)
@@ -379,8 +409,9 @@ class TestComputeThinkTimes(unittest.TestCase):
     """Tests for _compute_think_times() with timestamp-based calculation."""
 
     def test_single_entry(self):
-        entries = [HarEntry(url="https://a.com/", time_ms=100,
-                            started_datetime="2025-01-15T10:00:00.000Z")]
+        entries = [
+            HarEntry(url="https://a.com/", time_ms=100, started_datetime="2025-01-15T10:00:00.000Z")
+        ]
         result = _compute_think_times(entries, 1.0)
         self.assertEqual(result, [0.0])
 
@@ -390,10 +421,12 @@ class TestComputeThinkTimes(unittest.TestCase):
     def test_overlapping_requests_clamps_to_zero(self):
         # Entry 2 starts before entry 1 finishes -> think time should be 0
         entries = [
-            HarEntry(url="https://a.com/1", time_ms=500,
-                     started_datetime="2025-01-15T10:00:00.000Z"),
-            HarEntry(url="https://a.com/2", time_ms=100,
-                     started_datetime="2025-01-15T10:00:00.200Z"),
+            HarEntry(
+                url="https://a.com/1", time_ms=500, started_datetime="2025-01-15T10:00:00.000Z"
+            ),
+            HarEntry(
+                url="https://a.com/2", time_ms=100, started_datetime="2025-01-15T10:00:00.200Z"
+            ),
         ]
         result = _compute_think_times(entries, 1.0)
         self.assertEqual(result[0], 0.0)
@@ -404,12 +437,15 @@ class TestComputeThinkTimes(unittest.TestCase):
         # Entry 2: starts T=300ms -> gap = 200ms
         # Entry 3: starts T=500ms, entry 2 duration=50ms -> ends T=350ms -> gap = 150ms
         entries = [
-            HarEntry(url="https://a.com/1", time_ms=100,
-                     started_datetime="2025-01-15T10:00:00.000Z"),
-            HarEntry(url="https://a.com/2", time_ms=50,
-                     started_datetime="2025-01-15T10:00:00.300Z"),
-            HarEntry(url="https://a.com/3", time_ms=80,
-                     started_datetime="2025-01-15T10:00:00.500Z"),
+            HarEntry(
+                url="https://a.com/1", time_ms=100, started_datetime="2025-01-15T10:00:00.000Z"
+            ),
+            HarEntry(
+                url="https://a.com/2", time_ms=50, started_datetime="2025-01-15T10:00:00.300Z"
+            ),
+            HarEntry(
+                url="https://a.com/3", time_ms=80, started_datetime="2025-01-15T10:00:00.500Z"
+            ),
         ]
         result = _compute_think_times(entries, 1.0)
         self.assertEqual(result[0], 0.0)
@@ -418,20 +454,24 @@ class TestComputeThinkTimes(unittest.TestCase):
 
     def test_think_time_capped_at_30s(self):
         entries = [
-            HarEntry(url="https://a.com/1", time_ms=100,
-                     started_datetime="2025-01-15T10:00:00.000Z"),
-            HarEntry(url="https://a.com/2", time_ms=100,
-                     started_datetime="2025-01-15T10:01:00.000Z"),  # 60s gap
+            HarEntry(
+                url="https://a.com/1", time_ms=100, started_datetime="2025-01-15T10:00:00.000Z"
+            ),
+            HarEntry(
+                url="https://a.com/2", time_ms=100, started_datetime="2025-01-15T10:01:00.000Z"
+            ),  # 60s gap
         ]
         result = _compute_think_times(entries, 1.0)
         self.assertEqual(result[1], 30.0)
 
     def test_multiplier_applied(self):
         entries = [
-            HarEntry(url="https://a.com/1", time_ms=100,
-                     started_datetime="2025-01-15T10:00:00.000Z"),
-            HarEntry(url="https://a.com/2", time_ms=100,
-                     started_datetime="2025-01-15T10:00:01.100Z"),  # gap = 1000ms
+            HarEntry(
+                url="https://a.com/1", time_ms=100, started_datetime="2025-01-15T10:00:00.000Z"
+            ),
+            HarEntry(
+                url="https://a.com/2", time_ms=100, started_datetime="2025-01-15T10:00:01.100Z"
+            ),  # gap = 1000ms
         ]
         result = _compute_think_times(entries, 0.5)
         self.assertEqual(result[1], 0.5)  # 1.0s * 0.5 = 0.5s
@@ -469,11 +509,13 @@ class TestConvertHar(unittest.TestCase):
     """Tests for the high-level convert_har() function."""
 
     def setUp(self):
-        self.har = _make_har([
-            _make_entry(url="https://api.example.com/users", method="GET", time_ms=100),
-            _make_entry(url="https://api.example.com/users/1", method="GET", time_ms=80),
-            _make_entry(url="https://cdn.example.com/style.css", method="GET", time_ms=50),
-        ])
+        self.har = _make_har(
+            [
+                _make_entry(url="https://api.example.com/users", method="GET", time_ms=100),
+                _make_entry(url="https://api.example.com/users/1", method="GET", time_ms=80),
+                _make_entry(url="https://cdn.example.com/style.css", method="GET", time_ms=50),
+            ]
+        )
         self.path = _write_har(self.har)
 
     def tearDown(self):
@@ -528,10 +570,12 @@ class TestHarImportCLI(unittest.TestCase):
 
     def test_cli_har_import_to_stdout(self):
         from pywrkr.main import _build_har_import_parser
+
         parser = _build_har_import_parser()
         har_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "examples", "sample-recording.har",
+            "examples",
+            "sample-recording.har",
         )
         args = parser.parse_args([har_path])
         self.assertEqual(args.har_file, har_path)
@@ -540,21 +584,31 @@ class TestHarImportCLI(unittest.TestCase):
 
     def test_cli_har_import_with_options(self):
         from pywrkr.main import _build_har_import_parser
+
         parser = _build_har_import_parser()
-        args = parser.parse_args([
-            "test.har",
-            "-o", "output.json",
-            "--format", "url-file",
-            "--include-static",
-            "--domain", "api.example.com",
-            "--domain", "web.example.com",
-            "--exclude", r"/analytics",
-            "--preserve-headers",
-            "--no-think-time",
-            "--think-time-multiplier", "0.5",
-            "--assert-status",
-            "--name", "My Test",
-        ])
+        args = parser.parse_args(
+            [
+                "test.har",
+                "-o",
+                "output.json",
+                "--format",
+                "url-file",
+                "--include-static",
+                "--domain",
+                "api.example.com",
+                "--domain",
+                "web.example.com",
+                "--exclude",
+                r"/analytics",
+                "--preserve-headers",
+                "--no-think-time",
+                "--think-time-multiplier",
+                "0.5",
+                "--assert-status",
+                "--name",
+                "My Test",
+            ]
+        )
         self.assertEqual(args.format, "url-file")
         self.assertEqual(args.output, "output.json")
         self.assertTrue(args.include_static)
@@ -573,7 +627,8 @@ class TestSampleHarFile(unittest.TestCase):
     def _sample_har_path(self):
         return os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "examples", "sample-recording.har",
+            "examples",
+            "sample-recording.har",
         )
 
     def test_parse_sample_har(self):
@@ -608,7 +663,7 @@ class TestSampleHarFile(unittest.TestCase):
         # GET requests don't have method prefix
         self.assertTrue(lines[0].startswith("https://"))
         # POST has method prefix
-        self.assertTrue(any(l.startswith("POST ") for l in lines))
+        self.assertTrue(any(line.startswith("POST ") for line in lines))
 
 
 if __name__ == "__main__":
