@@ -538,6 +538,34 @@ class TestDistributedSerialization(unittest.TestCase):
         self.assertTrue(d.html_output)
         self.assertTrue(d.live_dashboard)
 
+    def test_config_round_trip_field_completeness(self):
+        """Ensure _serialize_config covers every BenchmarkConfig field.
+
+        If a new field is added to BenchmarkConfig but not to
+        _serialize_config/_deserialize_config, this test will fail —
+        preventing silent data loss in distributed mode.
+        """
+        from dataclasses import fields
+
+        # Fields that are intentionally excluded from serialization:
+        # - _quiet: internal flag set by the deserializer itself
+        # - traffic_profile: runtime object, not serializable as-is
+        #   (rate limiter reconstructs it from rate/rate_ramp/duration)
+        EXCLUDED = {"_quiet", "traffic_profile"}
+
+        config_fields = {f.name for f in fields(BenchmarkConfig)} - EXCLUDED
+        serialized_keys = set(
+            pywrkr._serialize_config(BenchmarkConfig(url="http://localhost/")).keys()
+        )
+
+        missing = config_fields - serialized_keys
+        self.assertEqual(
+            missing,
+            set(),
+            f"BenchmarkConfig fields not in _serialize_config: {missing}. "
+            f"Add them to _serialize_config/_deserialize_config in distributed.py.",
+        )
+
     def test_stats_round_trip(self):
         ws = WorkerStats()
         ws.total_requests = 1000
