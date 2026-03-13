@@ -1,5 +1,7 @@
 """Worker functions and benchmark runners for pywrkr."""
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
@@ -12,6 +14,7 @@ import statistics
 import sys
 import time
 import uuid
+from typing import TypedDict
 from urllib.parse import urlparse
 
 import aiohttp
@@ -39,6 +42,94 @@ from pywrkr.reporting import (
 from pywrkr.traffic_profiles import RateLimiter
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+# Verbosity level tags used in log messages
+_V3_TAG = "[v3]"
+_V4_TAG = "[v4]"
+
+# Progress bar rendering
+_PROGRESS_BAR_WIDTH = 20
+_PROGRESS_FILLED_CHAR = "\u2588"
+_PROGRESS_EMPTY_CHAR = "\u2591"
+
+# Maximum number of unique step names tracked per WorkerStats.
+# Prevents unbounded memory growth from dynamic step names.
+_MAX_STEP_NAMES = 500
+
+
+# ---------------------------------------------------------------------------
+# TypedDict definitions for stricter dict typing
+# ---------------------------------------------------------------------------
+
+
+class RequestCounterDict(TypedDict):
+    """Typed dict for the shared request counter."""
+
+    remaining: int
+
+
+class ActiveUsersDict(TypedDict):
+    """Typed dict for the shared active users counter."""
+
+    count: int
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_progress_bar(current: float, total: float) -> tuple[str, float]:
+    """Build a text progress bar and return (bar_string, percentage).
+
+    Args:
+        current: Current progress value (e.g. elapsed time or completed requests).
+        total: Total target value.
+
+    Returns:
+        Tuple of (bar_string, percentage) where bar_string is a rendered
+        progress bar of ``_PROGRESS_BAR_WIDTH`` characters and percentage is
+        clamped to [0, 100].
+    """
+    pct = min(current / total * 100, 100.0) if total > 0 else 100.0
+    bar_filled = int(pct / 100 * _PROGRESS_BAR_WIDTH)
+    bar_empty = _PROGRESS_BAR_WIDTH - bar_filled
+    filled = _PROGRESS_FILLED_CHAR * bar_filled
+    empty = _PROGRESS_EMPTY_CHAR * bar_empty
+    return f"[{filled}{empty}]", pct
+
+
+def _normalize_config_duration(config: BenchmarkConfig) -> float | None:
+    """Return the effective duration from config, normalized early.
+
+    Centralizes the ``config.duration`` check so callers don't need to
+    repeat the conditional logic.
+    """
+    if config.duration is not None and config.duration > 0:
+        return config.duration
+    return None
+
+
+def _record_step_latency(
+    stats: WorkerStats, step_name: str, latency: float
+) -> None:
+    """Record a latency sample for a named step, with bounded keys.
+
+    If the number of unique step names exceeds ``_MAX_STEP_NAMES``, new
+    step names are folded into a catch-all ``[other steps]`` bucket to
+    prevent unbounded memory growth from dynamic step names.
+    """
+    if step_name in stats.step_latencies:
+        stats.step_latencies[step_name].append(latency)
+    elif len(stats.step_latencies) < _MAX_STEP_NAMES:
+        stats.step_latencies[step_name].append(latency)
+    else:
+        stats.step_latencies["[other steps]"].append(latency)
 
 
 # ---------------------------------------------------------------------------
@@ -91,24 +182,16 @@ class LiveDashboard:
         else:
             mode_str = f"{self.config.duration}s duration"
 
-        duration = self.config.duration
-        if duration and duration > 0:
-            pct = min(elapsed / duration * 100, 100.0)
-            bar_filled = int(pct / 100 * 20)
-            bar_empty = 20 - bar_filled
-            filled = "\u2588" * bar_filled
-            empty = "\u2591" * bar_empty
+        duration = _normalize_config_duration(self.config)
+        if duration is not None:
+            bar, pct = _build_progress_bar(elapsed, duration)
             progress_str = (
-                f"Elapsed: {elapsed:.1f}s / {duration:.1f}s  [{filled}{empty}] {pct:.1f}%"
+                f"Elapsed: {elapsed:.1f}s / {duration:.1f}s  {bar} {pct:.1f}%"
             )
         elif self.config.num_requests:
             total_n = self.config.num_requests
-            pct = min(total_req / total_n * 100, 100.0) if total_n > 0 else 100.0
-            bar_filled = int(pct / 100 * 20)
-            bar_empty = 20 - bar_filled
-            filled = "\u2588" * bar_filled
-            empty = "\u2591" * bar_empty
-            progress_str = f"Progress: {total_req}/{total_n}  [{filled}{empty}] {pct:.1f}%"
+            bar, pct = _build_progress_bar(total_req, total_n)
+            progress_str = f"Progress: {total_req}/{total_n}  {bar} {pct:.1f}%"
         else:
             progress_str = f"Elapsed: {elapsed:.1f}s"
 
@@ -204,6 +287,9 @@ def _merge_all_stats(all_stats: list[WorkerStats]) -> WorkerStats:
 
     Combines all counters, latencies, timelines, and breakdowns from
     multiple workers into one unified stats object.
+
+    Step latencies are bounded: unique step names are capped at
+    ``_MAX_STEP_NAMES`` to prevent unbounded memory growth.
     """
     merged = WorkerStats()
     for ws in all_stats:
@@ -218,8 +304,23 @@ def _merge_all_stats(all_stats: list[WorkerStats]) -> WorkerStats:
         for k, v in ws.status_codes.items():
             merged.status_codes[k] += v
         for k, v in ws.step_latencies.items():
+            # Enforce the cap on unique step names during merge
+            if k not in merged.step_latencies:
+                if len(merged.step_latencies) >= _MAX_STEP_NAMES:
+                    k = "[other steps]"
+                else:
+                    merged.step_latencies[k] = []
             merged.step_latencies[k].extend(v)
         merged.breakdowns.extend(ws.breakdowns)
+
+    logger.debug(
+        "Merged stats from %d workers: %d total requests, "
+        "%d latency samples, %d breakdown samples",
+        len(all_stats),
+        merged.total_requests,
+        len(merged.latencies),
+        len(merged.breakdowns),
+    )
     return merged
 
 
@@ -298,7 +399,11 @@ def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
     async def on_request_end(session, trace_ctx, params):
         ctx = trace_ctx.trace_request_ctx
         end = time.monotonic()
-        ctx.get("request_start", end)
+
+        # Defensive: if on_request_start never fired, skip breakdown
+        if ctx.get("request_start") is None:
+            logger.debug("Trace context missing 'request_start'; skipping breakdown")
+            return
 
         # DNS time
         dns = 0.0
@@ -310,12 +415,11 @@ def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
         if ctx.get("conn_start") is not None and ctx.get("conn_end") is not None:
             connect_total = ctx["conn_end"] - ctx["conn_start"]
 
-        # TLS is approximated as connect_total - pure TCP time
-        # Pure TCP is the portion before TLS starts; since aiohttp's
-        # connection_create spans TCP+TLS, and DNS is separate,
-        # we approximate: connect = TCP portion, tls = remainder
-        # A simple heuristic: if DNS was resolved (new connection), then
-        # tls = connect_total - dns_to_conn gap. For HTTP (no TLS), tls=0.
+        # NOTE: TLS time is an *estimate*.  aiohttp's connection_create
+        # callback spans TCP+TLS combined and does not provide a separate
+        # TLS-only signal.  The value reported here (currently 0.0) is a
+        # best-effort approximation; treat the ``tls`` field in
+        # LatencyBreakdown as ``tls_estimated`` in any analysis or reports.
         tls = 0.0
         tcp_connect = connect_total  # default: entire connect time is TCP
 
@@ -430,7 +534,7 @@ async def _execute_request(
     timeout: aiohttp.ClientTimeout,
     stats: WorkerStats,
     config: BenchmarkConfig,
-    trace_ctx: dict | None,
+    trace_ctx: dict[str, object] | None,
     expected_length_ref: list[int | None],
     step_name: str | None = None,
     assert_status: int | None = None,
@@ -469,7 +573,7 @@ async def _execute_request(
             stats.latencies.append(latency)
             stats.status_codes[resp.status] += 1
             if step_name:
-                stats.step_latencies[step_name].append(latency)
+                _record_step_latency(stats, step_name, latency)
 
             # Content-length verification (ab -l style)
             if config.verify_content_length:
@@ -503,11 +607,12 @@ async def _execute_request(
 
             if config.verbosity >= 4:
                 logger.debug(
-                    f"[v4] {method} {url} -> {resp.status} "
-                    f"({len(data)}B, {format_duration(latency)})"
+                    "%s %s %s -> %s (%dB, %s)",
+                    _V4_TAG, method, url, resp.status,
+                    len(data), format_duration(latency),
                 )
             elif config.verbosity >= 3:
-                logger.debug(f"[v3] {resp.status}")
+                logger.debug("%s %s", _V3_TAG, resp.status)
 
     except asyncio.CancelledError:
         result.cancelled = True
@@ -590,6 +695,7 @@ async def worker(
     Executes HTTP requests against the configured URL until the stop condition
     is met (duration elapsed, request count reached, or stop_event set).
     """
+    logger.debug("Worker starting (target=%s)", config.url)
     start_time = time.monotonic()
     interval_start = start_time
     interval_count = 0
@@ -646,6 +752,11 @@ async def worker(
         if interval_count > 0:
             stats.rps_timeline.append((interval_start, interval_count))
 
+    logger.debug(
+        "Worker finished: %d requests, %d errors",
+        stats.total_requests, stats.errors,
+    )
+
 
 async def user_worker(
     user_id: int,
@@ -658,6 +769,7 @@ async def user_worker(
     rate_limiter: RateLimiter | None = None,
 ) -> None:
     """Simulate a single virtual user with configurable think time."""
+    logger.debug("User %d starting", user_id)
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
     active_users.count += 1
@@ -704,6 +816,10 @@ async def user_worker(
                     break
     finally:
         active_users.count -= 1
+        logger.debug(
+            "User %d finished: %d requests, %d errors",
+            user_id, stats.total_requests, stats.errors,
+        )
 
 
 def _prepare_step_body(step_body, headers: dict) -> bytes | None:
@@ -730,6 +846,7 @@ async def scenario_worker(
     request_counter: RequestCounter | None = None,
 ) -> None:
     """Execute a scripted multi-step scenario in a loop."""
+    logger.debug("Scenario user %d starting", user_id)
     scenario = config.scenario
     if not scenario:
         return
@@ -741,7 +858,8 @@ async def scenario_worker(
 
     active_users.count += 1
     try:
-        async with aiohttp.ClientSession(connector=connector) as session:
+        session_kwargs = _build_session_kwargs(connector, config, stats)
+        async with aiohttp.ClientSession(**session_kwargs) as session:
             while not stop_event.is_set():
                 for step in scenario.steps:
                     if stop_event.is_set():
@@ -797,6 +915,10 @@ async def scenario_worker(
                         return
     finally:
         active_users.count -= 1
+        logger.debug(
+            "Scenario user %d finished: %d requests, %d errors",
+            user_id, stats.total_requests, stats.errors,
+        )
 
 
 async def show_progress(
@@ -820,13 +942,13 @@ async def show_progress(
             users_str = f" | {active_users.count:>5} users"
 
         if duration is not None:
-            pct = min(elapsed / duration * 100, 100)
+            _, pct = _build_progress_bar(elapsed, duration)
             sys.stdout.write(
                 f"\r  [{pct:5.1f}%] {total_req:>8} requests "
                 f"| {rps:>8.1f} req/s | {total_err} errors{users_str} "
             )
         elif total_requests is not None:
-            pct = min(total_req / total_requests * 100, 100) if total_requests > 0 else 100
+            _, pct = _build_progress_bar(total_req, total_requests)
             sys.stdout.write(
                 f"\r  [{pct:5.1f}%] {total_req:>8}/{total_requests} requests "
                 f"| {rps:>8.1f} req/s | {total_err} errors{users_str} "
@@ -910,6 +1032,8 @@ async def _finalize_run(
     """Await workers, merge stats, print results, and evaluate thresholds."""
     try:
         await asyncio.gather(*tasks, return_exceptions=True)
+        # Signal all workers to stop before accessing shared stats to avoid
+        # race conditions where a still-running worker mutates stats during merge.
         stop_event.set()
         await progress_task
     finally:
@@ -1015,10 +1139,13 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
         enable_cleanup_closed=True,
     )
 
+    # Log actual worker distribution across groups
+    group_sizes = []
     for i in range(config.threads):
         n_conns = conns_per_group + (1 if i < remainder else 0)
         if n_conns == 0:
             continue
+        group_sizes.append(n_conns)
 
         for j in range(n_conns):
             ws = WorkerStats()
@@ -1045,6 +1172,11 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
                         worker(config, ws, connector, stop_event, request_counter, rate_limiter)
                     )
                 )
+
+    logger.debug(
+        "Worker distribution: %d groups, sizes=%s, total=%d workers",
+        len(group_sizes), group_sizes, sum(group_sizes),
+    )
 
     progress_task = _create_progress_task(
         config,
@@ -1138,6 +1270,10 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         ssl=ssl_ctx,
         force_close=not config.keepalive,
         enable_cleanup_closed=True,
+    )
+    logger.debug(
+        "User simulation: %d users, pool_limit=%d",
+        num_users, pool_limit,
     )
 
     all_stats: list[WorkerStats] = []
