@@ -16,6 +16,7 @@ from pywrkr.reporting import (
     evaluate_thresholds,
     format_bytes,
     format_duration,
+    generate_gatling_html_report,
     parse_threshold,
     print_latency_histogram,
     print_multi_url_summary,
@@ -343,6 +344,60 @@ class TestExportMetrics(unittest.TestCase):
     def test_otel_names_are_explicit(self):
         for spec in _EXPORT_METRICS:
             self.assertTrue(spec.otel_name.startswith("pywrkr."))
+
+
+class TestGatlingHtmlReport(unittest.TestCase):
+    """Tests for generate_gatling_html_report."""
+
+    def _make_stats(self):
+        stats = WorkerStats()
+        stats.total_requests = 1000
+        stats.total_bytes = 500000
+        stats.errors = 10
+        stats.latencies.extend([0.05 + i * 0.001 for i in range(200)])
+        stats.status_codes[200] = 950
+        stats.status_codes[500] = 50
+        stats.rps_timeline = [(1000.0 + i, 10) for i in range(100)]
+        return stats
+
+    def test_returns_valid_html(self):
+        stats = self._make_stats()
+        config = BenchmarkConfig(url="http://localhost:8080/api", method="POST")
+        html = generate_gatling_html_report(stats, 10.0, 4, config, start_time=1000.0)
+        self.assertIn("<!DOCTYPE html>", html)
+        self.assertIn("</html>", html)
+        self.assertIn("pywrkr", html)
+
+    def test_contains_chart_data(self):
+        stats = self._make_stats()
+        config = BenchmarkConfig(url="http://localhost:8080/", method="GET")
+        html = generate_gatling_html_report(stats, 10.0, 4, config, start_time=1000.0)
+        self.assertIn("histChart", html)
+        self.assertIn("pctChart", html)
+        self.assertIn("rpsChart", html)
+        self.assertIn("scChart", html)
+
+    def test_contains_indicators(self):
+        stats = self._make_stats()
+        config = BenchmarkConfig(url="http://localhost:8080/", method="GET")
+        html = generate_gatling_html_report(stats, 10.0, 4, config, start_time=1000.0)
+        self.assertIn("Total Requests", html)
+        self.assertIn("1,000", html)
+        self.assertIn("Errors", html)
+
+    def test_escapes_html_in_url(self):
+        stats = self._make_stats()
+        config = BenchmarkConfig(url="http://example.com/<script>alert(1)</script>", method="GET")
+        html = generate_gatling_html_report(stats, 10.0, 4, config, start_time=1000.0)
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_empty_latencies(self):
+        stats = WorkerStats()
+        stats.total_requests = 0
+        config = BenchmarkConfig(url="http://localhost/", method="GET")
+        html = generate_gatling_html_report(stats, 0.0, 1, config, start_time=0.0)
+        self.assertIn("<!DOCTYPE html>", html)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,14 @@
 """Output formatting, reporting, and observability exports for pywrkr."""
 
 import csv
+import importlib.resources
 import json
 import math
 import re
 import statistics
 import sys
 from collections import defaultdict
+from string import Template
 from typing import NamedTuple, TextIO
 
 # Optional third-party imports
@@ -56,6 +58,17 @@ STATUS_COLOR_2XX = "rgba(76, 175, 80, 0.85)"
 STATUS_COLOR_3XX = "rgba(33, 150, 243, 0.85)"
 STATUS_COLOR_4XX = "rgba(255, 152, 0, 0.85)"
 STATUS_COLOR_5XX = "rgba(244, 67, 54, 0.85)"
+
+# ---------------------------------------------------------------------------
+# Template loader
+# ---------------------------------------------------------------------------
+
+
+def _load_template(name: str) -> Template:
+    """Load an HTML template from the templates package."""
+    ref = importlib.resources.files("pywrkr.templates").joinpath(name)
+    return Template(ref.read_text(encoding="utf-8"))
+
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -524,295 +537,70 @@ def generate_gatling_html_report(
 
     import json as _json
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>pywrkr Report &mdash; {_html_escape(url)}</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-<style>
-  :root {{
-    --bg: #1a1a2e; --surface: #16213e; --card: #0f3460;
-    --accent: #e94560; --green: #4caf50; --yellow: #ffc107;
-    --text: #eee; --muted: #999; --border: #234;
-  }}
-  * {{ margin:0; padding:0; box-sizing:border-box; }}
-  body {{ font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-         background: var(--bg); color: var(--text); padding: 0; }}
-  .header {{ background: linear-gradient(135deg, var(--surface), var(--card));
-             padding: 24px 32px; border-bottom: 3px solid var(--accent); }}
-  .header h1 {{ font-size: 1.6em; font-weight: 600; }}
-  .header h1 span {{ color: var(--accent); }}
-  .header .meta {{ color: var(--muted); font-size: 0.85em; margin-top: 6px; }}
-  .container {{ max-width: 1200px; margin: 0 auto; padding: 24px; }}
-  .indicators {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-                 gap: 16px; margin-bottom: 28px; }}
-  .indicator {{ background: var(--surface); border-radius: 10px; padding: 18px 20px;
-               border-left: 4px solid var(--accent); }}
-  .indicator .label {{ font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px;
-                       color: var(--muted); margin-bottom: 6px; }}
-  .indicator .value {{ font-size: 1.6em; font-weight: 700; }}
-  .indicator .value.green {{ color: var(--green); }}
-  .indicator .value.red {{ color: var(--accent); }}
-  .indicator .value.yellow {{ color: var(--yellow); }}
-  .charts {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 28px; }}
-  .chart-card {{ background: var(--surface); border-radius: 10px; padding: 20px; }}
-  .chart-card h3 {{ font-size: 0.95em; margin-bottom: 14px; color: var(--muted);
-                    text-transform: uppercase; letter-spacing: 0.5px; }}
-  .chart-card.full {{ grid-column: 1 / -1; }}
-  .errors-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-  .errors-table th, .errors-table td {{ padding: 8px 12px; text-align: left;
-                                        border-bottom: 1px solid var(--border); }}
-  .errors-table th {{ color: var(--muted); font-size: 0.8em; text-transform: uppercase; }}
-  .footer {{ text-align: center; padding: 20px; color: var(--muted); font-size: 0.8em; }}
-  .footer a {{ color: var(--accent); text-decoration: none; }}
-  @media (max-width: 768px) {{ .charts {{ grid-template-columns: 1fr; }} }}
-</style>
-</head>
-<body>
-<div class="header">
-  <h1><span>pywrkr</span> Benchmark Report</h1>
-  <div class="meta">
-    {_html_escape(method)} {_html_escape(url)} &bull; {mode} &bull;
-    {connections} connections &bull; {timestamp}
-  </div>
-</div>
-<div class="container">
+    # Pre-compute conditional CSS classes and display values
+    errors_class = "red" if stats.errors else "green"
+    p95_class = "yellow" if percentiles.get("p95", 0) > 1 else ""
+    p99_class = "red" if percentiles.get("p99", 0) > 2 else ""
+    bd_card_display = "display:block" if has_breakdown else "display:none"
 
-<!-- Indicators -->
-<div class="indicators">
-  <div class="indicator">
-    <div class="label">Total Requests</div>
-    <div class="value">{stats.total_requests:,}</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Duration</div>
-    <div class="value">{duration:.1f}s</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Requests/sec</div>
-    <div class="value green">{results.get("requests_per_sec", 0):,.1f}</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Errors</div>
-    <div class="value {"red" if stats.errors else "green"}">{stats.errors:,} ({
-        error_rate:.1f}%)</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Mean Latency</div>
-    <div class="value">{format_duration(latency.get("mean", 0))}</div>
-  </div>
-  <div class="indicator">
-    <div class="label">p95 Latency</div>
-    <div class="value {"yellow" if percentiles.get("p95", 0) > 1 else ""}">{
-        format_duration(percentiles.get("p95", 0))
-    }</div>
-  </div>
-  <div class="indicator">
-    <div class="label">p99 Latency</div>
-    <div class="value {"red" if percentiles.get("p99", 0) > 2 else ""}">{
-        format_duration(percentiles.get("p99", 0))
-    }</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Transfer</div>
-    <div class="value">{format_bytes(results.get("transfer_per_sec_bytes", 0))}/s</div>
-  </div>
-</div>
-
-<!-- Charts -->
-<div class="charts">
-  <!-- Response Time Distribution -->
-  <div class="chart-card">
-    <h3>Response Time Distribution</h3>
-    <canvas id="histChart"></canvas>
-  </div>
-  <!-- Percentiles -->
-  <div class="chart-card">
-    <h3>Response Time Percentiles</h3>
-    <canvas id="pctChart"></canvas>
-  </div>
-  <!-- RPS Timeline -->
-  <div class="chart-card full">
-    <h3>Requests per Second Over Time</h3>
-    <canvas id="rpsChart" height="80"></canvas>
-  </div>
-  <!-- Status Codes -->
-  <div class="chart-card">
-    <h3>Status Code Distribution</h3>
-    <canvas id="scChart"></canvas>
-  </div>
-  <!-- Latency Breakdown -->
-  <div class="chart-card" id="bdCard" style="{
-        "display:block" if has_breakdown else "display:none"
-    }">
-    <h3>Latency Breakdown (avg)</h3>
-    <canvas id="bdChart"></canvas>
-  </div>
-</div>
-
-<!-- Error Details -->
-{
-        ""
-        if not error_types
-        else '''
-<div class="chart-card full" style="margin-bottom:28px">
-  <h3>Error Details</h3>
-  <table class="errors-table">
-    <tr><th>Error</th><th>Count</th></tr>
-    '''
-        + "".join(
+    # Pre-render error table HTML
+    error_table_html = ""
+    if error_types:
+        rows = "".join(
             f"<tr><td>{_html_escape(e)}</td><td>{c:,}</td></tr>"
             for e, c in sorted(error_types.items(), key=lambda x: -x[1])
         )
-        + '''
-  </table>
-</div>
-'''
+        error_table_html = (
+            '<div class="chart-card full" style="margin-bottom:28px">\n'
+            "  <h3>Error Details</h3>\n"
+            '  <table class="errors-table">\n'
+            "    <tr><th>Error</th><th>Count</th></tr>\n"
+            f"    {rows}\n"
+            "  </table>\n"
+            "</div>"
+        )
+
+    # Build template context
+    context = {
+        "title": _html_escape(url),
+        "method": _html_escape(method),
+        "url_display": _html_escape(url),
+        "mode": mode,
+        "connections": connections,
+        "timestamp": timestamp,
+        "total_requests": f"{stats.total_requests:,}",
+        "duration_display": f"{duration:.1f}",
+        "rps_display": f"{results.get('requests_per_sec', 0):,.1f}",
+        "errors_display": f"{stats.errors:,} ({error_rate:.1f}%)",
+        "errors_class": errors_class,
+        "mean_latency": format_duration(latency.get("mean", 0)),
+        "p95_latency": format_duration(percentiles.get("p95", 0)),
+        "p95_class": p95_class,
+        "p99_latency": format_duration(percentiles.get("p99", 0)),
+        "p99_class": p99_class,
+        "transfer_rate": format_bytes(results.get("transfer_per_sec_bytes", 0)),
+        "hist_labels_json": _json.dumps(hist_labels),
+        "hist_counts_json": _json.dumps(hist_counts),
+        "hist_colors_json": _json.dumps(hist_colors),
+        "pct_labels_json": _json.dumps(pct_labels),
+        "pct_values_json": _json.dumps(pct_values),
+        "rps_labels_json": _json.dumps(rps_labels),
+        "rps_values_json": _json.dumps(rps_values),
+        "sc_labels_json": _json.dumps(sc_labels),
+        "sc_values_json": _json.dumps(sc_values),
+        "sc_colors_json": _json.dumps(sc_colors),
+        "bd_labels_json": _json.dumps(bd_labels),
+        "bd_values_json": _json.dumps(bd_values),
+        "has_breakdown_json": _json.dumps(has_breakdown),
+        "bd_card_display": bd_card_display,
+        "bd_bar_colors_json": _json.dumps(
+            [COLOR_BLUE, COLOR_GREEN, COLOR_PURPLE, COLOR_ORANGE, COLOR_CYAN]
+        ),
+        "error_table_html": error_table_html,
     }
 
-</div>
-<div class="footer">
-  Generated by <a href="https://github.com/kurok/pywrkr">pywrkr</a>
-  &mdash; Python HTTP benchmarking tool
-</div>
-
-<script>
-const chartDefaults = {{
-  color: '#999',
-  borderColor: 'rgba(255,255,255,0.1)',
-  font: {{ family: "'Segoe UI', system-ui, sans-serif" }}
-}};
-Chart.defaults.color = chartDefaults.color;
-Chart.defaults.borderColor = chartDefaults.borderColor;
-
-// Response Time Distribution
-new Chart(document.getElementById('histChart'), {{
-  type: 'bar',
-  data: {{
-    labels: {_json.dumps(hist_labels)},
-    datasets: [{{
-      label: 'Requests',
-      data: {_json.dumps(hist_counts)},
-      backgroundColor: {_json.dumps(hist_colors)},
-      borderRadius: 3,
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{
-      legend: {{ display: false }},
-      tooltip: {{ callbacks: {{ title: (items) => items[0].label + ' ms' }} }}
-    }},
-    scales: {{
-      x: {{ title: {{ display: true, text: 'Response Time (ms)' }},
-            ticks: {{ maxRotation: 45, autoSkip: true, maxTicksLimit: 15 }} }},
-      y: {{ title: {{ display: true, text: 'Count' }}, beginAtZero: true }}
-    }}
-  }}
-}});
-
-// Percentile Chart
-new Chart(document.getElementById('pctChart'), {{
-  type: 'line',
-  data: {{
-    labels: {_json.dumps(pct_labels)},
-    datasets: [{{
-      label: 'Latency (ms)',
-      data: {_json.dumps(pct_values)},
-      borderColor: '#e94560',
-      backgroundColor: 'rgba(233,69,96,0.15)',
-      fill: true,
-      tension: 0.3,
-      pointRadius: 5,
-      pointBackgroundColor: '#e94560',
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{ legend: {{ display: false }} }},
-    scales: {{
-      y: {{ title: {{ display: true, text: 'Response Time (ms)' }}, beginAtZero: true }}
-    }}
-  }}
-}});
-
-// RPS Timeline
-new Chart(document.getElementById('rpsChart'), {{
-  type: 'line',
-  data: {{
-    labels: {_json.dumps(rps_labels)},
-    datasets: [{{
-      label: 'Req/s',
-      data: {_json.dumps(rps_values)},
-      borderColor: '#4caf50',
-      backgroundColor: 'rgba(76,175,80,0.12)',
-      fill: true,
-      tension: 0.2,
-      pointRadius: 2,
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{ legend: {{ display: false }} }},
-    scales: {{
-      x: {{ title: {{ display: true, text: 'Time' }},
-            ticks: {{ autoSkip: true, maxTicksLimit: 20 }} }},
-      y: {{ title: {{ display: true, text: 'Requests/sec' }}, beginAtZero: true }}
-    }}
-  }}
-}});
-
-// Status Codes
-new Chart(document.getElementById('scChart'), {{
-  type: 'doughnut',
-  data: {{
-    labels: {_json.dumps(sc_labels)},
-    datasets: [{{
-      data: {_json.dumps(sc_values)},
-      backgroundColor: {_json.dumps(sc_colors)},
-      borderWidth: 0,
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{
-      legend: {{ position: 'right', labels: {{ padding: 16 }} }}
-    }}
-  }}
-}});
-
-// Latency Breakdown
-if ({_json.dumps(has_breakdown)}) {{
-  new Chart(document.getElementById('bdChart'), {{
-    type: 'bar',
-    data: {{
-      labels: {_json.dumps(bd_labels)},
-      datasets: [{{
-        label: 'Avg (ms)',
-        data: {_json.dumps(bd_values)},
-        backgroundColor: [
-          'rgba(33,150,243,0.8)', 'rgba(76,175,80,0.8)', 'rgba(156,39,176,0.8)',
-          'rgba(255,152,0,0.8)', 'rgba(0,188,212,0.8)'
-        ],
-        borderRadius: 4,
-      }}]
-    }},
-    options: {{
-      indexAxis: 'y',
-      responsive: true,
-      plugins: {{ legend: {{ display: false }} }},
-      scales: {{
-        x: {{ title: {{ display: true, text: 'Time (ms)' }}, beginAtZero: true }}
-      }}
-    }}
-  }});
-}}
-</script>
-</body>
-</html>"""
-    return html
+    template = _load_template("gatling_report.html")
+    return template.safe_substitute(context)
 
 
 def _html_escape(s: str) -> str:
