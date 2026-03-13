@@ -798,12 +798,12 @@ def print_results(
     start_time: float,
     config: BenchmarkConfig,
     rate_limiter: RateLimiter | None = None,
-    file: TextIO = sys.stdout,
+    file: TextIO | None = None,
 ) -> None:
     """Print full benchmark results to stdout."""
     from pywrkr.workers import aggregate_breakdowns
 
-    out = file
+    out = file if file is not None else sys.stdout
 
     rps = stats.total_requests / duration if duration > 0 else 0
     transfer_rate = stats.total_bytes / duration if duration > 0 else 0
@@ -1034,9 +1034,9 @@ def print_autofind_summary(steps: list[StepResult], max_users: int | None) -> No
 # ---------------------------------------------------------------------------
 
 
-def print_multi_url_summary(results: "list[MultiUrlResult]", file: TextIO = sys.stdout) -> None:  # noqa: F821
+def print_multi_url_summary(results: "list[MultiUrlResult]", file: TextIO | None = None) -> None:  # noqa: F821
     """Print a comparison table across all URLs."""
-    out = file
+    out = file if file is not None else sys.stdout
     print(f"\n{'=' * 90}", file=out)
     print("  MULTI-URL COMPARISON SUMMARY", file=out)
     print(f"{'=' * 90}", file=out)
