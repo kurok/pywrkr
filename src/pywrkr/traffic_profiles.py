@@ -100,6 +100,10 @@ class SawtoothProfile(TrafficProfile):
     name = "sawtooth"
 
     def __init__(self, cycles: float = 3.0, min_factor: float = 0.1):
+        if not (0 <= min_factor <= 1):
+            raise ValueError(
+                f"SawtoothProfile min_factor must be between 0 and 1, got {min_factor}"
+            )
         self.cycles = cycles
         self.min_factor = min_factor
 
@@ -125,6 +129,8 @@ class SquareProfile(TrafficProfile):
     name = "square"
 
     def __init__(self, cycles: float = 3.0, low_factor: float = 0.2):
+        if not (0 <= low_factor <= 1):
+            raise ValueError(f"SquareProfile low_factor must be between 0 and 1, got {low_factor}")
         self.cycles = cycles
         self.low_factor = low_factor
 
@@ -330,27 +336,28 @@ def parse_traffic_profile(spec: str) -> TrafficProfile:
         available = ", ".join(sorted(list(_BUILTIN_PROFILES.keys()) + ["csv"]))
         raise ValueError(f"Unknown traffic profile: {name!r}. Available: {available}")
 
-    # Parse key=value params
+    cls = _BUILTIN_PROFILES[name]
+
+    # Step profile: levels are comma-separated values, not key=value pairs
+    if name == "step":
+        levels_str = params_str
+        if levels_str.lower().startswith("levels="):
+            levels_str = levels_str[7:]
+        if not levels_str.strip():
+            raise ValueError("step profile requires levels: step:100,500,1000")
+        levels = [float(x.strip()) for x in levels_str.split(",") if x.strip()]
+        return StepProfile(levels=levels)
+
+    # Parse key=value params for all other profiles
     kwargs: dict[str, str] = {}
     if params_str:
         for part in params_str.split(","):
-            if "=" in part:
-                k, v = part.split("=", 1)
-                kwargs[k.strip()] = v.strip()
-            else:
-                kwargs[part.strip()] = ""
-
-    cls = _BUILTIN_PROFILES[name]
-
-    if name == "step":
-        # Step profile expects levels=100,500,... but levels values are
-        # already split by commas, so we handle it specially.
-        levels_str = params_str  # the whole params string is the levels list
-        # But if it starts with "levels=", strip that prefix
-        if levels_str.lower().startswith("levels="):
-            levels_str = levels_str[7:]
-        levels = [float(x.strip()) for x in levels_str.split(",") if x.strip()]
-        return StepProfile(levels=levels)
+            if "=" not in part:
+                raise ValueError(
+                    f"Invalid parameter for {name} profile: {part.strip()!r} (expected key=value)"
+                )
+            k, v = part.split("=", 1)
+            kwargs[k.strip()] = v.strip()
 
     # Map string params to constructor types
     typed_kwargs: dict[str, float] = {}
@@ -360,7 +367,7 @@ def parse_traffic_profile(spec: str) -> TrafficProfile:
         try:
             typed_kwargs[key] = float(v)
         except ValueError:
-            raise ValueError(f"Invalid parameter for {name} profile: {k}={v}")
+            raise ValueError(f"Invalid parameter for {name} profile: {k}={v!r}")
 
     return cls(**typed_kwargs)
 
