@@ -1,11 +1,20 @@
 """Tests for parameter validation (issue #7)."""
 
+import tempfile
 from unittest.mock import patch
 
 import pytest
 
 from pywrkr.main import _build_parser, _parse_and_validate_args
-from pywrkr.traffic_profiles import SineProfile, SpikeProfile, StepProfile
+from pywrkr.traffic_profiles import (
+    CsvProfile,
+    SawtoothProfile,
+    SineProfile,
+    SpikeProfile,
+    SquareProfile,
+    StepProfile,
+    parse_traffic_profile,
+)
 
 # ---------------------------------------------------------------------------
 # Traffic profile constructor validation
@@ -46,6 +55,34 @@ class TestSpikeProfileValidation:
     def test_interval_positive_ok(self):
         p = SpikeProfile(interval=0.1)
         assert p.interval == 0.1
+
+
+class TestSawtoothProfileValidation:
+    def test_min_factor_below_zero(self):
+        with pytest.raises(ValueError, match="min_factor must be between 0 and 1"):
+            SawtoothProfile(min_factor=-0.1)
+
+    def test_min_factor_above_one(self):
+        with pytest.raises(ValueError, match="min_factor must be between 0 and 1"):
+            SawtoothProfile(min_factor=1.5)
+
+    def test_min_factor_boundary_ok(self):
+        assert SawtoothProfile(min_factor=0.0).min_factor == 0.0
+        assert SawtoothProfile(min_factor=1.0).min_factor == 1.0
+
+
+class TestSquareProfileValidation:
+    def test_low_factor_below_zero(self):
+        with pytest.raises(ValueError, match="low_factor must be between 0 and 1"):
+            SquareProfile(low_factor=-0.5)
+
+    def test_low_factor_above_one(self):
+        with pytest.raises(ValueError, match="low_factor must be between 0 and 1"):
+            SquareProfile(low_factor=2.0)
+
+    def test_low_factor_boundary_ok(self):
+        assert SquareProfile(low_factor=0.0).low_factor == 0.0
+        assert SquareProfile(low_factor=1.0).low_factor == 1.0
 
 
 class TestStepProfileValidation:
@@ -145,3 +182,80 @@ class TestAutofindValidation:
             assert args.start_users == 10
             assert args.max_users == 100
             assert args.step_multiplier == 2.0
+
+
+# ---------------------------------------------------------------------------
+# CsvProfile validation
+# ---------------------------------------------------------------------------
+
+
+class TestCsvProfileValidation:
+    def test_empty_csv_raises(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("")
+            path = f.name
+        with pytest.raises(ValueError, match="empty"):
+            CsvProfile(path)
+
+    def test_header_only_csv_raises(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("time_sec,rate\n")
+            path = f.name
+        with pytest.raises(ValueError, match="No data points"):
+            CsvProfile(path)
+
+    def test_single_column_rows_skipped(self):
+        """Rows with fewer than 2 columns are silently skipped."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("time_sec,rate\n0,100\nbadrow\n60,500\n")
+            path = f.name
+        p = CsvProfile(path)
+        assert len(p._times) == 2
+
+    def test_factor_header_detected(self):
+        """'factor' header should trigger multiplier mode, same as 'multiplier'."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("time_sec,factor\n0,0.5\n60,2.0\n")
+            path = f.name
+        p = CsvProfile(path)
+        assert p._is_multiplier is True
+        assert p.rate_at(0, 60, 100) == pytest.approx(50.0)
+
+    def test_non_numeric_value_raises(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("time_sec,rate\n0,abc\n")
+            path = f.name
+        with pytest.raises(ValueError):
+            CsvProfile(path)
+
+    def test_file_not_found_raises(self):
+        with pytest.raises(FileNotFoundError):
+            CsvProfile("/nonexistent/path/traffic.csv")
+
+
+# ---------------------------------------------------------------------------
+# parse_traffic_profile validation
+# ---------------------------------------------------------------------------
+
+
+class TestParseTrafficProfileValidation:
+    def test_step_empty_params_raises(self):
+        with pytest.raises(ValueError, match="requires levels"):
+            parse_traffic_profile("step:")
+
+    def test_non_keyvalue_param_raises(self):
+        """Bare params without '=' should raise for non-step profiles."""
+        with pytest.raises(ValueError, match="expected key=value"):
+            parse_traffic_profile("sine:badparam")
+
+    def test_non_float_param_value_raises(self):
+        with pytest.raises(ValueError, match="Invalid parameter"):
+            parse_traffic_profile("sine:cycles=notanumber")
+
+    def test_csv_whitespace_only_path_raises(self):
+        with pytest.raises(ValueError, match="file path"):
+            parse_traffic_profile("csv:")
+
+    def test_unknown_profile_lists_available(self):
+        with pytest.raises(ValueError, match="Available:"):
+            parse_traffic_profile("nope")
