@@ -7,6 +7,7 @@ import re
 import statistics
 import sys
 from collections import defaultdict
+from typing import TextIO
 
 # Optional third-party imports
 try:
@@ -84,7 +85,9 @@ def format_duration(secs: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def print_latency_histogram(latencies: list[float], buckets: int = 20, file=sys.stdout) -> None:
+def print_latency_histogram(
+    latencies: list[float], buckets: int = 20, file: TextIO = sys.stdout
+) -> None:
     """Print an ASCII histogram of latency distribution."""
     if not latencies:
         return
@@ -234,7 +237,7 @@ def _compare(actual: float, operator: str, threshold: float) -> bool:
 
 def print_threshold_results(
     results: "list[tuple[Threshold, float, bool]]",
-    file=sys.stdout,
+    file: TextIO = sys.stdout,
 ) -> None:
     """Print a summary table of threshold evaluation results."""
     if not results:
@@ -261,7 +264,7 @@ def print_threshold_results(
     print(f"\n  Thresholds: {summary}", file=file)
 
 
-def print_percentiles(latencies: list[float], file=sys.stdout) -> None:
+def print_percentiles(latencies: list[float], file: TextIO = sys.stdout) -> None:
     """Print latency percentiles table."""
     pairs = compute_percentiles(latencies)
     if not pairs:
@@ -272,7 +275,7 @@ def print_percentiles(latencies: list[float], file=sys.stdout) -> None:
 
 
 def print_rps_timeline(
-    timeline: list[tuple[float, int]], start: float, duration: float, file=sys.stdout
+    timeline: list[tuple[float, int]], start: float, duration: float, file: TextIO = sys.stdout
 ) -> None:
     """Print requests-per-second timeline."""
     if not timeline:
@@ -944,11 +947,12 @@ def print_results(
     start_time: float,
     config: BenchmarkConfig,
     rate_limiter: RateLimiter | None = None,
+    file: TextIO = sys.stdout,
 ) -> None:
     """Print full benchmark results to stdout."""
     from pywrkr.workers import aggregate_breakdowns
 
-    out = sys.stdout
+    out = file
 
     rps = stats.total_requests / duration if duration > 0 else 0
     transfer_rate = stats.total_bytes / duration if duration > 0 else 0
@@ -1179,9 +1183,9 @@ def print_autofind_summary(steps: list[StepResult], max_users: int | None) -> No
 # ---------------------------------------------------------------------------
 
 
-def print_multi_url_summary(results: "list[MultiUrlResult]") -> None:  # noqa: F821
+def print_multi_url_summary(results: "list[MultiUrlResult]", file: TextIO = sys.stdout) -> None:  # noqa: F821
     """Print a comparison table across all URLs."""
-    out = sys.stdout
+    out = file
     print(f"\n{'=' * 90}", file=out)
     print("  MULTI-URL COMPARISON SUMMARY", file=out)
     print(f"{'=' * 90}", file=out)
