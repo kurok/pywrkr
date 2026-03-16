@@ -619,7 +619,7 @@ def _build_session_kwargs(
     stats: WorkerStats,
 ) -> dict:
     """Build kwargs for aiohttp.ClientSession including optional trace config."""
-    kwargs: dict = {"connector": connector}
+    kwargs: dict = {"connector": connector, "connector_owner": False}
     if config.latency_breakdown:
         kwargs["trace_configs"] = [create_trace_config(stats)]
     return kwargs

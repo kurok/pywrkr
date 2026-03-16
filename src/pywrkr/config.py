@@ -365,6 +365,7 @@ class Scenario:
     """A scripted multi-step scenario."""
 
     name: str = "Unnamed Scenario"
+    base_url: str | None = None  # optional base URL for scenario steps
     think_time: float = 0.0
     steps: list[ScenarioStep] = field(default_factory=list)
 
@@ -438,6 +439,7 @@ def load_scenario(path: str) -> Scenario:
 
     scenario = Scenario(
         name=data.get("name", "Unnamed Scenario"),
+        base_url=data.get("base_url"),
         think_time=data.get("think_time", 0.0),
         steps=steps,
     )
