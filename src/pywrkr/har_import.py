@@ -338,8 +338,13 @@ def har_to_scenario(
 
         steps.append(step)
 
+    # Derive base_url from the first entry's scheme + host
+    first_parsed = urlparse(entries[0].url)
+    base_url = f"{first_parsed.scheme}://{first_parsed.netloc}"
+
     return {
         "name": name,
+        "base_url": base_url,
         "think_time": 0.0,
         "steps": steps,
     }

@@ -89,11 +89,14 @@ def _deserialize_scenario_step(data: dict) -> ScenarioStep:
 def _serialize_scenario(scenario: Scenario | None) -> dict | None:
     if scenario is None:
         return None
-    return {
+    result: dict = {
         "name": scenario.name,
         "think_time": scenario.think_time,
         "steps": [_serialize_scenario_step(s) for s in scenario.steps],
     }
+    if scenario.base_url:
+        result["base_url"] = scenario.base_url
+    return result
 
 
 def _deserialize_scenario(data: dict | None) -> Scenario | None:
@@ -101,6 +104,7 @@ def _deserialize_scenario(data: dict | None) -> Scenario | None:
         return None
     return Scenario(
         name=data.get("name", "Unnamed Scenario"),
+        base_url=data.get("base_url"),
         think_time=data.get("think_time", 0.0),
         steps=[_deserialize_scenario_step(s) for s in data.get("steps", [])],
     )

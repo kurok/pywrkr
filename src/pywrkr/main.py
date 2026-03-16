@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -548,7 +549,7 @@ def _validate_url_and_mode(
         if args.url is None:
             parser.error("--master requires a target URL")
 
-    # URL is required for all remaining modes (except --scenario which embeds URLs)
+    # URL is required for all remaining modes
     if args.url is None and args.url_file is None and not args.scenario:
         parser.error("the following arguments are required: url (or --url-file or --scenario)")
 
@@ -563,6 +564,15 @@ def _validate_load_params(
     args: argparse.Namespace,
 ) -> float | None:
     """Validate load mode options and return effective duration."""
+    if args.connections < 1:
+        parser.error(f"--connections (-c) must be at least 1, got {args.connections}")
+    if args.threads < 1:
+        parser.error(f"--threads (-t) must be at least 1, got {args.threads}")
+    if args.duration is not None and args.duration <= 0:
+        parser.error(f"--duration (-d) must be greater than 0, got {args.duration}")
+    if args.num_requests is not None and args.num_requests < 1:
+        parser.error(f"--num-requests (-n) must be at least 1, got {args.num_requests}")
+
     if args.autofind:
         if args.max_users <= args.start_users:
             parser.error(
@@ -672,7 +682,22 @@ def _parse_and_validate_args(
     # Load scenario file (JSON or YAML) if provided
     scenario = None
     if hasattr(args, "scenario") and args.scenario:
-        scenario = load_scenario(args.scenario)
+        try:
+            scenario = load_scenario(args.scenario)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError, ImportError) as e:
+            parser.error(f"Invalid --scenario: {e}")
+
+    # Scenario mode: use scenario's base_url as fallback when no positional URL given
+    if scenario and args.url is None:
+        if scenario.base_url:
+            args.url = scenario.base_url
+        else:
+            parser.error(
+                "--scenario requires a target base URL because scenario steps contain "
+                "relative paths. Either pass a URL argument "
+                "(e.g. pywrkr http://host --scenario file.json) or include "
+                "'base_url' in the scenario file."
+            )
 
     # Build SSL config from CLI args + environment
     env_ssl = SSLConfig.from_env()
