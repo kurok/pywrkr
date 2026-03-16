@@ -548,9 +548,9 @@ def _validate_url_and_mode(
         if args.url is None:
             parser.error("--master requires a target URL")
 
-    # URL is required for all remaining modes
-    if args.url is None and args.url_file is None:
-        parser.error("the following arguments are required: url (or --url-file)")
+    # URL is required for all remaining modes (except --scenario which embeds URLs)
+    if args.url is None and args.url_file is None and not args.scenario:
+        parser.error("the following arguments are required: url (or --url-file or --scenario)")
 
     if args.url is not None:
         parsed = urlparse(args.url)
