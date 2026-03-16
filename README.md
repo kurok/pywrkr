@@ -31,8 +31,8 @@ Convert browser-recorded [HAR files](http://www.softwareishard.com/blog/har-12-s
 # Convert HAR to a pywrkr scenario (JSON):
 pywrkr har-import recording.har -o scenario.json
 
-# Then run the generated scenario:
-pywrkr --scenario scenario.json -u 100 -d 60 https://api.example.com
+# Then run the generated scenario (URLs come from the scenario):
+pywrkr --scenario scenario.json -u 100 -d 60
 
 # Or convert to a URL file for --url-file mode:
 pywrkr har-import recording.har --format url-file -o urls.txt
