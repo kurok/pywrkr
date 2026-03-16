@@ -1,12 +1,17 @@
 """Data structures and scenario loading for pywrkr."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 import random
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
+
+if TYPE_CHECKING:
+    from pywrkr.traffic_profiles import TrafficProfile
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +288,7 @@ class BenchmarkConfig:
         None  # ramp rate target: linearly increase from rate to rate_ramp over duration
     )
     # Traffic profile (advanced traffic shaping)
-    traffic_profile: "TrafficProfile | None" = None  # noqa: F821
+    traffic_profile: TrafficProfile | None = None
     # Scenario mode
     scenario: "Scenario | None" = None
     # Latency breakdown mode
