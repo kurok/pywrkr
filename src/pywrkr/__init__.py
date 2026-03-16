@@ -93,9 +93,6 @@ __all__ = [
     "har_to_scenario",
     "har_to_url_file",
     "convert_har",
-    # pywrkr.main
-    "parse_header",
-    "cli_main",
     # version
     "__version__",
 ]
@@ -133,10 +130,6 @@ from pywrkr.har_import import (
     har_to_url_file,
     parse_har,
 )
-
-# Re-export main function under a different name to avoid shadowing pywrkr.main module
-from pywrkr.main import main as cli_main
-from pywrkr.main import parse_header
 from pywrkr.multi_url import (
     MultiUrlResult,
     UrlEntry,

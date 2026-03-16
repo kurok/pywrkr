@@ -624,20 +624,26 @@ class TestBenchmarkConfig(unittest.TestCase):
 
 class TestParseHeader(unittest.TestCase):
     def test_valid(self):
-        name, value = pywrkr.parse_header("Content-Type: application/json")
+        from pywrkr.main import parse_header
+
+        name, value = parse_header("Content-Type: application/json")
         self.assertEqual(name, "Content-Type")
         self.assertEqual(value, "application/json")
 
     def test_value_with_colon(self):
-        name, value = pywrkr.parse_header("X-Custom: val:with:colons")
+        from pywrkr.main import parse_header
+
+        name, value = parse_header("X-Custom: val:with:colons")
         self.assertEqual(name, "X-Custom")
         self.assertEqual(value, "val:with:colons")
 
     def test_invalid(self):
         import argparse
 
+        from pywrkr.main import parse_header
+
         with self.assertRaises(argparse.ArgumentTypeError):
-            pywrkr.parse_header("no-colon-here")
+            parse_header("no-colon-here")
 
 
 # ---------------------------------------------------------------------------
@@ -2670,7 +2676,9 @@ class TestPackaging(unittest.TestCase):
 
     def test_version_accessible(self):
         """Test that pywrkr module has main() callable."""
-        self.assertTrue(callable(pywrkr.cli_main))
+        from pywrkr.main import main
+
+        self.assertTrue(callable(main))
 
     def test_license_file_exists(self):
         """Test LICENSE file exists."""
