@@ -49,6 +49,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-n 7"
+filterwarnings = [
+    "ignore:enable_cleanup_closed:DeprecationWarning:aiohttp",
+]
 
 [tool.mypy]
 python_version = "3.10"
