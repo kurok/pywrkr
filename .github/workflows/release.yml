@@ -1,0 +1,64 @@
+name: Auto Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+
+    - name: Extract version from tag
+      id: version
+      env:
+        TAG_NAME: ${{ github.ref_name }}
+      run: echo "version=${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
+
+    - name: Verify version matches pyproject.toml
+      env:
+        TAG_VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        PROJECT_VERSION=$(python -c "
+        import re
+        with open('pyproject.toml') as f:
+            m = re.search(r'version\s*=\s*\"(.+?)\"', f.read())
+            print(m.group(1))
+        ")
+        if [ "$PROJECT_VERSION" != "$TAG_VERSION" ]; then
+          echo "::error::Tag version ($TAG_VERSION) does not match pyproject.toml ($PROJECT_VERSION)"
+          exit 1
+        fi
+
+    - name: Generate changelog from commits
+      id: changelog
+      run: |
+        # Get commits since the previous tag
+        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        if [ -n "$PREV_TAG" ]; then
+          RANGE="${PREV_TAG}..HEAD"
+        else
+          RANGE="HEAD"
+        fi
+        {
+          echo "changelog<<EOF"
+          git log "$RANGE" --pretty=format:"- %s (%h)" --no-merges
+          echo ""
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: "v${{ steps.version.outputs.version }}"
+        body: |
+          ## What's Changed
+          ${{ steps.changelog.outputs.changelog }}
+        generate_release_notes: true
