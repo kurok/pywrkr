@@ -66,7 +66,8 @@ line-length = 100
 [tool.bandit]
 # B104: hardcoded 0.0.0.0 bind is intentional for distributed mode --bind default
 # B310: urlopen used for Prometheus pushgateway export with validated URL
-skips = ["B104", "B310"]
+# B311: random.randint used for reservoir sampling and cache-busting, not security
+skips = ["B104", "B310", "B311"]
 
 [tool.ruff]
 line-length = 100

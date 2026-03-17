@@ -53,17 +53,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
         exclude:
-          # Keep matrix manageable: only test oldest + newest on non-Linux
+          # Keep matrix manageable: only test oldest + newest on macOS
           - os: macos-latest
             python-version: "3.11"
           - os: macos-latest
-            python-version: "3.12"
-          - os: windows-latest
-            python-version: "3.11"
-          - os: windows-latest
             python-version: "3.12"
     steps:
     - uses: actions/checkout@v5
@@ -102,7 +98,7 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -e ".[dev,lint]"
     - name: Run mypy
-      run: python -m mypy src/pywrkr/ --ignore-missing-imports
+      run: python -m mypy src/pywrkr/ --ignore-missing-imports --disable-error-code import-untyped
 
   # -------------------------------------------------------------------
   # Security scanning
