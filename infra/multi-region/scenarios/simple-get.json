@@ -1,0 +1,14 @@
+{
+  "name": "Simple GET benchmark",
+  "description": "Basic GET test against a single URL with SLO thresholds",
+  "steps": [
+    {
+      "name": "homepage",
+      "path": "/",
+      "method": "GET",
+      "headers": {
+        "Accept": "text/html,application/json"
+      }
+    }
+  ]
+}

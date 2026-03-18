@@ -1,0 +1,83 @@
+# =============================================================================
+# Multi-Region pywrkr Load Test Configuration
+# Copy to terraform.tfvars and customize.
+# =============================================================================
+
+# --- Global ---
+project_name = "pywrkr"
+environment  = "loadtest"
+home_region  = "us-east-1"
+
+# --- Regions ---
+# Enable/disable regions and configure per-region resources.
+# worker_count determines both the number of worker ECS services AND
+# the number of NAT gateways/EIPs (in nat_eip mode) for source IP diversity.
+regions = {
+  "us-east-1" = {
+    enabled       = true
+    vpc_cidr      = "10.1.0.0/16"
+    az_count      = 2
+    worker_count  = 3
+    master_cpu    = 1024
+    master_memory = 2048
+    worker_cpu    = 1024
+    worker_memory = 2048
+  }
+  "eu-west-1" = {
+    enabled       = true
+    vpc_cidr      = "10.2.0.0/16"
+    az_count      = 2
+    worker_count  = 3
+    master_cpu    = 1024
+    master_memory = 2048
+    worker_cpu    = 1024
+    worker_memory = 2048
+  }
+  "ap-southeast-1" = {
+    enabled       = true
+    vpc_cidr      = "10.3.0.0/16"
+    az_count      = 2
+    worker_count  = 3
+    master_cpu    = 1024
+    master_memory = 2048
+    worker_cpu    = 1024
+    worker_memory = 2048
+  }
+}
+
+# --- Networking ---
+# "nat_eip"  = stable source IPs via per-worker NAT/EIP (more expensive, allowlistable)
+# "public_ip" = ephemeral public IPs on Fargate tasks (cheaper, IPs not stable)
+egress_mode      = "nat_eip"
+enable_flow_logs = false
+
+# --- Test configuration ---
+target_url    = "https://example.com"
+test_duration = 60    # seconds — passed to pywrkr as -d <float>
+users         = 10
+connections   = 10
+rate          = 0        # 0 = unlimited
+thresholds    = ["p95 < 500ms", "error_rate < 5%"]
+scenario_file = ""       # e.g., "/scenarios/api-flow.json"
+
+# --- Container image ---
+image_tag = "latest"
+
+# --- Observability (optional) ---
+otel_endpoint      = ""
+prom_remote_write  = ""
+log_retention_days = 7
+
+# --- Safety ---
+confirm_production     = "no"    # Set to "yes" for non-internal targets
+max_duration_seconds   = 300
+max_workers_per_region = 10
+
+# --- Cloud Map ---
+cloudmap_namespace = "pywrkr.local"
+
+# --- Additional pywrkr tags ---
+tags = {
+  team = "platform"
+  test = "website-benchmark"
+}

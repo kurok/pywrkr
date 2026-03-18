@@ -1,0 +1,446 @@
+// =============================================================================
+// Multi-Region pywrkr Distributed Load Test Pipeline
+//
+// Builds pywrkr image, deploys to multiple AWS regions via Terraform,
+// monitors test execution, collects results, and optionally cleans up.
+// =============================================================================
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        timeout(time: 120, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        string(name: 'AWS_REGIONS', defaultValue: 'us-east-1', description: 'Comma-separated AWS regions (e.g., us-east-1,eu-west-1,ap-southeast-1)')
+        string(name: 'ENVIRONMENT', defaultValue: 'loadtest', description: 'Environment name')
+        string(name: 'IMAGE_TAG', defaultValue: 'latest', description: 'Docker image tag')
+        string(name: 'TARGET_URL', defaultValue: 'https://example.com', description: 'Target URL to benchmark')
+        string(name: 'TEST_DURATION', defaultValue: '60', description: 'Test duration in seconds')
+        string(name: 'USERS', defaultValue: '10', description: 'Virtual users per worker (0 = connection mode)')
+        string(name: 'CONNECTIONS', defaultValue: '10', description: 'Concurrent connections per worker')
+        string(name: 'RATE', defaultValue: '0', description: 'Req/sec rate limit per worker (0 = unlimited)')
+        string(name: 'WORKER_COUNT_PER_REGION', defaultValue: '3', description: 'Number of workers per region')
+        string(name: 'THRESHOLDS', defaultValue: 'p95 < 500ms,error_rate < 5%', description: 'Comma-separated thresholds')
+        string(name: 'SCENARIO_FILE', defaultValue: '', description: 'Scenario file path in container (e.g., /scenarios/api-flow.json)')
+        choice(name: 'EGRESS_MODE', choices: ['nat_eip', 'public_ip'], description: 'Egress: nat_eip (stable IPs) or public_ip (cheaper)')
+        booleanParam(name: 'CLEANUP_AFTER_RUN', defaultValue: true, description: 'Destroy infrastructure after test')
+        string(name: 'CONFIRM_PRODUCTION_TARGET', defaultValue: 'no', description: 'Must be "yes" for non-internal targets')
+        string(name: 'OTEL_ENDPOINT', defaultValue: '', description: 'OpenTelemetry collector endpoint (optional)')
+        string(name: 'PROM_REMOTE_WRITE', defaultValue: '', description: 'Prometheus pushgateway URL (optional)')
+        string(name: 'MASTER_CPU', defaultValue: '1024', description: 'Master CPU units')
+        string(name: 'MASTER_MEMORY', defaultValue: '2048', description: 'Master memory (MB)')
+        string(name: 'WORKER_CPU', defaultValue: '1024', description: 'Worker CPU units')
+        string(name: 'WORKER_MEMORY', defaultValue: '2048', description: 'Worker memory (MB)')
+    }
+
+    environment {
+        TF_DIR        = "${WORKSPACE}/infra/multi-region/terraform"
+        DOCKER_DIR    = "${WORKSPACE}/infra/multi-region"
+        PROJECT_NAME  = 'pywrkr'
+        HOME_REGION   = 'us-east-1'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    def regions = params.AWS_REGIONS.split(',').collect { it.trim() }
+                    def workerCount = params.WORKER_COUNT_PER_REGION.toInteger()
+                    def maxWorkers = 10
+
+                    // Safety: production target confirmation
+                    def targetUrl = params.TARGET_URL
+                    def isInternal = targetUrl.contains('localhost') ||
+                                     targetUrl.contains('127.0.0.1') ||
+                                     targetUrl.contains('10.') ||
+                                     targetUrl.contains('172.16.') ||
+                                     targetUrl.contains('192.168.') ||
+                                     targetUrl.contains('.internal') ||
+                                     targetUrl.contains('example.com')
+
+                    if (!isInternal && params.CONFIRM_PRODUCTION_TARGET != 'yes') {
+                        error("Target URL '${targetUrl}' appears to be a production endpoint. Set CONFIRM_PRODUCTION_TARGET=yes to proceed.")
+                    }
+
+                    // Safety: max workers
+                    if (workerCount > maxWorkers) {
+                        error("WORKER_COUNT_PER_REGION (${workerCount}) exceeds maximum (${maxWorkers})")
+                    }
+
+                    // Safety: max duration
+                    def durationSec = params.TEST_DURATION.toInteger()
+                    if (durationSec > 300) {
+                        error("TEST_DURATION (${durationSec}s) exceeds maximum (300s). Increase max_duration_seconds if needed.")
+                    }
+
+                    env.REGIONS_LIST = params.AWS_REGIONS
+                    env.REGION_COUNT = regions.size().toString()
+                    echo "Validated: ${regions.size()} region(s), ${workerCount} workers/region, duration=${durationSec}s, egress=${params.EGRESS_MODE}"
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    sh "docker build -f ${DOCKER_DIR}/Dockerfile -t ${PROJECT_NAME}:${params.IMAGE_TAG} ."
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                script {
+                    def accountId = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
+                    def ecrUrl = "${accountId}.dkr.ecr.${HOME_REGION}.amazonaws.com"
+                    def repoName = "${PROJECT_NAME}-${params.ENVIRONMENT}-pywrkr"
+                    def fullImage = "${ecrUrl}/${repoName}:${params.IMAGE_TAG}"
+
+                    sh """
+                        aws ecr get-login-password --region ${HOME_REGION} | docker login --username AWS --password-stdin ${ecrUrl}
+                        docker tag ${PROJECT_NAME}:${params.IMAGE_TAG} ${fullImage}
+                        docker push ${fullImage}
+                    """
+
+                    env.ECR_IMAGE = fullImage
+                    env.ECR_URL = ecrUrl
+                    env.ECR_REPO_NAME = repoName
+                    env.AWS_ACCOUNT_ID = accountId
+                }
+            }
+        }
+
+        stage('Wait for ECR Replication') {
+            steps {
+                script {
+                    def regions = params.AWS_REGIONS.split(',').collect { it.trim() }
+                    def targetRegions = regions.findAll { it != HOME_REGION }
+
+                    if (targetRegions.isEmpty()) {
+                        echo "Single region — no replication needed"
+                        return
+                    }
+
+                    echo "Waiting for ECR replication to: ${targetRegions.join(', ')}"
+
+                    for (region in targetRegions) {
+                        def found = false
+                        for (int i = 0; i < 12; i++) {
+                            def result = sh(
+                                script: "aws ecr describe-images --repository-name ${env.ECR_REPO_NAME} --image-ids imageTag=${params.IMAGE_TAG} --region ${region} 2>/dev/null || echo 'NOT_FOUND'",
+                                returnStdout: true
+                            ).trim()
+
+                            if (!result.contains('NOT_FOUND') && !result.contains('ImageNotFoundException')) {
+                                echo "Image replicated to ${region}"
+                                found = true
+                                break
+                            }
+                            echo "Waiting for replication to ${region}... (attempt ${i + 1}/12)"
+                            sleep(5)
+                        }
+                        if (!found) {
+                            error("ECR replication to ${region} timed out after 60s")
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Init & Apply') {
+            steps {
+                script {
+                    def regions = params.AWS_REGIONS.split(',').collect { it.trim() }
+                    def workerCount = params.WORKER_COUNT_PER_REGION.toInteger()
+                    def thresholdList = params.THRESHOLDS ? params.THRESHOLDS.split(',').collect { "\"${it.trim()}\"" }.join(', ') : ''
+
+                    // Generate terraform.auto.tfvars
+                    def regionsBlock = regions.collect { region ->
+                        def cidrIndex = ['us-east-1': 1, 'eu-west-1': 2, 'ap-southeast-1': 3]
+                        def idx = cidrIndex.getOrDefault(region, regions.indexOf(region) + 1)
+                        """  "${region}" = {
+    enabled       = true
+    vpc_cidr      = "10.${idx}.0.0/16"
+    az_count      = 2
+    worker_count  = ${workerCount}
+    master_cpu    = ${params.MASTER_CPU}
+    master_memory = ${params.MASTER_MEMORY}
+    worker_cpu    = ${params.WORKER_CPU}
+    worker_memory = ${params.WORKER_MEMORY}
+  }"""
+                    }.join('\n')
+
+                    def tfvars = """
+project_name       = "${PROJECT_NAME}"
+environment        = "${params.ENVIRONMENT}"
+home_region        = "${HOME_REGION}"
+egress_mode        = "${params.EGRESS_MODE}"
+target_url         = "${params.TARGET_URL}"
+test_duration      = ${params.TEST_DURATION}
+users              = ${params.USERS}
+connections        = ${params.CONNECTIONS}
+rate               = ${params.RATE}
+thresholds         = [${thresholdList}]
+scenario_file      = "${params.SCENARIO_FILE}"
+image_tag          = "${params.IMAGE_TAG}"
+otel_endpoint      = "${params.OTEL_ENDPOINT}"
+prom_remote_write  = "${params.PROM_REMOTE_WRITE}"
+confirm_production = "${params.CONFIRM_PRODUCTION_TARGET}"
+
+regions = {
+${regionsBlock}
+}
+
+tags = {
+  jenkins_build = "${env.BUILD_NUMBER}"
+  jenkins_job   = "${env.JOB_NAME}"
+}
+"""
+                    writeFile file: "${TF_DIR}/jenkins.auto.tfvars", text: tfvars
+
+                    dir(TF_DIR) {
+                        sh 'terraform init'
+                        sh 'terraform plan -out=tfplan'
+                        sh 'terraform apply tfplan'
+                    }
+                }
+            }
+        }
+
+        stage('Run Load Tests') {
+            steps {
+                script {
+                    def regions = params.AWS_REGIONS.split(',').collect { it.trim() }
+                    def parallelStages = [:]
+
+                    for (region in regions) {
+                        def r = region
+                        parallelStages["Test: ${r}"] = {
+                            runRegionalTest(r)
+                        }
+                    }
+
+                    parallel parallelStages
+                }
+            }
+        }
+
+        stage('Aggregate Results') {
+            steps {
+                script {
+                    def regions = params.AWS_REGIONS.split(',').collect { it.trim() }
+                    def summary = [regions: [:], overall_pass: true]
+
+                    for (region in regions) {
+                        def resultFile = "results/${region}/results.json"
+                        if (fileExists(resultFile)) {
+                            def content = readFile(resultFile)
+                            summary.regions[region] = [
+                                results: content,
+                                status: 'collected'
+                            ]
+                        } else {
+                            summary.regions[region] = [status: 'missing']
+                            summary.overall_pass = false
+                        }
+                    }
+
+                    // Check for threshold breaches
+                    for (region in regions) {
+                        def exitCodeFile = "results/${region}/exit_code"
+                        if (fileExists(exitCodeFile)) {
+                            def exitCode = readFile(exitCodeFile).trim().toInteger()
+                            if (exitCode == 2) {
+                                echo "THRESHOLD BREACH in ${region}"
+                                summary.overall_pass = false
+                            } else if (exitCode != 0) {
+                                echo "ERROR in ${region} (exit code ${exitCode})"
+                                summary.overall_pass = false
+                            }
+                        }
+                    }
+
+                    writeFile file: 'results/summary.json', text: groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(summary))
+
+                    if (!summary.overall_pass) {
+                        unstable('One or more regions had threshold breaches or errors')
+                    }
+                }
+            }
+        }
+
+        stage('Archive Artifacts') {
+            steps {
+                archiveArtifacts artifacts: 'results/**/*', allowEmptyArchive: true
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                if (params.CLEANUP_AFTER_RUN) {
+                    echo 'Cleaning up infrastructure (CLEANUP_AFTER_RUN=true)...'
+                    dir(TF_DIR) {
+                        sh 'terraform destroy -auto-approve || true'
+                    }
+                } else {
+                    echo 'Skipping cleanup (CLEANUP_AFTER_RUN=false). Infrastructure remains running.'
+                    echo 'To destroy manually: cd infra/multi-region/terraform && terraform destroy'
+                }
+            }
+        }
+        failure {
+            echo 'Pipeline failed. Check logs for details.'
+        }
+        success {
+            echo 'Load test completed successfully.'
+        }
+    }
+}
+
+// =============================================================================
+// Helper: Run load test in a single region
+// =============================================================================
+
+def runRegionalTest(String region) {
+    def tfDir = "${WORKSPACE}/infra/multi-region/terraform"
+
+    // Get Terraform outputs for this region
+    def clusterName = sh(
+        script: "cd ${tfDir} && terraform output -json cluster_names | python3 -c \"import sys,json; print(json.load(sys.stdin).get('${region}',''))\"",
+        returnStdout: true
+    ).trim()
+
+    def masterService = sh(
+        script: "cd ${tfDir} && terraform output -json master_service_names | python3 -c \"import sys,json; print(json.load(sys.stdin).get('${region}',''))\"",
+        returnStdout: true
+    ).trim()
+
+    def masterLogGroup = sh(
+        script: "cd ${tfDir} && terraform output -json master_log_group_names | python3 -c \"import sys,json; print(json.load(sys.stdin).get('${region}',''))\"",
+        returnStdout: true
+    ).trim()
+
+    def workerServices = sh(
+        script: "cd ${tfDir} && terraform output -json worker_service_names | python3 -c \"import sys,json; print(','.join(json.load(sys.stdin).get('${region}',[])))\"",
+        returnStdout: true
+    ).trim()
+
+    if (!clusterName || !masterService) {
+        error("Could not get Terraform outputs for region ${region}")
+    }
+
+    echo "[${region}] Cluster: ${clusterName}, Master: ${masterService}"
+
+    // Force new deployment to pick up latest config
+    sh "aws ecs update-service --cluster ${clusterName} --service ${masterService} --force-new-deployment --region ${region}"
+    for (svc in workerServices.split(',')) {
+        if (svc) {
+            sh "aws ecs update-service --cluster ${clusterName} --service ${svc} --force-new-deployment --region ${region}"
+        }
+    }
+
+    // Wait for services to stabilize
+    echo "[${region}] Waiting for master service to stabilize..."
+    sh "aws ecs wait services-stable --cluster ${clusterName} --services ${masterService} --region ${region}"
+    echo "[${region}] Master stable."
+
+    // Wait for test to complete (duration + buffer for startup/collection)
+    def durationSec = params.TEST_DURATION.toInteger()
+    def waitSec = durationSec + 120 // buffer for worker connection + result collection
+    echo "[${region}] Waiting ${waitSec}s for test completion..."
+    sleep(waitSec)
+
+    // Collect results from CloudWatch logs
+    sh "mkdir -p results/${region}"
+
+    def endTime = System.currentTimeMillis()
+    def startTime = endTime - ((durationSec + 300) * 1000)
+
+    // Poll for results marker in logs
+    def found = false
+    for (int attempt = 0; attempt < 30; attempt++) {
+        def logOutput = sh(
+            script: """
+                aws logs filter-log-events \
+                    --log-group-name '${masterLogGroup}' \
+                    --start-time ${startTime} \
+                    --end-time ${endTime} \
+                    --filter-pattern 'PYWRKR_JSON_END' \
+                    --region ${region} \
+                    --output text 2>/dev/null || echo ''
+            """,
+            returnStdout: true
+        ).trim()
+
+        if (logOutput.contains('PYWRKR_JSON_END')) {
+            found = true
+            break
+        }
+        echo "[${region}] Waiting for results... (attempt ${attempt + 1}/30)"
+        sleep(10)
+    }
+
+    if (!found) {
+        echo "[${region}] WARNING: Could not find result markers in logs"
+        writeFile file: "results/${region}/exit_code", text: '1'
+        return
+    }
+
+    // Extract JSON results
+    sh """
+        aws logs filter-log-events \
+            --log-group-name '${masterLogGroup}' \
+            --start-time ${startTime} \
+            --end-time ${System.currentTimeMillis()} \
+            --region ${region} \
+            --output json > results/${region}/raw_logs.json
+    """
+
+    sh """
+        python3 -c "
+import json, re, sys
+with open('results/${region}/raw_logs.json') as f:
+    data = json.load(f)
+messages = ' '.join(e.get('message','') for e in data.get('events',[]))
+m = re.search(r'---PYWRKR_JSON_START---(.+?)---PYWRKR_JSON_END---', messages, re.DOTALL)
+if m:
+    result = json.loads(m.group(1).strip())
+    with open('results/${region}/results.json', 'w') as out:
+        json.dump(result, out, indent=2)
+    sys.exit(0)
+else:
+    print('No JSON results found in logs')
+    sys.exit(1)
+" || echo '1' > results/${region}/exit_code
+    """
+
+    // Capture exit code from the ECS task
+    def taskArns = sh(
+        script: "aws ecs list-tasks --cluster ${clusterName} --service-name ${masterService} --desired-status STOPPED --region ${region} --query 'taskArns[0]' --output text 2>/dev/null || echo ''",
+        returnStdout: true
+    ).trim()
+
+    if (taskArns && taskArns != 'None') {
+        def exitCode = sh(
+            script: "aws ecs describe-tasks --cluster ${clusterName} --tasks ${taskArns} --region ${region} --query 'tasks[0].containers[0].exitCode' --output text 2>/dev/null || echo '0'",
+            returnStdout: true
+        ).trim()
+        writeFile file: "results/${region}/exit_code", text: exitCode
+        echo "[${region}] Master exit code: ${exitCode}"
+    } else {
+        writeFile file: "results/${region}/exit_code", text: '0'
+    }
+}
