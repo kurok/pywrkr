@@ -1,0 +1,46 @@
+{
+  "name": "HAR-imported user flow",
+  "description": "Example scenario generated from a browser HAR recording via: pywrkr har-import recording.har -o har-example.json",
+  "think_time": 0.5,
+  "steps": [
+    {
+      "name": "landing_page",
+      "path": "/",
+      "method": "GET",
+      "headers": {
+        "Accept": "text/html"
+      },
+      "think_time": 2.0
+    },
+    {
+      "name": "login",
+      "path": "/api/auth/login",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {"username": "testuser", "password": "testpass"},
+      "assert_status": 200,
+      "think_time": 1.5
+    },
+    {
+      "name": "dashboard",
+      "path": "/api/dashboard",
+      "method": "GET",
+      "headers": {
+        "Accept": "application/json"
+      },
+      "assert_status": 200,
+      "think_time": 3.0
+    },
+    {
+      "name": "search",
+      "path": "/api/search?q=test&limit=20",
+      "method": "GET",
+      "headers": {
+        "Accept": "application/json"
+      },
+      "assert_status": 200
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "name": "API endpoint multi-step test",
+  "description": "Tests multiple API endpoints in sequence per virtual user iteration",
+  "think_time": 1.0,
+  "steps": [
+    {
+      "name": "health_check",
+      "path": "/health",
+      "method": "GET",
+      "headers": {
+        "Accept": "application/json"
+      },
+      "assert_status": 200
+    },
+    {
+      "name": "list_items",
+      "path": "/api/v1/items?limit=10",
+      "method": "GET",
+      "headers": {
+        "Accept": "application/json"
+      },
+      "assert_status": 200,
+      "think_time": 0.5
+    },
+    {
+      "name": "create_item",
+      "path": "/api/v1/items",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {"name": "load-test-item", "value": 42},
+      "assert_status": 201,
+      "think_time": 1.0
+    },
+    {
+      "name": "get_created_item",
+      "path": "/api/v1/items/1",
+      "method": "GET",
+      "headers": {
+        "Accept": "application/json"
+      },
+      "assert_status": 200
+    }
+  ]
+}
