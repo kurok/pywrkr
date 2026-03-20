@@ -5159,5 +5159,592 @@ class TestConnectionPoolStrategy(AioHTTPTestCase):
         self.assertEqual(created_connectors[0], 3)
 
 
+# ---------------------------------------------------------------------------
+# Tests for main.py validation / entry-point helpers (coverage)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateUrlAndMode(unittest.TestCase):
+    """Tests for _validate_url_and_mode edge-case branches."""
+
+    def _make_parser_and_args(self, **overrides):
+        from pywrkr.main import _build_parser
+
+        parser = _build_parser()
+        defaults = parser.parse_args(["http://example.com"])
+        for k, v in overrides.items():
+            setattr(defaults, k, v)
+        return parser, defaults
+
+    def test_worker_missing_port_format(self):
+        from pywrkr.main import _validate_url_and_mode
+
+        parser, args = self._make_parser_and_args(worker="no-colon")
+        with self.assertRaises(SystemExit):
+            _validate_url_and_mode(parser, args)
+
+    def test_worker_invalid_port(self):
+        from pywrkr.main import _validate_url_and_mode
+
+        parser, args = self._make_parser_and_args(worker="host:notaport")
+        with self.assertRaises(SystemExit):
+            _validate_url_and_mode(parser, args)
+
+    def test_master_without_url(self):
+        from pywrkr.main import _validate_url_and_mode
+
+        parser, args = self._make_parser_and_args(master=True, expect_workers=2, url=None)
+        with self.assertRaises(SystemExit):
+            _validate_url_and_mode(parser, args)
+
+    def test_no_url_no_url_file_no_scenario(self):
+        from pywrkr.main import _validate_url_and_mode
+
+        parser, args = self._make_parser_and_args(url=None, url_file=None, scenario=None)
+        with self.assertRaises(SystemExit):
+            _validate_url_and_mode(parser, args)
+
+    def test_invalid_url_scheme(self):
+        from pywrkr.main import _validate_url_and_mode
+
+        parser, args = self._make_parser_and_args(url="ftp://example.com")
+        with self.assertRaises(SystemExit):
+            _validate_url_and_mode(parser, args)
+
+
+class TestValidateLoadParams(unittest.TestCase):
+    """Tests for _validate_load_params edge-case branches."""
+
+    def _make_parser_and_args(self, **overrides):
+        from pywrkr.main import _build_parser
+
+        parser = _build_parser()
+        defaults = parser.parse_args(["http://example.com"])
+        for k, v in overrides.items():
+            setattr(defaults, k, v)
+        return parser, defaults
+
+    def test_connections_zero(self):
+        from pywrkr.main import _validate_load_params
+
+        parser, args = self._make_parser_and_args(connections=0)
+        with self.assertRaises(SystemExit):
+            _validate_load_params(parser, args)
+
+    def test_threads_zero(self):
+        from pywrkr.main import _validate_load_params
+
+        parser, args = self._make_parser_and_args(threads=0)
+        with self.assertRaises(SystemExit):
+            _validate_load_params(parser, args)
+
+    def test_duration_negative(self):
+        from pywrkr.main import _validate_load_params
+
+        parser, args = self._make_parser_and_args(duration=-1)
+        with self.assertRaises(SystemExit):
+            _validate_load_params(parser, args)
+
+    def test_num_requests_zero(self):
+        from pywrkr.main import _validate_load_params
+
+        parser, args = self._make_parser_and_args(num_requests=0)
+        with self.assertRaises(SystemExit):
+            _validate_load_params(parser, args)
+
+    def test_users_with_num_requests(self):
+        from pywrkr.main import _validate_load_params
+
+        parser, args = self._make_parser_and_args(users=10, num_requests=100, duration=5)
+        with self.assertRaises(SystemExit):
+            _validate_load_params(parser, args)
+
+    def test_users_without_duration(self):
+        from pywrkr.main import _validate_load_params
+
+        parser, args = self._make_parser_and_args(users=10, duration=None)
+        with self.assertRaises(SystemExit):
+            _validate_load_params(parser, args)
+
+    def test_num_requests_and_duration_conflict(self):
+        from pywrkr.main import _validate_load_params
+
+        parser, args = self._make_parser_and_args(
+            num_requests=100, duration=10, users=None, autofind=False
+        )
+        with self.assertRaises(SystemExit):
+            _validate_load_params(parser, args)
+
+    def test_rate_zero(self):
+        from pywrkr.main import _validate_load_params
+
+        parser, args = self._make_parser_and_args(rate=0)
+        with self.assertRaises(SystemExit):
+            _validate_load_params(parser, args)
+
+
+class TestValidateRateAndTraffic(unittest.TestCase):
+    """Tests for _validate_rate_and_traffic branches."""
+
+    def test_rate_ramp_without_rate(self):
+        from pywrkr.main import _build_parser, _validate_rate_and_traffic
+
+        parser = _build_parser()
+        args = parser.parse_args(["http://example.com"])
+        config = pywrkr.BenchmarkConfig(url="http://example.com", rate_ramp=1000, rate=None)
+        with self.assertRaises(SystemExit):
+            _validate_rate_and_traffic(parser, args, config)
+
+    def test_rate_ramp_without_duration(self):
+        from pywrkr.main import _build_parser, _validate_rate_and_traffic
+
+        parser = _build_parser()
+        args = parser.parse_args(["http://example.com"])
+        config = pywrkr.BenchmarkConfig(
+            url="http://example.com", rate_ramp=1000, rate=500, duration=None
+        )
+        with self.assertRaises(SystemExit):
+            _validate_rate_and_traffic(parser, args, config)
+
+    def test_traffic_profile_without_rate(self):
+        from pywrkr.main import _build_parser, _validate_rate_and_traffic
+
+        parser = _build_parser()
+        args = parser.parse_args(["http://example.com"])
+        args.traffic_profile = "sine"
+        config = pywrkr.BenchmarkConfig(url="http://example.com", rate=None, duration=10)
+        with self.assertRaises(SystemExit):
+            _validate_rate_and_traffic(parser, args, config)
+
+    def test_traffic_profile_without_duration(self):
+        from pywrkr.main import _build_parser, _validate_rate_and_traffic
+
+        parser = _build_parser()
+        args = parser.parse_args(["http://example.com"])
+        args.traffic_profile = "sine"
+        config = pywrkr.BenchmarkConfig(url="http://example.com", rate=500, duration=None)
+        with self.assertRaises(SystemExit):
+            _validate_rate_and_traffic(parser, args, config)
+
+    def test_traffic_profile_with_rate_ramp_conflict(self):
+        from pywrkr.main import _build_parser, _validate_rate_and_traffic
+
+        parser = _build_parser()
+        args = parser.parse_args(["http://example.com"])
+        args.traffic_profile = "sine"
+        config = pywrkr.BenchmarkConfig(
+            url="http://example.com", rate=500, duration=10, rate_ramp=1000
+        )
+        with self.assertRaises(SystemExit):
+            _validate_rate_and_traffic(parser, args, config)
+
+    def test_traffic_profile_invalid_value(self):
+        from pywrkr.main import _build_parser, _validate_rate_and_traffic
+
+        parser = _build_parser()
+        args = parser.parse_args(["http://example.com"])
+        args.traffic_profile = "not_a_real_profile"
+        config = pywrkr.BenchmarkConfig(url="http://example.com", rate=500, duration=10)
+        with self.assertRaises(SystemExit):
+            _validate_rate_and_traffic(parser, args, config)
+
+
+class TestResolveBody(unittest.TestCase):
+    """Tests for _resolve_body."""
+
+    def _make_parser_and_args(self, **overrides):
+        from pywrkr.main import _build_parser
+
+        parser = _build_parser()
+        defaults = parser.parse_args(["http://example.com"])
+        for k, v in overrides.items():
+            setattr(defaults, k, v)
+        return parser, defaults
+
+    def test_post_file_missing(self):
+        from pywrkr.main import _resolve_body
+
+        parser, args = self._make_parser_and_args(post_file="/nonexistent/path.txt")
+        with self.assertRaises(SystemExit):
+            _resolve_body(parser, args)
+
+    def test_post_file_reads_content(self):
+        from pywrkr.main import _resolve_body
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"hello body")
+            f.flush()
+            try:
+                parser, args = self._make_parser_and_args(post_file=f.name)
+                result = _resolve_body(parser, args)
+                self.assertEqual(result, b"hello body")
+            finally:
+                os.unlink(f.name)
+
+    def test_body_string(self):
+        from pywrkr.main import _resolve_body
+
+        parser, args = self._make_parser_and_args(body='{"key":"value"}', post_file=None)
+        result = _resolve_body(parser, args)
+        self.assertEqual(result, b'{"key":"value"}')
+
+    def test_no_body(self):
+        from pywrkr.main import _resolve_body
+
+        parser, args = self._make_parser_and_args(body=None, post_file=None)
+        result = _resolve_body(parser, args)
+        self.assertIsNone(result)
+
+
+class TestParseTagsAndThresholds(unittest.TestCase):
+    """Tests for _parse_tags_and_thresholds."""
+
+    def _make_parser_and_args(self, **overrides):
+        from pywrkr.main import _build_parser
+
+        parser = _build_parser()
+        defaults = parser.parse_args(["http://example.com"])
+        for k, v in overrides.items():
+            setattr(defaults, k, v)
+        return parser, defaults
+
+    def test_valid_tags(self):
+        from pywrkr.main import _parse_tags_and_thresholds
+
+        parser, args = self._make_parser_and_args(tags=["env=prod", "team=backend"], thresholds=[])
+        tags, thresholds = _parse_tags_and_thresholds(parser, args)
+        self.assertEqual(tags, {"env": "prod", "team": "backend"})
+        self.assertEqual(thresholds, [])
+
+    def test_invalid_tag_format(self):
+        from pywrkr.main import _parse_tags_and_thresholds
+
+        parser, args = self._make_parser_and_args(tags=["no-equals-sign"], thresholds=[])
+        with self.assertRaises(SystemExit):
+            _parse_tags_and_thresholds(parser, args)
+
+    def test_invalid_threshold(self):
+        from pywrkr.main import _parse_tags_and_thresholds
+
+        parser, args = self._make_parser_and_args(tags=[], thresholds=["garbage!!!"])
+        with self.assertRaises(SystemExit):
+            _parse_tags_and_thresholds(parser, args)
+
+
+class TestDetermineAndRunMode(unittest.TestCase):
+    """Tests for _determine_and_run_mode dispatch."""
+
+    def _make_args(self, **overrides):
+        defaults = argparse.Namespace(
+            url="http://example.com",
+            url_file=None,
+            master=False,
+            autofind=False,
+            bind="0.0.0.0",
+            port=9220,
+            expect_workers=1,
+            no_keepalive=False,
+            max_error_rate=5.0,
+            max_p95=500,
+            step_duration=10,
+            start_users=1,
+            max_users=100,
+            step_multiplier=2.0,
+            think_time=1.0,
+            think_jitter=0.5,
+            random_param=False,
+            timeout=30,
+            json=None,
+        )
+        for k, v in overrides.items():
+            setattr(defaults, k, v)
+        return defaults
+
+    @patch("pywrkr.main.run_benchmark", new_callable=AsyncMock)
+    def test_default_benchmark_mode(self, mock_bench):
+        from pywrkr.main import _determine_and_run_mode
+
+        mock_bench.return_value = (MagicMock(), 0)
+        config = pywrkr.BenchmarkConfig(url="http://example.com", duration=5)
+        args = self._make_args()
+        with self.assertRaises(SystemExit) as ctx:
+            _determine_and_run_mode(config, args)
+        self.assertEqual(ctx.exception.code, 0)
+        mock_bench.assert_called_once()
+
+    @patch("pywrkr.main.run_user_simulation", new_callable=AsyncMock)
+    def test_user_simulation_mode(self, mock_usim):
+        from pywrkr.main import _determine_and_run_mode
+
+        mock_usim.return_value = (MagicMock(), 0)
+        config = pywrkr.BenchmarkConfig(url="http://example.com", users=10, duration=5)
+        args = self._make_args()
+        with self.assertRaises(SystemExit) as ctx:
+            _determine_and_run_mode(config, args)
+        self.assertEqual(ctx.exception.code, 0)
+        mock_usim.assert_called_once()
+
+    @patch("pywrkr.main.run_master", new_callable=AsyncMock)
+    def test_master_mode_success(self, mock_master):
+        from pywrkr.main import _determine_and_run_mode
+
+        mock_master.return_value = (MagicMock(), 0)
+        config = pywrkr.BenchmarkConfig(url="http://example.com", duration=5)
+        args = self._make_args(master=True, expect_workers=2)
+        with self.assertRaises(SystemExit) as ctx:
+            _determine_and_run_mode(config, args)
+        self.assertEqual(ctx.exception.code, 0)
+
+    @patch("pywrkr.main.run_master", new_callable=AsyncMock)
+    def test_master_mode_failure(self, mock_master):
+        from pywrkr.main import _determine_and_run_mode
+
+        mock_master.return_value = None
+        config = pywrkr.BenchmarkConfig(url="http://example.com", duration=5)
+        args = self._make_args(master=True, expect_workers=2)
+        with self.assertRaises(SystemExit) as ctx:
+            _determine_and_run_mode(config, args)
+        self.assertEqual(ctx.exception.code, 1)
+
+    @patch("pywrkr.main.run_multi_url", new_callable=AsyncMock)
+    @patch("pywrkr.main.load_url_file")
+    def test_multi_url_mode(self, mock_load, mock_multi):
+        from pywrkr.main import _determine_and_run_mode
+
+        mock_result = MagicMock()
+        mock_result.exit_code = 0
+        mock_load.return_value = [mock_result]
+        mock_multi.return_value = [mock_result]
+        config = pywrkr.BenchmarkConfig(url="http://example.com", duration=5)
+        args = self._make_args(url_file="urls.txt")
+        with self.assertRaises(SystemExit) as ctx:
+            _determine_and_run_mode(config, args)
+        self.assertEqual(ctx.exception.code, 0)
+
+    @patch("pywrkr.main.run_autofind", new_callable=AsyncMock)
+    def test_autofind_mode(self, mock_af):
+        from pywrkr.main import _determine_and_run_mode
+
+        config = pywrkr.BenchmarkConfig(url="http://example.com", duration=5)
+        args = self._make_args(autofind=True)
+        _determine_and_run_mode(config, args)
+        mock_af.assert_called_once()
+
+
+class TestRunHarImport(unittest.TestCase):
+    """Tests for _run_har_import."""
+
+    def test_har_import_to_stdout(self):
+        from pywrkr.main import _run_har_import
+
+        har_data = {
+            "log": {
+                "entries": [
+                    {
+                        "request": {
+                            "method": "GET",
+                            "url": "http://example.com/api",
+                            "headers": [],
+                        },
+                        "response": {"status": 200},
+                        "timings": {"wait": 10},
+                        "startedDateTime": "2024-01-01T00:00:00Z",
+                    }
+                ]
+            }
+        }
+        with tempfile.NamedTemporaryFile(suffix=".har", mode="w", delete=False) as f:
+            json.dump(har_data, f)
+            f.flush()
+            try:
+                args = argparse.Namespace(
+                    har_file=f.name,
+                    output=None,
+                    format="url-file",
+                    include_static=False,
+                    exclude_patterns=[],
+                    include_patterns=[],
+                    domains=[],
+                    preserve_headers=[],
+                    no_think_time=False,
+                    think_time_multiplier=1.0,
+                    assert_status=False,
+                    name=None,
+                )
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    _run_har_import(args)
+                self.assertIn("http://example.com/api", mock_out.getvalue())
+            finally:
+                os.unlink(f.name)
+
+    def test_har_import_to_file(self):
+        from pywrkr.main import _run_har_import
+
+        har_data = {
+            "log": {
+                "entries": [
+                    {
+                        "request": {
+                            "method": "GET",
+                            "url": "http://example.com/page",
+                            "headers": [],
+                        },
+                        "response": {"status": 200},
+                        "timings": {"wait": 5},
+                        "startedDateTime": "2024-01-01T00:00:00Z",
+                    }
+                ]
+            }
+        }
+        with tempfile.NamedTemporaryFile(suffix=".har", mode="w", delete=False) as hf:
+            json.dump(har_data, hf)
+            hf.flush()
+            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as out:
+                out_path = out.name
+            try:
+                args = argparse.Namespace(
+                    har_file=hf.name,
+                    output=out_path,
+                    format="url-file",
+                    include_static=False,
+                    exclude_patterns=[],
+                    include_patterns=[],
+                    domains=[],
+                    preserve_headers=[],
+                    no_think_time=False,
+                    think_time_multiplier=1.0,
+                    assert_status=False,
+                    name=None,
+                )
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    _run_har_import(args)
+                self.assertIn("Wrote", mock_out.getvalue())
+            finally:
+                os.unlink(hf.name)
+                if os.path.exists(out_path):
+                    os.unlink(out_path)
+
+    def test_har_import_file_not_found(self):
+        from pywrkr.main import _run_har_import
+
+        args = argparse.Namespace(
+            har_file="/nonexistent/file.har",
+            output=None,
+            format="url-file",
+            include_static=False,
+            exclude_patterns=[],
+            include_patterns=[],
+            domains=[],
+            preserve_headers=[],
+            no_think_time=False,
+            think_time_multiplier=1.0,
+            assert_status=False,
+            name=None,
+        )
+        with self.assertRaises(SystemExit) as ctx:
+            _run_har_import(args)
+        self.assertEqual(ctx.exception.code, 1)
+
+
+class TestMainEntryPoint(unittest.TestCase):
+    """Tests for the main() entry point."""
+
+    @patch("pywrkr.main._determine_and_run_mode")
+    @patch("pywrkr.main._parse_and_validate_args")
+    @patch("pywrkr.main._build_parser")
+    def test_main_normal_flow(self, mock_build, mock_validate, mock_run):
+        from pywrkr.main import main
+
+        mock_parser = MagicMock()
+        mock_build.return_value = mock_parser
+        mock_config = MagicMock()
+        mock_args = MagicMock()
+        mock_validate.return_value = (mock_config, mock_args)
+
+        with patch.object(sys, "argv", ["pywrkr", "http://example.com"]):
+            main()
+
+        mock_run.assert_called_once_with(mock_config, mock_args)
+
+    @patch("pywrkr.main._run_har_import")
+    @patch("pywrkr.main._build_har_import_parser")
+    def test_main_har_import_subcommand(self, mock_build_har, mock_run_har):
+        from pywrkr.main import main
+
+        mock_parser = MagicMock()
+        mock_build_har.return_value = mock_parser
+
+        with patch.object(sys, "argv", ["pywrkr", "har-import", "file.har"]):
+            main()
+
+        mock_build_har.assert_called_once()
+        mock_run_har.assert_called_once()
+
+
+class TestParseAndValidateScenario(unittest.TestCase):
+    """Tests for scenario-related branches in _parse_and_validate_args."""
+
+    def test_invalid_scenario_file(self):
+        from pywrkr.main import _build_parser, _parse_and_validate_args
+
+        parser = _build_parser()
+        args = parser.parse_args(["--scenario", "/nonexistent/scenario.json", "http://example.com"])
+        with self.assertRaises(SystemExit):
+            _parse_and_validate_args(parser, args)
+
+    def test_scenario_without_url_uses_base_url(self):
+        from pywrkr.main import _build_parser, _parse_and_validate_args
+
+        scenario_data = {
+            "base_url": "http://scenario-host.com",
+            "steps": [{"method": "GET", "path": "/api"}],
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+            json.dump(scenario_data, f)
+            f.flush()
+            try:
+                parser = _build_parser()
+                args = parser.parse_args(["--scenario", f.name])
+                config, _ = _parse_and_validate_args(parser, args)
+                self.assertEqual(config.url, "http://scenario-host.com")
+            finally:
+                os.unlink(f.name)
+
+    def test_scenario_without_url_or_base_url_errors(self):
+        from pywrkr.main import _build_parser, _parse_and_validate_args
+
+        scenario_data = {
+            "steps": [{"method": "GET", "path": "/api"}],
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+            json.dump(scenario_data, f)
+            f.flush()
+            try:
+                parser = _build_parser()
+                args = parser.parse_args(["--scenario", f.name])
+                with self.assertRaises(SystemExit):
+                    _parse_and_validate_args(parser, args)
+            finally:
+                os.unlink(f.name)
+
+    def test_scenario_defaults_duration_10(self):
+        from pywrkr.main import _build_parser, _parse_and_validate_args
+
+        scenario_data = {
+            "base_url": "http://example.com",
+            "steps": [{"method": "GET", "path": "/"}],
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+            json.dump(scenario_data, f)
+            f.flush()
+            try:
+                parser = _build_parser()
+                args = parser.parse_args(["--scenario", f.name])
+                config, _ = _parse_and_validate_args(parser, args)
+                self.assertEqual(config.duration, 10.0)
+            finally:
+                os.unlink(f.name)
+
+
 if __name__ == "__main__":
     unittest.main()
