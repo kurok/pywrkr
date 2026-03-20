@@ -1,5 +1,6 @@
 {
   "name": "sample-recording",
+  "base_url": "https://api.example.com",
   "think_time": 0.0,
   "steps": [
     {
@@ -13,7 +14,7 @@
       "path": "/users/42",
       "method": "GET",
       "assert_status": 200,
-      "think_time": 0.12
+      "think_time": 0.08
     },
     {
       "name": "POST /users",
@@ -27,21 +28,21 @@
         "email": "alice@example.com"
       },
       "assert_status": 201,
-      "think_time": 0.09
+      "think_time": 0.21
     },
     {
       "name": "GET /styles/main.css",
       "path": "/styles/main.css",
       "method": "GET",
       "assert_status": 200,
-      "think_time": 0.15
+      "think_time": 0.35
     },
     {
       "name": "GET /logo.png",
       "path": "/logo.png",
       "method": "GET",
       "assert_status": 200,
-      "think_time": 0.04
+      "think_time": 0.05
     },
     {
       "name": "PUT /users/42",
@@ -54,14 +55,14 @@
         "name": "Alice Updated"
       },
       "assert_status": 200,
-      "think_time": 0.04
+      "think_time": 0.87
     },
     {
       "name": "DELETE /users/42",
       "path": "/users/42",
       "method": "DELETE",
       "assert_status": 204,
-      "think_time": 0.2
+      "think_time": 0.3
     }
   ]
 }
