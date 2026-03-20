@@ -1,5 +1,6 @@
 {
   "name": "sample-recording",
+  "base_url": "https://api.example.com",
   "think_time": 0.0,
   "steps": [
     {
@@ -11,7 +12,7 @@
       "name": "GET /users/42",
       "path": "/users/42",
       "method": "GET",
-      "think_time": 0.12
+      "think_time": 0.08
     },
     {
       "name": "POST /users",
@@ -24,7 +25,7 @@
         "name": "Alice",
         "email": "alice@example.com"
       },
-      "think_time": 0.09
+      "think_time": 0.21
     },
     {
       "name": "PUT /users/42",
@@ -36,13 +37,13 @@
       "body": {
         "name": "Alice Updated"
       },
-      "think_time": 0.15
+      "think_time": 1.35
     },
     {
       "name": "DELETE /users/42",
       "path": "/users/42",
       "method": "DELETE",
-      "think_time": 0.2
+      "think_time": 0.3
     }
   ]
 }
