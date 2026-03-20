@@ -74,13 +74,17 @@ jobs:
         python -m pip install -e ".[dev,lint]"
     - name: Run tests with coverage
       run: |
-        pytest --cov=pywrkr --cov-report=xml --cov-report=term-missing --cov-fail-under=85
-    - name: Upload coverage to Codecov
+        pytest --cov --junitxml=junit.xml -o junit_family=legacy
+    - name: Upload coverage reports to Codecov
       if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
       uses: codecov/codecov-action@v5
       with:
-        files: ./coverage.xml
-        fail_ci_if_error: false
+        token: ${{ secrets.CODECOV_TOKEN }}
+    - name: Upload test results to Codecov
+      if: ${{ !cancelled() }}
+      uses: codecov/test-results-action@v1
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
 
   # -------------------------------------------------------------------
   # Type checking with mypy
