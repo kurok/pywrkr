@@ -1,16 +1,19 @@
-# This workflow will upload a Python Package to PyPI when a release is created
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python#publishing-to-package-registries
-
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+# Publishes to PyPI on v* tag push or when a GitHub Release is published.
+# Triggered by tag push because the Auto Release workflow creates releases
+# using GITHUB_TOKEN, which does not emit release events to other workflows.
 
 name: Upload Python Package
 
 on:
+  push:
+    tags:
+      - "v*"
   release:
     types: [published]
+
+concurrency:
+  group: pypi-publish
+  cancel-in-progress: false
 
 permissions:
   contents: read
