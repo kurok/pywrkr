@@ -1,0 +1,232 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.3.2] - 2026-03-31
+
+### Security
+
+- Bump Pygments 2.19.2 to 2.20.0 to fix ReDoS vulnerability (CVE-2026-4539)
+
+## [1.3.1] - 2026-03-30
+
+### Fixed
+
+- Bump requests 2.32.5 to 2.33.0
+- Use total elapsed time in rate limiter test to avoid CI flakiness
+
+### Changed
+
+- Increase test coverage from 92% to 95%
+
+## [1.3.0] - 2026-03-20
+
+### Added
+
+- Multi-region distributed load testing on AWS ECS/Fargate infrastructure
+- CLAUDE.md with repo rules and PR workflow directives
+- Sanitize-pr-description workflow
+- Coverage tests for main.py validation helpers
+
+### Fixed
+
+- Suppress aiohttp DeprecationWarning on Python 3.12+
+- Make rate limiter tests resilient to CI timing jitter
+- Relax flaky rate limiter test threshold for macOS CI
+- Remove corrupted `.github` tree entry
+- Regenerate stale HAR import example files
+- Pass CODECOV_TOKEN secret to codecov-action v5
+- Upgrade test-results-action from v1 to v5
+- Add explicit permissions to sanitize-pr-description workflow
+
+### Changed
+
+- Comprehensive CI pipeline enhancements (lint, pre-commit, test matrix, typecheck, security)
+
+## [1.2.3] - 2026-03-16
+
+### Fixed
+
+- Fix spurious `ClientConnectionError` in request-count mode — shared `TCPConnector` was being closed prematurely by setting `connector_owner=False`
+- Add input validation for `--connections`, `--threads`, `--duration`, `--num-requests` CLI parameters
+- Fix unhandled tracebacks for `--scenario` file errors with clean argparse messages
+
+### Added
+
+- `base_url` support in scenario files — `--scenario` no longer requires a positional URL argument
+
+## [1.2.2] - 2026-03-16
+
+### Fixed
+
+- Allow `--scenario` without positional url argument
+
+## [1.2.1] - 2026-03-16
+
+### Fixed
+
+- Resolve `RuntimeWarning` when running `python -m pywrkr` by adding `__main__.py` entry point
+- Use `None` sentinel for file params to support stdout patching in tests
+
+### Changed
+
+- Refactor traffic_profiles.py — improve validation and parsing
+- Refactor workers.py — improve quality, safety, and observability
+- Refactor reporting.py — extract chart color constants, add TextIO type hints, consolidate export metrics, extract Gatling HTML report to `string.Template`
+
+## [1.2.0] - 2026-03-12
+
+### Fixed
+
+- Shared connection pool — all worker groups now share a single `TCPConnector`
+- Parameter validation — reject invalid CLI arguments with clear error messages
+- Rate limiter lock contention — remove unnecessary `asyncio.Lock`
+- Error handling and resource cleanup with `try/finally` for `connector.close()`
+
+### Changed
+
+- Memory-bounded sampling — replace unbounded lists with `ReservoirSampler` (Algorithm R)
+- Simplify complex functions — extract shared runner lifecycle helpers
+- Type safety — replace bare `dict` parameters with typed `ActiveUsers` and `RequestCounter`
+- Deduplicate workers — extract `_build_request_headers` and `_merge_all_stats`
+
+### Added
+
+- 81 new tests covering reporting, multi-URL, distributed, and worker utilities
+- Field-completeness guard for distributed config serialization
+- `ruff format` check in CI workflow
+
+## [1.1.1] - 2026-03-11
+
+### Changed
+
+- Replace all `print()` with structured logging via Python `logging` module
+- Narrow `except Exception` to specific exceptions
+- Extract helper functions to reduce duplication
+- Add docstrings to all major async functions
+
+### Added
+
+- `SSLConfig` dataclass with env var support (`PYWRKR_SSL_VERIFY`, `PYWRKR_CA_BUNDLE`)
+- `--ssl-verify` and `--ca-bundle` CLI flags
+- `mypy`, `black`, `ruff` configurations in `pyproject.toml`
+- 42 new tests covering SSL config, helpers, timeouts, cancellation, and edge cases
+
+## [1.1.0] - 2026-03-11
+
+### Added
+
+- Distributed load testing infrastructure on AWS ECS Fargate with Jenkins orchestration
+- Terraform modules — VPC networking, IAM roles, ECR registry, ECS cluster, CloudWatch logging
+- Jenkins 10-stage declarative pipeline with parameterized builds
+- AWS Cloud Map service discovery for worker-master communication
+- Interactive HTML report generator (`generate_report.py`) with Chart.js visualizations
+- Comprehensive deployment documentation with architecture diagrams
+
+### Fixed
+
+- Distributed mode correctly passes `html_report` config to the report builder
+- Test suite version check no longer hardcodes a specific version string
+
+## [1.0.5] - 2026-03-11
+
+### Added
+
+- HAR / browser-recording import (`pywrkr har-import`) — convert HAR files to pywrkr scenarios or URL lists
+- Domain filtering, regex include/exclude patterns, think time derivation
+- Two output formats: `scenario` (JSON) and `url-file`
+- 41 new tests for HAR parsing, filtering, conversion, and CLI
+- Sample HAR file and generated outputs in `examples/`
+
+## [1.0.4] - 2026-03-11
+
+### Fixed
+
+- Fix PyPI publish failure — `pyproject.toml` version now matches release tag
+
+### Changed
+
+- Remove deprecated `@unittest_run_loop` decorator (aiohttp 3.8+)
+- Upgrade GitHub Actions to Node.js 24-compatible versions
+- Split `_build_parser` into 6 focused helper functions
+- PEP 8 import ordering across all modules
+
+## [1.0.3] - 2026-03-11
+
+### Changed
+
+- Decompose 250+ line `main()` into focused functions
+- Reduce import complexity — removed 93 lines of re-exports
+- Add docstrings, PEP 604 type annotations, extract 12 default constants
+- Add community standards: Code of Conduct, contributing guide, security policy, issue/PR templates
+
+### Added
+
+- 11 new tests (parser helpers, default constants validation)
+- CodeQL workflow for security analysis
+- Examples folder with sample benchmark outputs
+
+## [1.0.2] - 2026-03-11
+
+### Security
+
+- Add explicit `permissions: contents: read` to CI workflow for least-privilege access
+
+## [1.0.1] - 2026-03-11
+
+### Added
+
+- Traffic profiles — realistic traffic shaping (`--traffic-profile`) with 6 built-in shapes: sine, step, sawtooth, square, spike, business-hours
+- CSV replay for production traffic curves
+- 27 new unit tests for traffic profiles
+
+### Fixed
+
+- Fix f-string backslash syntax for Python 3.10/3.11 compatibility (PEP 701)
+- Fix flaky threshold test with floating-point boundary comparison
+
+## [0.9.5] - 2026-03-11
+
+### Added
+
+- Gatling-style interactive HTML reports (`--html-report`)
+- Response time distribution histogram, percentile curve, throughput timeline, status code breakdown
+- Dark theme, responsive layout, offline-capable
+- 20 new tests for HTML reports
+
+## [0.9.2] - 2026-03-11
+
+### Added
+
+- Initial public release
+- Five benchmarking modes: duration, request-count, user simulation, rate limiting, auto-ramping
+- Detailed latency statistics with percentiles (p50-p99.99) and histogram
+- Latency breakdown: DNS, TCP connect, TLS, TTFB, transfer
+- SLO-aware thresholds with CI-friendly exit codes
+- Rate limiting and rate ramping
+- Scripted scenarios (YAML/JSON)
+- Live TUI dashboard (optional, via Rich)
+- Multi-URL testing from file
+- Distributed master/worker mode
+- Observability export: OpenTelemetry and Prometheus
+- Output formats: terminal, JSON, CSV, HTML
+
+[1.3.2]: https://github.com/kurok/pywrkr/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/kurok/pywrkr/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/kurok/pywrkr/compare/v1.2.3...v1.3.0
+[1.2.3]: https://github.com/kurok/pywrkr/compare/v1.2.2...v1.2.3
+[1.2.2]: https://github.com/kurok/pywrkr/compare/v1.2.1...v1.2.2
+[1.2.1]: https://github.com/kurok/pywrkr/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/kurok/pywrkr/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/kurok/pywrkr/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/kurok/pywrkr/compare/v1.0.5...v1.1.0
+[1.0.5]: https://github.com/kurok/pywrkr/compare/v1.0.4...v1.0.5
+[1.0.4]: https://github.com/kurok/pywrkr/compare/v1.0.3...v1.0.4
+[1.0.3]: https://github.com/kurok/pywrkr/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/kurok/pywrkr/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/kurok/pywrkr/compare/v0.9.5...v1.0.1
+[0.9.5]: https://github.com/kurok/pywrkr/compare/v0.9.2...v0.9.5
+[0.9.2]: https://github.com/kurok/pywrkr/releases/tag/v0.9.2
