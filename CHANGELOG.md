@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] - 2026-03-31
+
+### Changed
+
+- Add GOVERNANCE.md with BDFL governance model and path to maintainership
+- Add response time expectations (7-day SLA) to CONTRIBUTING.md
+- Update PyPI development status classifier from Beta to Production/Stable
+- Add README badges (CI, PyPI, Python versions, license, coverage)
+- Add Contributing section to README linking to CONTRIBUTING.md and CODE_OF_CONDUCT.md
+- Add CHANGELOG.md covering all releases from v0.9.2 to present
+- Add dependabot.yml for automated pip and GitHub Actions updates
+- Add CODEOWNERS for automatic review assignment
+- Add FUNDING.yml for GitHub Sponsors
+- Fix PR template linter reference from flake8 to ruff
+- Fix GitHub ruleset status check name mismatch
+- Fix CONTRIBUTING.md Questions link to point to GitHub Discussions
+
 ## [1.3.2] - 2026-03-31
 
 ### Security
@@ -214,6 +231,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Observability export: OpenTelemetry and Prometheus
 - Output formats: terminal, JSON, CSV, HTML
 
+[1.3.3]: https://github.com/kurok/pywrkr/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/kurok/pywrkr/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/kurok/pywrkr/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/kurok/pywrkr/compare/v1.2.3...v1.3.0
