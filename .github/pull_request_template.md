@@ -18,7 +18,7 @@
 
 - [ ] All existing tests pass (`pytest`)
 - [ ] New tests added for new functionality
-- [ ] Linter passes (`flake8 . --select=E9,F63,F7,F82`)
+- [ ] Linter passes (`ruff check src/ tests/`)
 
 ## Checklist
 
