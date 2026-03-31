@@ -1,5 +1,11 @@
 # pywrkr
 
+[![CI](https://github.com/kurok/pywrkr/actions/workflows/python-package.yml/badge.svg)](https://github.com/kurok/pywrkr/actions/workflows/python-package.yml)
+[![PyPI version](https://img.shields.io/pypi/v/pywrkr)](https://pypi.org/project/pywrkr/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pywrkr)](https://pypi.org/project/pywrkr/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![codecov](https://codecov.io/gh/kurok/pywrkr/graph/badge.svg)](https://codecov.io/gh/kurok/pywrkr)
+
 A Python HTTP benchmarking tool inspired by [wrk](https://github.com/wg/wrk) and [Apache ab](https://httpd.apache.org/docs/current/programs/ab.html), with extended statistics and virtual user simulation.
 
 ## Features
@@ -679,6 +685,12 @@ The test suite includes unit and integration tests covering:
 - Multi-URL mode tests (URL file loading, entry parsing)
 - Distributed mode tests (config/stats serialization, merge operations, TCP protocol)
 - Worker utility tests (URL construction, headers, stats merging, breakdown aggregation)
+
+## Contributing
+
+Contributions are welcome! Please read the [Contributing Guide](CONTRIBUTING.md) for details on how to get started, report bugs, suggest features, and submit pull requests.
+
+This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
 
 ## License
 

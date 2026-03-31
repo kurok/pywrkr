@@ -87,7 +87,7 @@ Branches MUST use one of these prefixes — other names are **rejected** by GitH
 - **Last push approval** required — the person who pushes last cannot self-approve
 - **All review threads must be resolved** before merge
 - **Required linear history** — squash or rebase merges only
-- **Required status check**: `build (3.12)` must pass (NOTE: see CI section)
+- **Required status check**: `test (ubuntu-latest, 3.12)` must pass
 - **CodeQL** analysis must pass (high_or_higher security threshold)
 - No force pushes or branch deletion on `main`
 - Admin bypass is available for maintainers
@@ -103,10 +103,6 @@ All jobs run on `push` to main and on every PR:
 5. **security** — bandit + pip-audit
 
 Coverage uploads to Codecov from Ubuntu/3.12 job.
-
-### CI Status Check Note
-
-The ruleset requires a status check named `build (3.12)` but the actual CI job is named `test (ubuntu-latest, 3.12)`. This mismatch means PRs currently require **admin bypass** to merge. To fix: update the ruleset required check to `test (ubuntu-latest, 3.12)`.
 
 ## Workflow: Creating a Clean PR
 
