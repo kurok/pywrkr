@@ -132,6 +132,16 @@ Releases are managed by the maintainers:
 2. A GitHub Release is created with a tag (e.g., `v1.0.2`)
 3. PyPI publish and Docker image build trigger automatically via GitHub Actions
 
+## Response Times
+
+This project is maintained on a best-effort basis. You can generally expect:
+
+- **Issue triage**: within 7 days
+- **Pull request review**: within 7 days
+- **Security reports**: acknowledgment within 48 hours (see [SECURITY.md](SECURITY.md))
+
+If a PR or issue hasn't received a response after 7 days, feel free to leave a polite ping.
+
 ## Questions?
 
-Open a [discussion](https://github.com/kurok/pywrkr/issues) or reach out via an issue. We're happy to help!
+Open a [discussion](https://github.com/kurok/pywrkr/discussions) or reach out via an issue. We're happy to help!
