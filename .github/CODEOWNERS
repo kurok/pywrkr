@@ -1,0 +1,11 @@
+# Default owner for everything in the repo
+* @kurok
+
+# Core package
+/src/pywrkr/ @kurok
+
+# Infrastructure
+/infra/ @kurok
+
+# CI/CD workflows
+/.github/ @kurok
