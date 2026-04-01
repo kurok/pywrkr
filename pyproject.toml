@@ -31,7 +31,7 @@ tui = ["rich>=13.0"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20"]
 all = ["rich>=13.0", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20"]
 dev = ["pytest>=7.0", "pytest-xdist>=3.0", "pytest-cov>=4.0", "aiohttp>=3.8"]
-lint = ["mypy>=1.0", "black>=23.0", "ruff>=0.1.0"]
+lint = ["mypy>=1.0", "ruff>=0.1.0"]
 security = ["bandit>=1.7", "pip-audit>=2.6"]
 
 [project.scripts]
@@ -62,9 +62,6 @@ disallow_untyped_defs = false
 [[tool.mypy.overrides]]
 module = ["pywrkr.distributed", "pywrkr.workers", "pywrkr.reporting"]
 disable_error_code = ["return-value", "operator", "arg-type", "type-var", "assignment", "name-defined", "var-annotated"]
-
-[tool.black]
-line-length = 100
 
 [tool.bandit]
 # B104: hardcoded 0.0.0.0 bind is intentional for distributed mode --bind default
