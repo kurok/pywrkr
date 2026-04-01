@@ -37,7 +37,7 @@ pywrkr/
     distributed.py         # Distributed master/worker mode
     multi_url.py           # Multi-URL sequential testing mode
   tests/
-    test_pywrkr.py         # Unit and integration tests (~300 tests)
+    test_pywrkr.py         # Unit and integration tests (~700 tests across multiple files)
   .github/workflows/       # CI/CD pipelines
 ```
 
