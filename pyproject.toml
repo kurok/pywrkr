@@ -23,14 +23,14 @@ classifiers = [
     "Topic :: System :: Benchmark",
 ]
 dependencies = [
-    "aiohttp>=3.8",
+    "aiohttp>=3.13.4",
 ]
 
 [project.optional-dependencies]
 tui = ["rich>=13.0"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20"]
 all = ["rich>=13.0", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20"]
-dev = ["pytest>=7.0", "pytest-xdist>=3.0", "pytest-cov>=4.0", "aiohttp>=3.8"]
+dev = ["pytest>=9.0.3", "pytest-xdist>=3.0", "pytest-cov>=4.0", "aiohttp>=3.13.4"]
 lint = ["mypy>=1.0", "ruff>=0.1.0"]
 security = ["bandit>=1.7", "pip-audit>=2.6"]
 
