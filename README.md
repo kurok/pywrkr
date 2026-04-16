@@ -1,6 +1,7 @@
 # pywrkr
 
 [![CI](https://github.com/kurok/pywrkr/actions/workflows/python-package.yml/badge.svg)](https://github.com/kurok/pywrkr/actions/workflows/python-package.yml)
+[![CodeQL](https://github.com/kurok/pywrkr/actions/workflows/codeql.yml/badge.svg)](https://github.com/kurok/pywrkr/actions/workflows/codeql.yml)
 [![PyPI version](https://img.shields.io/pypi/v/pywrkr)](https://pypi.org/project/pywrkr/)
 [![Python versions](https://img.shields.io/pypi/pyversions/pywrkr)](https://pypi.org/project/pywrkr/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
