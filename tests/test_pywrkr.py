@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import base64
+import contextlib
 import csv
 import json
 import os
@@ -2617,11 +2618,15 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
         """Test benchmark falls back when rich is unavailable."""
         import logging
 
+        import pywrkr.workers as _pywrkr_workers
+
         original_main = pywrkr_main.RICH_AVAILABLE
         original_reporting = pywrkr.reporting.RICH_AVAILABLE
+        original_workers = _pywrkr_workers.RICH_AVAILABLE
         try:
             pywrkr_main.RICH_AVAILABLE = False
             pywrkr.reporting.RICH_AVAILABLE = False
+            _pywrkr_workers.RICH_AVAILABLE = False
             config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 connections=2,
@@ -2640,6 +2645,7 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
         finally:
             pywrkr_main.RICH_AVAILABLE = original_main
             pywrkr.reporting.RICH_AVAILABLE = original_reporting
+            _pywrkr_workers.RICH_AVAILABLE = original_workers
 
 
 # ---------------------------------------------------------------------------
@@ -4276,7 +4282,7 @@ class TestThresholdIntegration(AioHTTPTestCase):
         )
         buf = StringIO()
         with patch("sys.stdout", buf):
-            stats, exit_code = await pywrkr.run_benchmark(config)
+            _ = await pywrkr.run_benchmark(config)
         output = buf.getvalue()
         self.assertIn("SLO Threshold Results", output)
         self.assertIn("PASS", output)
@@ -4511,10 +4517,6 @@ class TestDistributedIntegration(AioHTTPTestCase):
         )
 
         master_result = None
-
-        async def _master():
-            nonlocal master_result
-            master_result = await pywrkr.run_master(config, "127.0.0.1", 0, expect_workers=1)
 
         # Start master on a random port, discover the port, then start worker
         worker_connections = []
@@ -6093,10 +6095,8 @@ class TestDunderMain(unittest.TestCase):
         import runpy
 
         with patch("pywrkr.main.main") as m:
-            try:
+            with contextlib.suppress(SystemExit):
                 runpy.run_module("pywrkr", run_name="__main__")
-            except SystemExit:
-                pass
             m.assert_called()
 
 
@@ -6137,10 +6137,8 @@ class TestRunMasterUnexpectedMsg(unittest.TestCase):
             await asyncio.sleep(0.1)
             # This approach is tricky; let's use a simpler mock approach
             master_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await master_task
-            except asyncio.CancelledError:
-                pass
 
         asyncio.run(_run())
 
@@ -6175,7 +6173,7 @@ class TestRunMasterUnexpectedMsg(unittest.TestCase):
             with patch("pywrkr.distributed.asyncio.start_server", side_effect=_patched_start):
                 worker_task = asyncio.create_task(_fake_worker())
                 result = await run_master(config, "127.0.0.1", 0, expect_workers=1)
-                await worker_task
+                _ = await worker_task
 
             return result
 
@@ -6248,7 +6246,7 @@ class TestRunMasterWithThresholds(unittest.TestCase):
                 with patch("sys.stdout", new_callable=StringIO):
                     worker_task = asyncio.create_task(_fake_worker())
                     result = await run_master(config, "127.0.0.1", 0, expect_workers=1)
-                    await worker_task
+                    _ = await worker_task
 
             return result
 

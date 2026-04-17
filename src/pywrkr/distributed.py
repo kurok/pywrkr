@@ -342,7 +342,7 @@ async def run_master(
             for _, w in worker_connections:
                 w.close()
                 await w.wait_closed()
-            return
+            return None
 
         logger.info("Master: all %s workers connected. Distributing config...", expect_workers)
         config_data = _serialize_config(config)
@@ -379,7 +379,7 @@ async def run_master(
 
     if not all_stats:
         logger.error("Master: no results received from workers.")
-        return
+        return None
 
     # Merge and report
     merged = merge_worker_stats(all_stats)

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import math
 import random
 import signal
 import ssl
-import statistics
 import sys
 import time
 import uuid
@@ -18,7 +18,6 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from pywrkr import reporting as _reporting
 from pywrkr.config import (
     ActiveUsers,
     AutofindConfig,
@@ -29,7 +28,9 @@ from pywrkr.config import (
     WorkerStats,
 )
 from pywrkr.reporting import (
+    RICH_AVAILABLE,
     _format_latency_short,
+    aggregate_breakdowns,  # noqa: F401 — re-exported for backward compat
     compute_percentiles,
     evaluate_thresholds,
     format_bytes,
@@ -223,11 +224,9 @@ class LiveDashboard:
 
         with Live(self._build_display(), refresh_per_second=2) as live:
             while not stop_event.is_set():
-                try:
+                with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(stop_event.wait(), timeout=0.5)
                     break
-                except asyncio.TimeoutError:
-                    pass
                 live.update(self._build_display())
 
 
@@ -435,52 +434,6 @@ def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
     trace_config.on_request_end.append(on_request_end)
 
     return trace_config
-
-
-def aggregate_breakdowns(breakdowns: list[LatencyBreakdown]) -> dict:
-    """Compute aggregate statistics for a list of LatencyBreakdown objects.
-
-    Returns a dict with keys: dns, connect, tls, ttfb, transfer, total.
-    Each has: avg, min, max, p50, p95, count.
-    Also includes: new_connections, reused_connections.
-    """
-    if not breakdowns:
-        return {}
-
-    new_conns = sum(1 for b in breakdowns if not b.is_reused)
-    reused_conns = sum(1 for b in breakdowns if b.is_reused)
-
-    phases = {
-        "dns": [b.dns for b in breakdowns],
-        "connect": [b.connect for b in breakdowns],
-        "tls": [b.tls for b in breakdowns],
-        "ttfb": [b.ttfb for b in breakdowns],
-        "transfer": [b.transfer for b in breakdowns],
-        "total": [b.dns + b.connect + b.tls + b.ttfb + b.transfer for b in breakdowns],
-    }
-
-    result = {
-        "new_connections": new_conns,
-        "reused_connections": reused_conns,
-    }
-
-    for name, values in phases.items():
-        if not values:
-            continue
-        sorted_vals = sorted(values)
-        n = len(sorted_vals)
-        p50_idx = min(int(math.ceil(50 / 100 * n)) - 1, n - 1)
-        p95_idx = min(int(math.ceil(95 / 100 * n)) - 1, n - 1)
-        result[name] = {
-            "avg": statistics.mean(values),
-            "min": min(values),
-            "max": max(values),
-            "p50": sorted_vals[p50_idx],
-            "p95": sorted_vals[p95_idx],
-            "count": n,
-        }
-
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -989,11 +942,11 @@ def _create_progress_task(
 
         return asyncio.create_task(_wait_stop(stop_event))
 
-    if config.live_dashboard and _reporting.RICH_AVAILABLE:
+    if config.live_dashboard and RICH_AVAILABLE:
         dashboard = LiveDashboard(all_stats, config, start_time, active_users)
         return asyncio.create_task(dashboard.run(stop_event))
 
-    if config.live_dashboard and not _reporting.RICH_AVAILABLE:
+    if config.live_dashboard and not RICH_AVAILABLE:
         logger.warning("--live requires 'rich' package. Install with: pip install pywrkr[tui]")
         logger.warning("Falling back to standard progress display.")
 
@@ -1021,7 +974,7 @@ async def _finalize_run(
         # Signal all workers to stop before accessing shared stats to avoid
         # race conditions where a still-running worker mutates stats during merge.
         stop_event.set()
-        await progress_task
+        _ = await progress_task
     finally:
         await connector.close()
 

@@ -163,6 +163,17 @@ class ReservoirSampler(list):
         sampler.total_seen = total_seen if total_seen is not None else len(items)
         return sampler
 
+    def __eq__(self, other):
+        if isinstance(other, ReservoirSampler):
+            return (
+                list.__eq__(self, other)
+                and self.capacity == other.capacity
+                and self.total_seen == other.total_seen
+            )
+        return list.__eq__(self, other)
+
+    __hash__ = None  # type: ignore[assignment]
+
     def __repr__(self):
         return (
             f"ReservoirSampler(capacity={self.capacity}, "
