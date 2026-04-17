@@ -21,7 +21,6 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
-from pywrkr.main import main as _pywrkr_main
 
 # ---------------------------------------------------------------------------
 # Unit tests for refactored argument parser helpers
@@ -4672,25 +4671,31 @@ class TestDistributedCLIArgs(unittest.TestCase):
 
     def test_worker_arg_parsing(self):
         """--worker should be parsed as HOST:PORT."""
+        from pywrkr.main import main
+
         with patch("sys.argv", ["pywrkr", "--worker", "10.0.0.1:9220"]):
             with patch("pywrkr.main.run_worker_node", new_callable=AsyncMock) as mock_run:
                 with self.assertRaises(SystemExit):
-                    _pywrkr_main()
+                    main()
                 # Should call run_worker_node with the right args
                 mock_run.assert_called_once_with("10.0.0.1", 9220)
 
     def test_master_requires_expect_workers(self):
         """--master without --expect-workers should error."""
+        from pywrkr.main import main
+
         with patch("sys.argv", ["pywrkr", "--master", "http://example.com/"]):
             with self.assertRaises(SystemExit) as cm:
-                _pywrkr_main()
+                main()
             self.assertEqual(cm.exception.code, 2)
 
     def test_worker_requires_host_port(self):
         """--worker with bad format should error."""
+        from pywrkr.main import main
+
         with patch("sys.argv", ["pywrkr", "--worker", "no-port"]):
             with self.assertRaises(SystemExit) as cm:
-                _pywrkr_main()
+                main()
             self.assertEqual(cm.exception.code, 2)
 
 
@@ -5034,6 +5039,8 @@ class TestMultiUrlCLIArgs(unittest.TestCase):
 
     def test_url_file_no_url_required(self):
         """--url-file should not require positional url argument."""
+        from pywrkr.main import main
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("http://example.com/\n")
             url_file = f.name
@@ -5044,7 +5051,7 @@ class TestMultiUrlCLIArgs(unittest.TestCase):
                     "pywrkr.main.run_multi_url", new_callable=AsyncMock, return_value=[]
                 ) as mock_run:
                     with self.assertRaises(SystemExit):
-                        _pywrkr_main()
+                        main()
                     mock_run.assert_called_once()
                     entries_arg = mock_run.call_args[0][0]
                     self.assertEqual(len(entries_arg), 1)
@@ -5054,13 +5061,17 @@ class TestMultiUrlCLIArgs(unittest.TestCase):
 
     def test_url_file_not_found_error(self):
         """--url-file with non-existent file should error."""
+        from pywrkr.main import main
+
         with patch("sys.argv", ["pywrkr", "--url-file", "/nonexistent/urls.txt"]):
             with self.assertRaises(SystemExit) as cm:
-                _pywrkr_main()
+                main()
             self.assertEqual(cm.exception.code, 2)
 
     def test_url_file_invalid_scheme(self):
         """URLs in file with invalid scheme should error."""
+        from pywrkr.main import main
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("ftp://example.com/\n")
             url_file = f.name
@@ -5068,7 +5079,7 @@ class TestMultiUrlCLIArgs(unittest.TestCase):
         try:
             with patch("sys.argv", ["pywrkr", "--url-file", url_file]):
                 with self.assertRaises(SystemExit) as cm:
-                    _pywrkr_main()
+                    main()
                 self.assertEqual(cm.exception.code, 2)
         finally:
             os.unlink(url_file)
