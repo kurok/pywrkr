@@ -2,6 +2,7 @@
 
 import csv
 import importlib.resources
+import importlib.util
 import json
 import math
 import re
@@ -11,13 +12,17 @@ from collections import defaultdict
 from string import Template
 from typing import NamedTuple, TextIO
 
-# Optional third-party imports
-try:
-    import rich  # noqa: F401
+from pywrkr.config import (
+    BenchmarkConfig,
+    LatencyBreakdown,
+    StepResult,
+    Threshold,
+    WorkerStats,
+)
+from pywrkr.traffic_profiles import RateLimiter
 
-    RICH_AVAILABLE = True
-except ImportError:
-    RICH_AVAILABLE = False
+# Optional third-party availability flags
+RICH_AVAILABLE = importlib.util.find_spec("rich") is not None
 
 try:
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
@@ -28,15 +33,6 @@ try:
     OTEL_AVAILABLE = True
 except ImportError:
     OTEL_AVAILABLE = False
-
-from pywrkr.config import (
-    BenchmarkConfig,
-    LatencyBreakdown,
-    StepResult,
-    Threshold,
-    WorkerStats,
-)
-from pywrkr.traffic_profiles import RateLimiter
 
 # ---------------------------------------------------------------------------
 # Chart color constants

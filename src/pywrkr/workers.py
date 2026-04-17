@@ -30,7 +30,7 @@ from pywrkr.config import (
 from pywrkr.reporting import (
     RICH_AVAILABLE,
     _format_latency_short,
-    aggregate_breakdowns,  # noqa: F401 — re-exported for backward compat
+    aggregate_breakdowns,
     compute_percentiles,
     evaluate_thresholds,
     format_bytes,
@@ -40,6 +40,9 @@ from pywrkr.reporting import (
     print_threshold_results,
 )
 from pywrkr.traffic_profiles import RateLimiter
+
+# Re-export aggregate_breakdowns for backward compatibility
+__all__ = ["aggregate_breakdowns"]
 
 logger = logging.getLogger(__name__)
 
