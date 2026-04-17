@@ -2628,7 +2628,7 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
         """Test benchmark falls back when rich is unavailable."""
         import logging
 
-        import pywrkr.workers as _pywrkr_workers
+        _pywrkr_workers = pywrkr.workers
 
         original_main = pywrkr.RICH_AVAILABLE
         original_reporting = pywrkr.reporting.RICH_AVAILABLE
