@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import base64
+import contextlib
 import csv
 import json
 import os
@@ -2544,6 +2545,18 @@ class TestLiveDashboard(unittest.TestCase):
 
         self.assertIsInstance(panel, Panel)
 
+    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
+    def test_dashboard_elapsed_only_mode(self):
+        """Test dashboard renders elapsed-only progress when no duration or num_requests."""
+        stats = [self._make_stats(10)]
+        config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=None, num_requests=None)
+        start_time = time.monotonic() - 3.0
+        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
+        panel = dashboard._build_display()
+        from rich.panel import Panel
+
+        self.assertIsInstance(panel, Panel)
+
     def test_dashboard_fallback_when_rich_unavailable(self):
         """Test that --live falls back gracefully when rich is not installed."""
         original_main = pywrkr_main.RICH_AVAILABLE
@@ -2617,11 +2630,15 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
         """Test benchmark falls back when rich is unavailable."""
         import logging
 
+        from pywrkr import workers as _pywrkr_workers
+
         original_main = pywrkr_main.RICH_AVAILABLE
         original_reporting = pywrkr.reporting.RICH_AVAILABLE
+        original_workers = _pywrkr_workers.RICH_AVAILABLE
         try:
             pywrkr_main.RICH_AVAILABLE = False
             pywrkr.reporting.RICH_AVAILABLE = False
+            _pywrkr_workers.RICH_AVAILABLE = False
             config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 connections=2,
@@ -2640,6 +2657,7 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
         finally:
             pywrkr_main.RICH_AVAILABLE = original_main
             pywrkr.reporting.RICH_AVAILABLE = original_reporting
+            _pywrkr_workers.RICH_AVAILABLE = original_workers
 
 
 # ---------------------------------------------------------------------------
@@ -4276,7 +4294,7 @@ class TestThresholdIntegration(AioHTTPTestCase):
         )
         buf = StringIO()
         with patch("sys.stdout", buf):
-            stats, exit_code = await pywrkr.run_benchmark(config)
+            _ = await pywrkr.run_benchmark(config)
         output = buf.getvalue()
         self.assertIn("SLO Threshold Results", output)
         self.assertIn("PASS", output)
@@ -4511,10 +4529,6 @@ class TestDistributedIntegration(AioHTTPTestCase):
         )
 
         master_result = None
-
-        async def _master():
-            nonlocal master_result
-            master_result = await pywrkr.run_master(config, "127.0.0.1", 0, expect_workers=1)
 
         # Start master on a random port, discover the port, then start worker
         worker_connections = []
@@ -5769,6 +5783,19 @@ class TestReservoirSamplerCoverage(unittest.TestCase):
         self.assertIn("ReservoirSampler", r)
         self.assertIn("capacity=10", r)
 
+    def test_eq_same_type(self):
+        from pywrkr.config import ReservoirSampler
+
+        rs1 = ReservoirSampler(capacity=5, iterable=[1, 2, 3])
+        rs2 = ReservoirSampler(capacity=5, iterable=[1, 2, 3])
+        self.assertEqual(rs1, rs2)
+
+    def test_eq_different_type(self):
+        from pywrkr.config import ReservoirSampler
+
+        rs = ReservoirSampler(capacity=5, iterable=[1, 2, 3])
+        self.assertEqual(rs, [1, 2, 3])
+
 
 class TestLoadScenarioCoverage(unittest.TestCase):
     """Cover YAML and ambiguous-extension branches in load_scenario."""
@@ -6093,10 +6120,8 @@ class TestDunderMain(unittest.TestCase):
         import runpy
 
         with patch("pywrkr.main.main") as m:
-            try:
+            with contextlib.suppress(SystemExit):
                 runpy.run_module("pywrkr", run_name="__main__")
-            except SystemExit:
-                pass
             m.assert_called()
 
 
@@ -6137,10 +6162,8 @@ class TestRunMasterUnexpectedMsg(unittest.TestCase):
             await asyncio.sleep(0.1)
             # This approach is tricky; let's use a simpler mock approach
             master_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await master_task
-            except asyncio.CancelledError:
-                pass
 
         asyncio.run(_run())
 
@@ -6175,7 +6198,7 @@ class TestRunMasterUnexpectedMsg(unittest.TestCase):
             with patch("pywrkr.distributed.asyncio.start_server", side_effect=_patched_start):
                 worker_task = asyncio.create_task(_fake_worker())
                 result = await run_master(config, "127.0.0.1", 0, expect_workers=1)
-                await worker_task
+                _ = await worker_task
 
             return result
 
@@ -6248,7 +6271,7 @@ class TestRunMasterWithThresholds(unittest.TestCase):
                 with patch("sys.stdout", new_callable=StringIO):
                     worker_task = asyncio.create_task(_fake_worker())
                     result = await run_master(config, "127.0.0.1", 0, expect_workers=1)
-                    await worker_task
+                    _ = await worker_task
 
             return result
 
@@ -6431,6 +6454,31 @@ class TestAutofindBinarySearch(unittest.TestCase):
         finally:
             if os.path.exists(out_path):
                 os.unlink(out_path)
+
+
+class TestReportingRichImport(unittest.TestCase):
+    """Cover the RICH_AVAILABLE = True branch in reporting.py."""
+
+    def test_rich_available_true_when_rich_importable(self):
+        """Reload reporting with rich mocked so RICH_AVAILABLE = True path is covered."""
+        import importlib
+        import sys
+        import unittest.mock as _mock
+
+        import pywrkr.reporting as reporting_mod
+
+        original_rich = sys.modules.get("rich")
+        try:
+            # Ensure a mock rich is available so the try-block in reporting.py succeeds
+            if original_rich is None:
+                sys.modules["rich"] = _mock.MagicMock()
+            reloaded = importlib.reload(reporting_mod)
+            self.assertTrue(reloaded.RICH_AVAILABLE)
+        finally:
+            if original_rich is None:
+                sys.modules.pop("rich", None)
+            # Restore module state
+            importlib.reload(reporting_mod)
 
 
 if __name__ == "__main__":

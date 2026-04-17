@@ -13,17 +13,13 @@ from typing import NamedTuple, TextIO
 
 # Optional third-party imports
 try:
-    from rich.live import Live  # noqa: F401
-    from rich.panel import Panel  # noqa: F401
-    from rich.table import Table  # noqa: F401
-    from rich.text import Text  # noqa: F401
+    import rich  # noqa: F401
 
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
 
 try:
-    from opentelemetry import metrics as otel_metrics  # noqa: F401
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
@@ -35,6 +31,7 @@ except ImportError:
 
 from pywrkr.config import (
     BenchmarkConfig,
+    LatencyBreakdown,
     StepResult,
     Threshold,
     WorkerStats,
@@ -58,6 +55,57 @@ STATUS_COLOR_2XX = "rgba(76, 175, 80, 0.85)"
 STATUS_COLOR_3XX = "rgba(33, 150, 243, 0.85)"
 STATUS_COLOR_4XX = "rgba(255, 152, 0, 0.85)"
 STATUS_COLOR_5XX = "rgba(244, 67, 54, 0.85)"
+
+# ---------------------------------------------------------------------------
+# Latency breakdown aggregation
+# ---------------------------------------------------------------------------
+
+
+def aggregate_breakdowns(breakdowns: list[LatencyBreakdown]) -> dict:
+    """Compute aggregate statistics for a list of LatencyBreakdown objects.
+
+    Returns a dict with keys: dns, connect, tls, ttfb, transfer, total.
+    Each has: avg, min, max, p50, p95, count.
+    Also includes: new_connections, reused_connections.
+    """
+    if not breakdowns:
+        return {}
+
+    new_conns = sum(1 for b in breakdowns if not b.is_reused)
+    reused_conns = sum(1 for b in breakdowns if b.is_reused)
+
+    phases = {
+        "dns": [b.dns for b in breakdowns],
+        "connect": [b.connect for b in breakdowns],
+        "tls": [b.tls for b in breakdowns],
+        "ttfb": [b.ttfb for b in breakdowns],
+        "transfer": [b.transfer for b in breakdowns],
+        "total": [b.dns + b.connect + b.tls + b.ttfb + b.transfer for b in breakdowns],
+    }
+
+    result = {
+        "new_connections": new_conns,
+        "reused_connections": reused_conns,
+    }
+
+    for name, values in phases.items():
+        if not values:
+            continue
+        sorted_vals = sorted(values)
+        n = len(sorted_vals)
+        p50_idx = min(int(math.ceil(50 / 100 * n)) - 1, n - 1)
+        p95_idx = min(int(math.ceil(95 / 100 * n)) - 1, n - 1)
+        result[name] = {
+            "avg": statistics.mean(values),
+            "min": min(values),
+            "max": max(values),
+            "p50": sorted_vals[p50_idx],
+            "p95": sorted_vals[p95_idx],
+            "count": n,
+        }
+
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Template loader
@@ -319,8 +367,6 @@ def build_results_dict(
     rate_limiter: RateLimiter | None = None,
 ) -> dict:
     """Build a structured results dict for JSON/HTML/programmatic use."""
-    from pywrkr.workers import aggregate_breakdowns
-
     rps = stats.total_requests / duration if duration > 0 else 0
     transfer_rate = stats.total_bytes / duration if duration > 0 else 0
     result: dict = {
@@ -801,8 +847,6 @@ def print_results(
     file: TextIO | None = None,
 ) -> None:
     """Print full benchmark results to stdout."""
-    from pywrkr.workers import aggregate_breakdowns
-
     out = file if file is not None else sys.stdout
 
     rps = stats.total_requests / duration if duration > 0 else 0

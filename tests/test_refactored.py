@@ -345,7 +345,7 @@ class TestCancellationBehavior(AioHTTPTestCase):
 
         await asyncio.sleep(0.5)
         stop_event.set()
-        await task
+        _ = await task
 
         await connector.close()
 
@@ -374,7 +374,7 @@ class TestCancellationBehavior(AioHTTPTestCase):
 
         await asyncio.sleep(0.5)
         stop_event.set()
-        await task
+        _ = await task
 
         await connector.close()
 
