@@ -2545,6 +2545,18 @@ class TestLiveDashboard(unittest.TestCase):
 
         self.assertIsInstance(panel, Panel)
 
+    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
+    def test_dashboard_elapsed_only_mode(self):
+        """Test dashboard renders elapsed-only progress when no duration or num_requests."""
+        stats = [self._make_stats(10)]
+        config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=None, num_requests=None)
+        start_time = time.monotonic() - 3.0
+        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
+        panel = dashboard._build_display()
+        from rich.panel import Panel
+
+        self.assertIsInstance(panel, Panel)
+
     def test_dashboard_fallback_when_rich_unavailable(self):
         """Test that --live falls back gracefully when rich is not installed."""
         original_main = pywrkr_main.RICH_AVAILABLE
@@ -2618,7 +2630,7 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
         """Test benchmark falls back when rich is unavailable."""
         import logging
 
-        import pywrkr.workers as _pywrkr_workers
+        from pywrkr import workers as _pywrkr_workers
 
         original_main = pywrkr_main.RICH_AVAILABLE
         original_reporting = pywrkr.reporting.RICH_AVAILABLE
@@ -5771,6 +5783,19 @@ class TestReservoirSamplerCoverage(unittest.TestCase):
         self.assertIn("ReservoirSampler", r)
         self.assertIn("capacity=10", r)
 
+    def test_eq_same_type(self):
+        from pywrkr.config import ReservoirSampler
+
+        rs1 = ReservoirSampler(capacity=5, iterable=[1, 2, 3])
+        rs2 = ReservoirSampler(capacity=5, iterable=[1, 2, 3])
+        self.assertEqual(rs1, rs2)
+
+    def test_eq_different_type(self):
+        from pywrkr.config import ReservoirSampler
+
+        rs = ReservoirSampler(capacity=5, iterable=[1, 2, 3])
+        self.assertEqual(rs, [1, 2, 3])
+
 
 class TestLoadScenarioCoverage(unittest.TestCase):
     """Cover YAML and ambiguous-extension branches in load_scenario."""
@@ -6429,6 +6454,31 @@ class TestAutofindBinarySearch(unittest.TestCase):
         finally:
             if os.path.exists(out_path):
                 os.unlink(out_path)
+
+
+class TestReportingRichImport(unittest.TestCase):
+    """Cover the RICH_AVAILABLE = True branch in reporting.py."""
+
+    def test_rich_available_true_when_rich_importable(self):
+        """Reload reporting with rich mocked so RICH_AVAILABLE = True path is covered."""
+        import importlib
+        import sys
+        import unittest.mock as _mock
+
+        import pywrkr.reporting as reporting_mod
+
+        original_rich = sys.modules.get("rich")
+        try:
+            # Ensure a mock rich is available so the try-block in reporting.py succeeds
+            if original_rich is None:
+                sys.modules["rich"] = _mock.MagicMock()
+            reloaded = importlib.reload(reporting_mod)
+            self.assertTrue(reloaded.RICH_AVAILABLE)
+        finally:
+            if original_rich is None:
+                sys.modules.pop("rich", None)
+            # Restore module state
+            importlib.reload(reporting_mod)
 
 
 if __name__ == "__main__":

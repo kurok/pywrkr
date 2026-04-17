@@ -13,7 +13,7 @@ from typing import NamedTuple, TextIO
 
 # Optional third-party imports
 try:
-    import rich as _rich  # noqa: F401
+    import rich  # noqa: F401
 
     RICH_AVAILABLE = True
 except ImportError:
