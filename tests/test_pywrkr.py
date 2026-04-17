@@ -21,7 +21,6 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
-import pywrkr as pywrkr_main
 from pywrkr.main import main as pywrkr_cli_main
 
 # ---------------------------------------------------------------------------
@@ -1515,7 +1514,7 @@ class TestTrafficProfiles(unittest.TestCase):
     """Unit tests for traffic shaping profiles."""
 
     def test_sine_profile_basic(self):
-        p = pywrkr_main.SineProfile(cycles=1, min_factor=0.0)
+        p = pywrkr.SineProfile(cycles=1, min_factor=0.0)
         # At start (t=0): sin(0) = 0, so factor = 0.5 + 0.5*0 = 0.5
         self.assertAlmostEqual(p.rate_at(0, 60, 1000), 500.0, places=0)
         # At quarter: sin(π/2) = 1, factor = 1.0
@@ -1526,14 +1525,14 @@ class TestTrafficProfiles(unittest.TestCase):
         self.assertAlmostEqual(p.rate_at(45, 60, 1000), 0.0, delta=1.0)
 
     def test_sine_profile_min_factor(self):
-        p = pywrkr_main.SineProfile(cycles=1, min_factor=0.2)
+        p = pywrkr.SineProfile(cycles=1, min_factor=0.2)
         # Min rate should never go below 0.2 * base
         rates = [p.rate_at(t, 60, 1000) for t in range(61)]
         self.assertGreaterEqual(min(rates), 199.0)  # ~200 with float tolerance
         self.assertLessEqual(max(rates), 1001.0)
 
     def test_step_profile(self):
-        p = pywrkr_main.StepProfile(levels=[100, 500, 1000])
+        p = pywrkr.StepProfile(levels=[100, 500, 1000])
         # First third
         self.assertEqual(p.rate_at(5, 60, 500), 100)
         # Second third
@@ -1543,11 +1542,11 @@ class TestTrafficProfiles(unittest.TestCase):
 
     def test_step_profile_ignores_base_rate(self):
         """Step profile uses absolute levels, not base_rate."""
-        p = pywrkr_main.StepProfile(levels=[200, 800])
+        p = pywrkr.StepProfile(levels=[200, 800])
         self.assertEqual(p.rate_at(0, 60, 9999), 200)
 
     def test_sawtooth_profile(self):
-        p = pywrkr_main.SawtoothProfile(cycles=1, min_factor=0.0)
+        p = pywrkr.SawtoothProfile(cycles=1, min_factor=0.0)
         # Start: factor = 0 → rate = 0
         self.assertAlmostEqual(p.rate_at(0, 60, 1000), 0.0, delta=1.0)
         # Mid: factor = 0.5 → rate = 500
@@ -1556,14 +1555,14 @@ class TestTrafficProfiles(unittest.TestCase):
         self.assertAlmostEqual(p.rate_at(59, 60, 1000), 983.0, delta=20.0)
 
     def test_square_profile(self):
-        p = pywrkr_main.SquareProfile(cycles=1, low_factor=0.1)
+        p = pywrkr.SquareProfile(cycles=1, low_factor=0.1)
         # First half: high
         self.assertEqual(p.rate_at(10, 60, 1000), 1000)
         # Second half: low
         self.assertAlmostEqual(p.rate_at(40, 60, 1000), 100.0, places=0)
 
     def test_spike_profile(self):
-        p = pywrkr_main.SpikeProfile(interval=10, spike_dur=2, multiplier=5, baseline=0.1)
+        p = pywrkr.SpikeProfile(interval=10, spike_dur=2, multiplier=5, baseline=0.1)
         # During spike (t=0 to t=2)
         self.assertEqual(p.rate_at(0, 60, 100), 500)
         self.assertEqual(p.rate_at(1, 60, 100), 500)
@@ -1574,7 +1573,7 @@ class TestTrafficProfiles(unittest.TestCase):
         self.assertEqual(p.rate_at(10, 60, 100), 500)
 
     def test_business_hours_profile(self):
-        p = pywrkr_main.BusinessHoursProfile()
+        p = pywrkr.BusinessHoursProfile()
         # Night (start/end) should be low
         self.assertLess(p.rate_at(0, 60, 1000), 100)
         self.assertLess(p.rate_at(59, 60, 1000), 100)
@@ -1587,7 +1586,7 @@ class TestTrafficProfiles(unittest.TestCase):
             f.write("time_sec,rate\n0,100\n30,500\n60,100\n")
             path = f.name
         try:
-            p = pywrkr_main.CsvProfile(path)
+            p = pywrkr.CsvProfile(path)
             self.assertEqual(p.rate_at(0, 60, 9999), 100)  # base_rate ignored
             self.assertAlmostEqual(p.rate_at(15, 60, 9999), 300.0)  # interpolated
             self.assertEqual(p.rate_at(30, 60, 9999), 500)
@@ -1599,7 +1598,7 @@ class TestTrafficProfiles(unittest.TestCase):
             f.write("time_sec,multiplier\n0,0.5\n60,2.0\n")
             path = f.name
         try:
-            p = pywrkr_main.CsvProfile(path)
+            p = pywrkr.CsvProfile(path)
             self.assertTrue(p._is_multiplier)
             self.assertAlmostEqual(p.rate_at(0, 60, 100), 50.0)
             self.assertAlmostEqual(p.rate_at(30, 60, 100), 125.0)  # 0.5 + 0.75 = 1.25
@@ -1613,7 +1612,7 @@ class TestTrafficProfiles(unittest.TestCase):
             f.write("0,100\n10,200\n")
             path = f.name
         try:
-            p = pywrkr_main.CsvProfile(path)
+            p = pywrkr.CsvProfile(path)
             self.assertFalse(p._is_multiplier)
             self.assertEqual(p.rate_at(0, 60, 500), 100)
         finally:
@@ -1625,7 +1624,7 @@ class TestTrafficProfiles(unittest.TestCase):
             f.write("time_sec,rate\n10,200\n50,800\n")
             path = f.name
         try:
-            p = pywrkr_main.CsvProfile(path)
+            p = pywrkr.CsvProfile(path)
             self.assertEqual(p.rate_at(0, 60, 500), 200)  # before first → hold
             self.assertEqual(p.rate_at(60, 60, 500), 800)  # after last → hold
         finally:
@@ -1637,17 +1636,17 @@ class TestTrafficProfiles(unittest.TestCase):
             path = f.name
         try:
             with self.assertRaises(ValueError):
-                pywrkr_main.CsvProfile(path)
+                pywrkr.CsvProfile(path)
         finally:
             os.unlink(path)
 
     def test_zero_duration_returns_base_rate(self):
         """All profiles should handle duration=0 gracefully."""
         for profile in [
-            pywrkr_main.SineProfile(),
-            pywrkr_main.SawtoothProfile(),
-            pywrkr_main.SquareProfile(),
-            pywrkr_main.BusinessHoursProfile(),
+            pywrkr.SineProfile(),
+            pywrkr.SawtoothProfile(),
+            pywrkr.SquareProfile(),
+            pywrkr.BusinessHoursProfile(),
         ]:
             rate = profile.rate_at(5, 0, 500)
             self.assertGreater(rate, 0)
@@ -1657,29 +1656,29 @@ class TestParseTrafficProfile(unittest.TestCase):
     """Tests for the parse_traffic_profile() function."""
 
     def test_parse_builtin_default(self):
-        p = pywrkr_main.parse_traffic_profile("sine")
-        self.assertIsInstance(p, pywrkr_main.SineProfile)
+        p = pywrkr.parse_traffic_profile("sine")
+        self.assertIsInstance(p, pywrkr.SineProfile)
         self.assertEqual(p.cycles, 2.0)
 
     def test_parse_builtin_with_params(self):
-        p = pywrkr_main.parse_traffic_profile("sine:cycles=4,min=0.3")
-        self.assertIsInstance(p, pywrkr_main.SineProfile)
+        p = pywrkr.parse_traffic_profile("sine:cycles=4,min=0.3")
+        self.assertIsInstance(p, pywrkr.SineProfile)
         self.assertEqual(p.cycles, 4.0)
         self.assertEqual(p.min_factor, 0.3)
 
     def test_parse_step_with_levels(self):
-        p = pywrkr_main.parse_traffic_profile("step:levels=100,500,1000")
-        self.assertIsInstance(p, pywrkr_main.StepProfile)
+        p = pywrkr.parse_traffic_profile("step:levels=100,500,1000")
+        self.assertIsInstance(p, pywrkr.StepProfile)
         self.assertEqual(p.levels, [100.0, 500.0, 1000.0])
 
     def test_parse_step_without_prefix(self):
-        p = pywrkr_main.parse_traffic_profile("step:100,500,1000")
-        self.assertIsInstance(p, pywrkr_main.StepProfile)
+        p = pywrkr.parse_traffic_profile("step:100,500,1000")
+        self.assertIsInstance(p, pywrkr.StepProfile)
         self.assertEqual(p.levels, [100.0, 500.0, 1000.0])
 
     def test_parse_spike_with_params(self):
-        p = pywrkr_main.parse_traffic_profile("spike:interval=15,multiplier=3")
-        self.assertIsInstance(p, pywrkr_main.SpikeProfile)
+        p = pywrkr.parse_traffic_profile("spike:interval=15,multiplier=3")
+        self.assertIsInstance(p, pywrkr.SpikeProfile)
         self.assertEqual(p.interval, 15.0)
         self.assertEqual(p.multiplier, 3.0)
 
@@ -1688,28 +1687,28 @@ class TestParseTrafficProfile(unittest.TestCase):
             f.write("time_sec,rate\n0,100\n60,500\n")
             path = f.name
         try:
-            p = pywrkr_main.parse_traffic_profile(f"csv:{path}")
-            self.assertIsInstance(p, pywrkr_main.CsvProfile)
+            p = pywrkr.parse_traffic_profile(f"csv:{path}")
+            self.assertIsInstance(p, pywrkr.CsvProfile)
         finally:
             os.unlink(path)
 
     def test_parse_csv_missing_path(self):
         with self.assertRaises(ValueError):
-            pywrkr_main.parse_traffic_profile("csv:")
+            pywrkr.parse_traffic_profile("csv:")
 
     def test_parse_unknown_profile(self):
         with self.assertRaises(ValueError):
-            pywrkr_main.parse_traffic_profile("nonexistent")
+            pywrkr.parse_traffic_profile("nonexistent")
 
     def test_parse_square_params(self):
-        p = pywrkr_main.parse_traffic_profile("square:cycles=5,low=0.3")
-        self.assertIsInstance(p, pywrkr_main.SquareProfile)
+        p = pywrkr.parse_traffic_profile("square:cycles=5,low=0.3")
+        self.assertIsInstance(p, pywrkr.SquareProfile)
         self.assertEqual(p.cycles, 5.0)
         self.assertEqual(p.low_factor, 0.3)
 
     def test_parse_business_hours(self):
-        p = pywrkr_main.parse_traffic_profile("business-hours")
-        self.assertIsInstance(p, pywrkr_main.BusinessHoursProfile)
+        p = pywrkr.parse_traffic_profile("business-hours")
+        self.assertIsInstance(p, pywrkr.BusinessHoursProfile)
 
 
 class TestRateLimiterWithProfile(unittest.TestCase):
@@ -1717,8 +1716,8 @@ class TestRateLimiterWithProfile(unittest.TestCase):
 
     def test_rate_limiter_uses_profile(self):
         """RateLimiter should delegate to traffic profile for rate calculation."""
-        profile = pywrkr_main.StepProfile(levels=[100, 1000])
-        rl = pywrkr_main.RateLimiter(
+        profile = pywrkr.StepProfile(levels=[100, 1000])
+        rl = pywrkr.RateLimiter(
             rate=500,
             traffic_profile=profile,
             duration=60.0,
@@ -1732,8 +1731,8 @@ class TestRateLimiterWithProfile(unittest.TestCase):
 
     def test_profile_overrides_ramp(self):
         """Traffic profile should take precedence over linear ramp."""
-        profile = pywrkr_main.StepProfile(levels=[42])
-        rl = pywrkr_main.RateLimiter(
+        profile = pywrkr.StepProfile(levels=[42])
+        rl = pywrkr.RateLimiter(
             rate=500,
             end_rate=1000,
             ramp_duration=60.0,
@@ -1746,12 +1745,12 @@ class TestRateLimiterWithProfile(unittest.TestCase):
     def test_describe_methods(self):
         """All profiles should have a describe() method returning a non-empty string."""
         profiles = [
-            pywrkr_main.SineProfile(),
-            pywrkr_main.StepProfile(levels=[100]),
-            pywrkr_main.SawtoothProfile(),
-            pywrkr_main.SquareProfile(),
-            pywrkr_main.SpikeProfile(),
-            pywrkr_main.BusinessHoursProfile(),
+            pywrkr.SineProfile(),
+            pywrkr.StepProfile(levels=[100]),
+            pywrkr.SawtoothProfile(),
+            pywrkr.SquareProfile(),
+            pywrkr.SpikeProfile(),
+            pywrkr.BusinessHoursProfile(),
         ]
         for p in profiles:
             desc = p.describe()
@@ -2491,7 +2490,7 @@ class TestLiveDashboard(unittest.TestCase):
         dashboard = pywrkr.LiveDashboard(stats, config, start_time, active_users)
         self.assertEqual(dashboard.active_users["count"], 5)
 
-    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
+    @unittest.skipUnless(pywrkr.RICH_AVAILABLE, "rich not installed")
     def test_dashboard_renders_without_errors(self):
         """Test _build_display() returns a Panel without crashing."""
         stats = [self._make_stats()]
@@ -2504,7 +2503,7 @@ class TestLiveDashboard(unittest.TestCase):
 
         self.assertIsInstance(panel, Panel)
 
-    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
+    @unittest.skipUnless(pywrkr.RICH_AVAILABLE, "rich not installed")
     def test_dashboard_with_empty_stats(self):
         """Test dashboard renders with no requests yet."""
         stats = [pywrkr.WorkerStats()]
@@ -2517,7 +2516,7 @@ class TestLiveDashboard(unittest.TestCase):
 
         self.assertIsInstance(panel, Panel)
 
-    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
+    @unittest.skipUnless(pywrkr.RICH_AVAILABLE, "rich not installed")
     def test_dashboard_request_count_mode(self):
         """Test dashboard renders in request-count mode."""
         stats = [self._make_stats(20)]
@@ -2529,7 +2528,7 @@ class TestLiveDashboard(unittest.TestCase):
 
         self.assertIsInstance(panel, Panel)
 
-    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
+    @unittest.skipUnless(pywrkr.RICH_AVAILABLE, "rich not installed")
     def test_dashboard_user_mode(self):
         """Test dashboard renders in user simulation mode."""
         stats = [self._make_stats()]
@@ -2545,7 +2544,7 @@ class TestLiveDashboard(unittest.TestCase):
 
         self.assertIsInstance(panel, Panel)
 
-    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
+    @unittest.skipUnless(pywrkr.RICH_AVAILABLE, "rich not installed")
     def test_dashboard_elapsed_only_mode(self):
         """Test dashboard renders elapsed-only progress when no duration or num_requests."""
         stats = [self._make_stats(10)]
@@ -2559,18 +2558,18 @@ class TestLiveDashboard(unittest.TestCase):
 
     def test_dashboard_fallback_when_rich_unavailable(self):
         """Test that --live falls back gracefully when rich is not installed."""
-        original_main = pywrkr_main.RICH_AVAILABLE
+        original_main = pywrkr.RICH_AVAILABLE
         original_reporting = pywrkr.reporting.RICH_AVAILABLE
         try:
-            pywrkr_main.RICH_AVAILABLE = False
+            pywrkr.RICH_AVAILABLE = False
             pywrkr.reporting.RICH_AVAILABLE = False
             config = pywrkr.BenchmarkConfig(url="http://example.com/", live_dashboard=True)
             # When RICH_AVAILABLE is False and live_dashboard is True,
             # run_benchmark should fall back to show_progress
             self.assertTrue(config.live_dashboard)
-            self.assertFalse(pywrkr_main.RICH_AVAILABLE)
+            self.assertFalse(pywrkr.RICH_AVAILABLE)
         finally:
-            pywrkr_main.RICH_AVAILABLE = original_main
+            pywrkr.RICH_AVAILABLE = original_main
             pywrkr.reporting.RICH_AVAILABLE = original_reporting
 
     def test_live_flag_in_config(self):
@@ -2632,11 +2631,11 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
 
         from pywrkr import workers as _pywrkr_workers
 
-        original_main = pywrkr_main.RICH_AVAILABLE
+        original_main = pywrkr.RICH_AVAILABLE
         original_reporting = pywrkr.reporting.RICH_AVAILABLE
         original_workers = _pywrkr_workers.RICH_AVAILABLE
         try:
-            pywrkr_main.RICH_AVAILABLE = False
+            pywrkr.RICH_AVAILABLE = False
             pywrkr.reporting.RICH_AVAILABLE = False
             _pywrkr_workers.RICH_AVAILABLE = False
             config = pywrkr.BenchmarkConfig(
@@ -2655,7 +2654,7 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
             has_warning = any("rich" in msg.lower() for msg in log_ctx.output)
             self.assertTrue(has_warning, "Expected rich package warning in logs")
         finally:
-            pywrkr_main.RICH_AVAILABLE = original_main
+            pywrkr.RICH_AVAILABLE = original_main
             pywrkr.reporting.RICH_AVAILABLE = original_reporting
             _pywrkr_workers.RICH_AVAILABLE = original_workers
 
@@ -3469,7 +3468,7 @@ class TestOtelExport(unittest.TestCase):
         finally:
             pywrkr.reporting.OTEL_AVAILABLE = original
 
-    @unittest.skipUnless(pywrkr_main.OTEL_AVAILABLE, "opentelemetry not installed")
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_export_constructs_metrics(self):
         """Test that export_to_otel creates a MeterProvider and metrics."""
         results = self._make_results()
@@ -3505,7 +3504,7 @@ class TestOtelExport(unittest.TestCase):
             mock_provider.force_flush.assert_called_once()
             mock_provider.shutdown.assert_called_once()
 
-    @unittest.skipUnless(pywrkr_main.OTEL_AVAILABLE, "opentelemetry not installed")
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_tags_attached_as_attributes(self):
         """Tags should be passed as metric attributes."""
         results = self._make_results()
@@ -3534,7 +3533,7 @@ class TestOtelExport(unittest.TestCase):
             for call in mock_gauge.add.call_args_list:
                 self.assertEqual(call[1]["attributes"], tags)
 
-    @unittest.skipUnless(pywrkr_main.OTEL_AVAILABLE, "opentelemetry not installed")
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_graceful_on_connection_error(self):
         """Should not crash on connection errors."""
         with patch(
@@ -6163,7 +6162,7 @@ class TestRunMasterUnexpectedMsg(unittest.TestCase):
             # This approach is tricky; let's use a simpler mock approach
             master_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await master_task
+                _ = await master_task
 
         asyncio.run(_run())
 
@@ -6460,25 +6459,18 @@ class TestReportingRichImport(unittest.TestCase):
     """Cover the RICH_AVAILABLE = True branch in reporting.py."""
 
     def test_rich_available_true_when_rich_importable(self):
-        """Reload reporting with rich mocked so RICH_AVAILABLE = True path is covered."""
+        """Reload reporting with find_spec mocked so RICH_AVAILABLE = True path is covered."""
         import importlib
-        import sys
         import unittest.mock as _mock
 
         import pywrkr.reporting as reporting_mod
 
-        original_rich = sys.modules.get("rich")
-        try:
-            # Ensure a mock rich is available so the try-block in reporting.py succeeds
-            if original_rich is None:
-                sys.modules["rich"] = _mock.MagicMock()
+        mock_spec = _mock.MagicMock()
+        with _mock.patch("importlib.util.find_spec", return_value=mock_spec):
             reloaded = importlib.reload(reporting_mod)
             self.assertTrue(reloaded.RICH_AVAILABLE)
-        finally:
-            if original_rich is None:
-                sys.modules.pop("rich", None)
-            # Restore module state
-            importlib.reload(reporting_mod)
+        # Restore module state
+        importlib.reload(reporting_mod)
 
 
 if __name__ == "__main__":
