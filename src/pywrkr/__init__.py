@@ -197,4 +197,4 @@ from pywrkr.workers import (
     worker,
 )
 
-__version__ = "1.3.5"
+__version__ = "1.3.6"
