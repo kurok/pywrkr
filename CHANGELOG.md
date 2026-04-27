@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.7] - 2026-04-27
+
+### Fixed
+- Resolve CodeQL `py/import-and-import-from` alerts in tests by switching to local imports. (#85, #86, #87)
+
+### CI
+- Migrate dependency management from pip/pip-compile to uv; replace `requirements-dev.txt` with `uv.lock`. (#88)
+
 ## [1.3.6] - 2026-04-17
 
 ### Fixed
