@@ -12,38 +12,38 @@ Async Python HTTP benchmarking tool (wrk/ab-inspired) with virtual user simulati
 
 ```bash
 # Install (editable, with dev + lint deps)
-pip install -e ".[dev,lint]"
+uv pip install -e ".[dev,lint]"
 
 # Run all tests (parallel via pytest-xdist)
-python -m pytest tests/ -v
+uv run pytest tests/ -v
 
 # Run specific test file
-python -m pytest tests/test_pywrkr.py -v
+uv run pytest tests/test_pywrkr.py -v
 
 # Run specific test class
-python -m pytest tests/test_pywrkr.py::TestMakeUrl -v
+uv run pytest tests/test_pywrkr.py::TestMakeUrl -v
 
 # Sequential (useful for debugging)
-python -m pytest tests/ -v -n 0
+uv run pytest tests/ -v -n 0
 
 # Lint & format
-ruff format src/ tests/
-ruff check src/ tests/
+uv run ruff format src/ tests/
+uv run ruff check src/ tests/
 
 # Type check
-python -m mypy src/pywrkr/ --ignore-missing-imports --disable-error-code import-untyped
+uv run python -m mypy src/pywrkr/ --ignore-missing-imports --disable-error-code import-untyped
 
 # Security scan
-python -m bandit -r src/pywrkr/ -c pyproject.toml
+uv run python -m bandit -r src/pywrkr/ -c pyproject.toml
 
 # Pre-commit (all hooks)
-pre-commit run --all-files
+uv run pre-commit run --all-files
 
 # Build
-python -m build
+uv build
 
 # Run the tool directly
-python -m pywrkr http://localhost:8080/
+uv run python -m pywrkr http://localhost:8080/
 ```
 
 ## Architecture
@@ -111,11 +111,11 @@ Coverage uploads to Codecov from Ubuntu/3.12 job.
 3. **Make changes** in `src/pywrkr/`, add/update tests in `tests/`
 4. **Run all local checks before committing**:
    ```bash
-   ruff format src/ tests/
-   ruff check src/ tests/ --fix
-   python -m pytest tests/ -v
-   python -m mypy src/pywrkr/ --ignore-missing-imports --disable-error-code import-untyped
-   pre-commit run --all-files
+   uv run ruff format src/ tests/
+   uv run ruff check src/ tests/ --fix
+   uv run pytest tests/ -v
+   uv run python -m mypy src/pywrkr/ --ignore-missing-imports --disable-error-code import-untyped
+   uv run pre-commit run --all-files
    ```
 5. **Commit** using Conventional Commits: `feat: add X`, `fix: resolve Y`, `docs: update Z`
 6. **Push**: `git push -u origin feature/descriptive-name`
