@@ -399,6 +399,25 @@ class TestGatlingHtmlReport(unittest.TestCase):
         html = generate_gatling_html_report(stats, 0.0, 1, config, start_time=0.0)
         self.assertIn("<!DOCTYPE html>", html)
 
+    def test_identical_latencies_render_single_bucket(self):
+        """When every recorded latency is the same value, the histogram must
+        render as one bar at that value rather than spanning an arbitrary
+        range with a degenerate step. Regression test for the case where
+        ``hi == lo`` made ``step`` default to 1 second."""
+        stats = WorkerStats()
+        stats.total_requests = 50
+        stats.latencies = [0.005] * 50
+        stats.status_codes = {200: 50}
+        config = BenchmarkConfig(url="http://localhost/", method="GET")
+        html = generate_gatling_html_report(stats, 1.0, 1, config, start_time=0.0)
+        self.assertIn("<!DOCTYPE html>", html)
+        # Exactly one histogram bucket should be emitted, holding all 50
+        # samples at the actual 5 ms value. Previously the code emitted
+        # ~10 buckets with the entire count piled into the first and
+        # stretched the chart across whole seconds.
+        self.assertIn("data: [50]", html)
+        self.assertIn('labels: ["5"]', html)
+
 
 if __name__ == "__main__":
     unittest.main()

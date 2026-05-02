@@ -496,30 +496,38 @@ def generate_gatling_html_report(
     hist_colors: list[str] = []
     if stats.latencies:
         sorted_lat = sorted(stats.latencies)
-        # Create ~20 buckets
         lo, hi = sorted_lat[0], sorted_lat[-1]
-        n_buckets = min(30, max(10, len(sorted_lat) // 50))
-        step = (hi - lo) / n_buckets if n_buckets > 0 and hi > lo else 1
-        if step <= 0:
-            step = 1
-        buckets_hist: list[int] = [0] * n_buckets
-        for lat in sorted_lat:
-            idx = min(int((lat - lo) / step), n_buckets - 1)
-            buckets_hist[idx] += 1
-        for i in range(n_buckets):
-            edge_ms = (lo + i * step) * 1000
-            hist_labels.append(f"{edge_ms:.0f}")
-            hist_counts.append(buckets_hist[i])
-            # Color by latency: green < p50, yellow < p95, red >= p95
+        if hi > lo:
+            # Create ~20 buckets
+            n_buckets = min(30, max(10, len(sorted_lat) // 50))
+            step = (hi - lo) / n_buckets
+            buckets_hist: list[int] = [0] * n_buckets
+            for lat in sorted_lat:
+                idx = min(int((lat - lo) / step), n_buckets - 1)
+                buckets_hist[idx] += 1
             p50 = percentiles.get("p50", 0)
             p95 = percentiles.get("p95", 0)
-            edge_s = lo + i * step
-            if edge_s < p50:
-                hist_colors.append(COLOR_GREEN)
-            elif edge_s < p95:
-                hist_colors.append(COLOR_YELLOW)
-            else:
-                hist_colors.append(COLOR_RED)
+            for i in range(n_buckets):
+                edge_ms = (lo + i * step) * 1000
+                hist_labels.append(f"{edge_ms:.0f}")
+                hist_counts.append(buckets_hist[i])
+                # Color by latency: green < p50, yellow < p95, red >= p95
+                edge_s = lo + i * step
+                if edge_s < p50:
+                    hist_colors.append(COLOR_GREEN)
+                elif edge_s < p95:
+                    hist_colors.append(COLOR_YELLOW)
+                else:
+                    hist_colors.append(COLOR_RED)
+        else:
+            # Degenerate distribution: every observed latency is the same
+            # value. Falling through to the bucket loop with hi == lo would
+            # produce a step of 1 second and stretch the histogram across
+            # an arbitrary range with all bars red. Render a single green
+            # bar at the actual value instead.
+            hist_labels.append(f"{lo * 1000:.0f}")
+            hist_counts.append(len(sorted_lat))
+            hist_colors.append(COLOR_GREEN)
 
     # -- Percentile curve --
     pct_labels = ["p50", "p75", "p90", "p95", "p99"]
