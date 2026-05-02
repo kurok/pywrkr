@@ -563,7 +563,11 @@ async def _execute_request(
         stats.error_types[error_name] += 1
         stats.latencies.append(latency)
         if step_name:
-            stats.step_latencies[step_name].append(latency)
+            # Go through the helper so the error path obeys the same
+            # `_MAX_STEP_NAMES` cap as the success path. Appending directly
+            # let a long-running benchmark with many distinct error step
+            # names grow `step_latencies` without bound.
+            _record_step_latency(stats, step_name, latency)
         logger.warning("%sRequest error: %s: %s", log_prefix, error_name, e)
 
     return result
