@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-05-02
+
+### Fixed
+- **Distributed mode** (`--master` / `--worker`): cap incoming message size at 256 MiB to prevent a peer from announcing a 4 GiB payload and forcing the receiver to allocate before any JSON parser runs. The worker also now applies a 300 s timeout to its initial config-receive call so a stalled or disconnected master no longer leaves the worker blocked indefinitely. (#90)
+- **HTML report**: when every recorded latency is the same value (a fast in-process server, a single-request smoke run, or a sub-resolution benchmark), the response-time histogram now renders as a single green bar at the actual value instead of stretching across an arbitrary one-second range with all bars painted red. (#91)
+- **CLI validation**: reject `--timeout <= 0`, `--ramp-up < 0`, `--think-time < 0`, `--think-jitter` outside `[0, 1]`, and `--rate-ramp <= 0` with a clean usage error rather than letting nonsense values propagate into the worker. (#92)
+- **Scenario files**: `load_scenario` now reads YAML/JSON with `encoding="utf-8"` so non-ASCII step names or paths behave identically across platforms (Windows previously decoded with the platform default codec). (#92)
+- **HAR import**: per the HAR spec, `postData.encoding == "base64"` indicates `text` is a base64-encoded payload (the form Chrome uses for non-text uploads). The importer was treating the base64 string itself as the request body, so generated scenarios replayed the base64 text rather than the bytes the browser actually sent. The base64 is now decoded; bodies that decode to non-UTF-8 bytes are dropped with a warning rather than silently sending the wrong payload. (#93)
+- **Worker stats**: the request-error branch in `_make_request` appended directly to `stats.step_latencies[step_name]`, bypassing the `_MAX_STEP_NAMES` cap that the success path honours. A long benchmark with many distinct error step names could grow the dict without bound. The error branch now goes through `_record_step_latency`. (#94)
+
 ## [1.3.7] - 2026-04-27
 
 ### Fixed
