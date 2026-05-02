@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-05-02
+
+### Fixed
+- **HAR import**: precompile include/exclude regexes once and bound URL length passed to the matcher to 8192 characters. A pathological pattern such as `^(a+)+$` against a long URL could previously force `re.search` into catastrophic backtracking and freeze the importer; the cap converts that worst case into a fixed, small constant. Invalid regexes now also surface as a clear `ValueError` at filter setup rather than buried in the per-URL loop. (#96)
+
 ## [1.4.0] - 2026-05-02
 
 ### Fixed
