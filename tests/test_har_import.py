@@ -289,6 +289,35 @@ class TestFilterEntries(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].url, "https://api.example.com/users")
 
+    def test_invalid_regex_pattern_fails_fast(self):
+        """An invalid regex must surface as ValueError at filter setup time
+        rather than buried in a per-URL match call (or worse, sometimes
+        silently match)."""
+        config = HarImportConfig(exclude_patterns=[r"["])  # unbalanced bracket
+        with self.assertRaises(ValueError) as ctx:
+            filter_entries(self._entries(), config)
+        self.assertIn("Invalid regex pattern", str(ctx.exception))
+
+    def test_long_url_matched_within_bound(self):
+        """Pattern matching must terminate quickly even on a pathological
+        regex against a very long URL — the URL is truncated to the match
+        cap before being passed to the regex engine."""
+        import time as _time
+
+        long_url = "https://api.example.com/" + ("a" * 100_000) + "!"
+        entry = HarEntry(url=long_url, method="GET", status=200, time_ms=10)
+        config = HarImportConfig(
+            include_static=True,
+            # Catastrophic-backtracking shape; bounded URL keeps it fast.
+            include_patterns=[r"^(a+)+$"],
+        )
+        start = _time.monotonic()
+        result = filter_entries([entry], config)
+        elapsed = _time.monotonic() - start
+        # Regression budget — without truncation this match takes seconds.
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual(result, [])
+
 
 class TestHarToScenario(unittest.TestCase):
     """Tests for har_to_scenario()."""

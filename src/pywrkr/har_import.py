@@ -101,10 +101,36 @@ def _is_static(url: str) -> bool:
     return ext in _STATIC_EXTENSIONS
 
 
-def _matches_patterns(url: str, patterns: list[str]) -> bool:
-    """Return True if the URL matches any of the regex patterns."""
+# Cap on URL length passed to user-supplied regex matches. The Python ``re``
+# engine offers no per-match timeout, so a pathological pattern combined with
+# a very long URL can degrade to catastrophic backtracking. URLs longer than
+# this are truncated for matching only — recording purposes are unaffected.
+# 8192 is well above the practical upper bound for browser-recorded URLs.
+_MATCH_URL_MAX = 8192
+
+
+def _compile_patterns(patterns: list[str]) -> list[re.Pattern[str]]:
+    """Compile a list of regex patterns once.
+
+    Raises ``ValueError`` with a clear message if any pattern fails to compile,
+    so the user sees the error at filter setup rather than buried in a per-URL
+    match call.
+    """
+    compiled: list[re.Pattern[str]] = []
+    for p in patterns:
+        try:
+            compiled.append(re.compile(p))
+        except re.error as exc:
+            raise ValueError(f"Invalid regex pattern {p!r}: {exc}") from exc
+    return compiled
+
+
+def _matches_patterns(url: str, patterns: list[re.Pattern[str]]) -> bool:
+    """Return True if the URL matches any precompiled regex pattern."""
+    if len(url) > _MATCH_URL_MAX:
+        url = url[:_MATCH_URL_MAX]
     for pattern in patterns:
-        if re.search(pattern, url):
+        if pattern.search(url):
             return True
     return False
 
@@ -206,7 +232,17 @@ def filter_entries(
     entries: list[HarEntry],
     config: HarImportConfig,
 ) -> list[HarEntry]:
-    """Apply filters to HAR entries based on HarImportConfig."""
+    """Apply filters to HAR entries based on HarImportConfig.
+
+    Raises:
+        ValueError: If any include or exclude pattern is not a valid regex.
+    """
+    # Compile user-supplied patterns once up front so an invalid regex fails
+    # before we touch any entries, and so each URL is matched against
+    # precompiled objects rather than re-parsing on every iteration.
+    excludes = _compile_patterns(config.exclude_patterns)
+    includes = _compile_patterns(config.include_patterns)
+
     result = []
     for entry in entries:
         # Filter static assets
@@ -220,11 +256,11 @@ def filter_entries(
                 continue
 
         # Exclude patterns
-        if config.exclude_patterns and _matches_patterns(entry.url, config.exclude_patterns):
+        if excludes and _matches_patterns(entry.url, excludes):
             continue
 
         # Include patterns (if specified, only matching URLs pass)
-        if config.include_patterns and not _matches_patterns(entry.url, config.include_patterns):
+        if includes and not _matches_patterns(entry.url, includes):
             continue
 
         result.append(entry)
