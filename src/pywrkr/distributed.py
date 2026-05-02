@@ -29,6 +29,15 @@ from pywrkr.workers import run_benchmark, run_user_simulation
 
 logger = logging.getLogger(__name__)
 
+# Hard cap on a single distributed-mode message. Length-prefixed framing on its
+# own would let a peer claim a 4 GiB payload and exhaust memory before the JSON
+# parser ever sees it. Configs and merged stats fit well under this in practice.
+_MAX_MESSAGE_BYTES = 256 * 1024 * 1024  # 256 MiB
+
+# Default ceiling for how long a worker should wait for the master to send the
+# initial config before assuming the master is dead.
+_WORKER_RECV_TIMEOUT_SECONDS = 300.0
+
 
 def _serialize_ssl_config(ssl_cfg: SSLConfig) -> dict:
     """Serialize SSLConfig to a JSON-safe dict."""
@@ -270,11 +279,16 @@ async def _recv_msg(reader: asyncio.StreamReader) -> dict:
 
     Raises:
         ConnectionError: If the remote end closes before the full message
-            is received (wraps asyncio.IncompleteReadError).
+            is received (wraps asyncio.IncompleteReadError), or if the peer
+            announces a payload larger than the protocol limit.
     """
     try:
         length_bytes = await reader.readexactly(4)
         length = int.from_bytes(length_bytes, "big")
+        if length > _MAX_MESSAGE_BYTES:
+            raise ConnectionError(
+                f"Peer announced message of {length} bytes, exceeds limit of {_MAX_MESSAGE_BYTES}"
+            )
         payload = await reader.readexactly(length)
     except asyncio.IncompleteReadError as e:
         raise ConnectionError(
@@ -436,7 +450,14 @@ async def run_worker_node(master_host: str, master_port: int) -> None:
     logger.info("Worker: connected to master, waiting for config...")
 
     try:
-        msg = await _recv_msg(reader)
+        try:
+            msg = await asyncio.wait_for(_recv_msg(reader), timeout=_WORKER_RECV_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.error(
+                "Worker: timed out after %ss waiting for config from master",
+                _WORKER_RECV_TIMEOUT_SECONDS,
+            )
+            return
         if msg.get("type") != "config":
             logger.error("Worker: unexpected message type: %s", msg.get("type"))
             return
