@@ -572,6 +572,14 @@ def _validate_load_params(
         parser.error(f"--duration (-d) must be greater than 0, got {args.duration}")
     if args.num_requests is not None and args.num_requests < 1:
         parser.error(f"--num-requests (-n) must be at least 1, got {args.num_requests}")
+    if args.timeout <= 0:
+        parser.error(f"--timeout must be greater than 0, got {args.timeout}")
+    if args.ramp_up < 0:
+        parser.error(f"--ramp-up must be >= 0, got {args.ramp_up}")
+    if args.think_time < 0:
+        parser.error(f"--think-time must be >= 0, got {args.think_time}")
+    if not 0.0 <= args.think_jitter <= 1.0:
+        parser.error(f"--think-jitter must be between 0 and 1, got {args.think_jitter}")
 
     if args.autofind:
         if args.max_users <= args.start_users:
@@ -612,6 +620,8 @@ def _validate_rate_and_traffic(
         parser.error("--rate-ramp requires --rate")
     if config.rate_ramp is not None and config.duration is None:
         parser.error("--rate-ramp requires -d (duration)")
+    if config.rate_ramp is not None and config.rate_ramp <= 0:
+        parser.error(f"--rate-ramp must be greater than 0, got {config.rate_ramp}")
 
     if args.traffic_profile is not None:
         if config.rate is None:
