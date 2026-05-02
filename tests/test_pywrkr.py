@@ -5975,6 +5975,27 @@ class TestRecordStepLatencyOverflow(unittest.TestCase):
         _record_step_latency(stats, "step_0", 0.02)
         self.assertEqual(len(stats.step_latencies["step_0"]), 2)
 
+    def test_error_path_uses_step_cap(self):
+        """Regression: the request-error branch in `_make_request` used to
+        append directly to `stats.step_latencies[step_name]`, bypassing the
+        `_MAX_STEP_NAMES` overflow bucket. A benchmark hitting an error on a
+        long tail of distinct step names grew the dict without bound. The
+        fix routes the error path through `_record_step_latency` too — this
+        test pins the cap behaviour for a step name that arrives only via
+        the error branch."""
+        from pywrkr.workers import _MAX_STEP_NAMES, _record_step_latency
+
+        stats = pywrkr.WorkerStats()
+        for i in range(_MAX_STEP_NAMES):
+            _record_step_latency(stats, f"step_{i}", 0.01)
+
+        # Simulate the error branch recording a brand-new step. With the
+        # fix, this lands in `[other steps]` rather than minting an extra
+        # key past the cap.
+        _record_step_latency(stats, "error_step_overflow", 0.5)
+        self.assertNotIn("error_step_overflow", stats.step_latencies)
+        self.assertIn(0.5, stats.step_latencies["[other steps]"])
+
 
 class TestCreateSslContext(unittest.TestCase):
     """Cover SSL context with custom CA bundle."""
