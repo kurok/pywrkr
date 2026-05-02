@@ -121,6 +121,30 @@ class TestValidateLoadParams:
         with pytest.raises(SystemExit):
             _parse(["-n", "100", "-d", "10", "http://localhost/"])
 
+    def test_timeout_zero_rejected(self):
+        with pytest.raises(SystemExit):
+            _parse(["--timeout", "0", "http://localhost/"])
+
+    def test_timeout_negative_rejected(self):
+        with pytest.raises(SystemExit):
+            _parse(["--timeout", "-5", "http://localhost/"])
+
+    def test_ramp_up_negative_rejected(self):
+        with pytest.raises(SystemExit):
+            _parse(["--ramp-up", "-1", "-d", "10", "http://localhost/"])
+
+    def test_think_time_negative_rejected(self):
+        with pytest.raises(SystemExit):
+            _parse(["--think-time", "-0.5", "-u", "1", "-d", "5", "http://localhost/"])
+
+    def test_think_jitter_above_one_rejected(self):
+        with pytest.raises(SystemExit):
+            _parse(["--think-jitter", "1.5", "-u", "1", "-d", "5", "http://localhost/"])
+
+    def test_think_jitter_negative_rejected(self):
+        with pytest.raises(SystemExit):
+            _parse(["--think-jitter", "-0.1", "-u", "1", "-d", "5", "http://localhost/"])
+
 
 # ---------------------------------------------------------------------------
 # _validate_rate_and_traffic error paths
@@ -137,6 +161,14 @@ class TestValidateRateAndTraffic:
         """Line 614: --rate-ramp without -d."""
         with pytest.raises(SystemExit):
             _parse(["--rate", "100", "--rate-ramp", "200", "-n", "100", "http://localhost/"])
+
+    def test_rate_ramp_zero_rejected(self):
+        with pytest.raises(SystemExit):
+            _parse(["--rate", "100", "--rate-ramp", "0", "-d", "10", "http://localhost/"])
+
+    def test_rate_ramp_negative_rejected(self):
+        with pytest.raises(SystemExit):
+            _parse(["--rate", "100", "--rate-ramp", "-50", "-d", "10", "http://localhost/"])
 
     def test_traffic_profile_without_rate(self):
         """Line 617-618: --traffic-profile without --rate."""

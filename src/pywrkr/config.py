@@ -392,7 +392,7 @@ def load_scenario(path: str) -> Scenario:
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Scenario file not found: {path}")
 
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         content = f.read()
 
     ext = os.path.splitext(path)[1].lower()
