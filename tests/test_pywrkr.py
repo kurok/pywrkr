@@ -5910,6 +5910,23 @@ class TestDistributedHelpers(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_recv_msg_rejects_oversized_payload(self):
+        """A peer announcing a payload over the protocol limit must be refused
+        before any allocation happens."""
+        from pywrkr.distributed import _MAX_MESSAGE_BYTES, _recv_msg
+
+        async def _run():
+            reader = asyncio.StreamReader()
+            # Length prefix one byte over the limit, no payload — readexactly
+            # for the body must never be called.
+            reader.feed_data((_MAX_MESSAGE_BYTES + 1).to_bytes(4, "big"))
+            reader.feed_eof()
+            with self.assertRaises(ConnectionError) as ctx:
+                await _recv_msg(reader)
+            self.assertIn("exceeds limit", str(ctx.exception))
+
+        asyncio.run(_run())
+
     def test_merge_worker_stats_step_latency_cap(self):
         from pywrkr.workers import _MAX_STEP_NAMES, _merge_all_stats
 
