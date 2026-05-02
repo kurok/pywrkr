@@ -94,6 +94,66 @@ class TestParseHar(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             parse_har("/nonexistent/file.har")
 
+    def test_base64_post_data_decoded(self):
+        """Per HAR spec, postData.encoding=base64 means text is the base64
+        of the actual body. The importer must decode it."""
+        import base64 as _b64
+
+        original = '{"hello": "world"}'
+        encoded = _b64.b64encode(original.encode()).decode()
+        har = _make_har(
+            [
+                _make_entry(
+                    url="https://example.com/api",
+                    method="POST",
+                    status=200,
+                    time_ms=10,
+                    post_data={
+                        "mimeType": "application/json",
+                        "text": encoded,
+                        "encoding": "base64",
+                    },
+                ),
+            ]
+        )
+        path = _write_har(har)
+        try:
+            entries = parse_har(path)
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].body, original)
+        finally:
+            os.unlink(path)
+
+    def test_base64_post_data_binary_dropped(self):
+        """If the base64 payload decodes to non-UTF-8 bytes (a binary upload),
+        drop the body rather than passing the base64 text through verbatim."""
+        import base64 as _b64
+
+        binary = b"\xff\x00\xfe\xfd"
+        encoded = _b64.b64encode(binary).decode()
+        har = _make_har(
+            [
+                _make_entry(
+                    url="https://example.com/upload",
+                    method="POST",
+                    status=200,
+                    time_ms=10,
+                    post_data={
+                        "mimeType": "application/octet-stream",
+                        "text": encoded,
+                        "encoding": "base64",
+                    },
+                ),
+            ]
+        )
+        path = _write_har(har)
+        try:
+            entries = parse_har(path)
+            self.assertEqual(len(entries), 1)
+            self.assertIsNone(entries[0].body)
+        finally:
+            os.unlink(path)
+
     def test_parse_invalid_json(self):
         f = tempfile.NamedTemporaryFile(mode="w", suffix=".har", delete=False)
         f.write("not json {{{")

@@ -6,12 +6,17 @@ or URL lists, dramatically reducing test-authoring time.
 HAR spec: http://www.softwareishard.com/blog/har-12-spec/
 """
 
+import base64
+import binascii
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -145,13 +150,33 @@ def parse_har(path: str) -> list[HarEntry]:
             if name:
                 headers[name.lower()] = value
 
-        # Extract body
+        # Extract body. The HAR spec allows postData.text to be a plain string
+        # or, when postData.encoding == "base64", a base64-encoded payload.
+        # Decode the latter so the scenario captures the bytes the browser
+        # actually sent. If the decoded payload is not valid UTF-8 (i.e. the
+        # body is genuinely binary, e.g. a multipart upload), drop the body
+        # because pywrkr scenario steps can only carry text or JSON-shaped
+        # bodies — silently passing the base64 string through would replay a
+        # different payload from the one the browser sent.
         body = None
         content_type = None
         post_data = request.get("postData")
         if post_data:
-            body = post_data.get("text", "")
+            text = post_data.get("text", "")
             content_type = post_data.get("mimeType", "")
+            if text and post_data.get("encoding") == "base64":
+                try:
+                    raw = base64.b64decode(text, validate=True)
+                    body = raw.decode("utf-8")
+                except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
+                    logger.warning(
+                        "Skipping base64 body for %s %s: %s",
+                        method,
+                        url,
+                        exc,
+                    )
+            else:
+                body = text
 
         # Response status
         status = response.get("status", 0)
