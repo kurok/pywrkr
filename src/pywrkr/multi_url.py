@@ -15,6 +15,8 @@ from pywrkr.workers import run_benchmark, run_user_simulation
 
 logger = logging.getLogger(__name__)
 
+HTTP_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
+
 
 @dataclass
 class UrlEntry:
@@ -42,20 +44,23 @@ def load_url_file(path: str) -> list[UrlEntry]:
             if not line or line.startswith("#"):
                 continue
             parts = line.split(None, 1)
-            if len(parts) == 2 and parts[0].upper() in (
-                "GET",
-                "POST",
-                "PUT",
-                "DELETE",
-                "PATCH",
-                "HEAD",
-                "OPTIONS",
-            ):
+            if len(parts) == 2 and parts[0].upper() in HTTP_METHODS:
                 entries.append(UrlEntry(url=parts[1], method=parts[0].upper()))
-            elif len(parts) >= 1:
-                entries.append(UrlEntry(url=parts[0]))
+            elif len(parts) == 1 and parts[0].upper() in HTTP_METHODS:
+                # A bare HTTP method with no URL (e.g. "POST") is malformed.
+                raise ValueError(
+                    f"Invalid line {line_num} in URL file (HTTP method with no URL): {raw_line!r}"
+                )
+            elif len(parts) == 2 and parts[0].isalpha() and parts[0].upper() not in HTTP_METHODS:
+                # First token looks like a method but is not a recognized one;
+                # treating it as the URL would silently drop the real URL in
+                # parts[1]. Reject it so the typo is surfaced.
+                raise ValueError(
+                    f"Invalid line {line_num} in URL file "
+                    f"(unknown HTTP method {parts[0]!r}): {raw_line!r}"
+                )
             else:
-                raise ValueError(f"Invalid line {line_num} in URL file: {raw_line!r}")
+                entries.append(UrlEntry(url=parts[0]))
 
     if not entries:
         raise ValueError(f"URL file is empty: {path}")
@@ -86,13 +91,18 @@ async def run_multi_url(
         logger.info("  Endpoint %s/%s: %s %s", i, len(url_entries), entry.method, entry.url)
         logger.info("%s\n", sep)
 
-        # Clone config with this URL and method, preserving all fields
+        # Clone config with this URL and method, deep-copying all mutable
+        # fields so in-place mutation in one iteration cannot leak into the
+        # base config or sibling endpoints.
         config = replace(
             base_config,
             url=entry.url,
             method=entry.method,
             headers=dict(base_config.headers),
             cookies=list(base_config.cookies),
+            tags=dict(base_config.tags),
+            thresholds=list(base_config.thresholds),
+            ssl_config=replace(base_config.ssl_config),
         )
 
         start = time.monotonic()
@@ -101,6 +111,20 @@ async def run_multi_url(
         else:
             stats, exit_code = await run_benchmark(config)
         duration = time.monotonic() - start
+
+        # Escalate exit_code for a fully-failing endpoint even when no SLO
+        # thresholds are configured: a URL where every request errored is a
+        # failure that CI must be able to detect. main.py surfaces the run's
+        # overall status via max(r.exit_code), so this propagates upward.
+        if exit_code == 0 and stats.total_requests > 0 and stats.errors == stats.total_requests:
+            exit_code = 1
+            logger.warning(
+                "  Endpoint %s %s had 100%% errors (%s/%s); marking as failed.",
+                entry.method,
+                entry.url,
+                stats.errors,
+                stats.total_requests,
+            )
 
         results.append(
             MultiUrlResult(

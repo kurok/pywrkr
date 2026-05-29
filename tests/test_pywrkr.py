@@ -210,7 +210,9 @@ class TestComputePercentiles(unittest.TestCase):
         result = dict(pywrkr.compute_percentiles(latencies))
         self.assertEqual(result[50], 50)
         self.assertEqual(result[99], 99)
-        self.assertEqual(result[100 - 0.01], 100)  # p99.99 -> last
+        # p99.99 requires n >= 10000 to be meaningful; with n=100 it is omitted
+        # rather than collapsing to max.
+        self.assertNotIn(100 - 0.01, result)
 
     def test_percentiles_sorted(self):
         latencies = [0.1, 0.5, 0.2, 0.8, 0.3, 1.0, 0.05]
@@ -292,9 +294,11 @@ class TestBuildResultsDict(unittest.TestCase):
         self.assertEqual(result["requests_per_sec"], 0)
 
     def test_percentile_keys(self):
-        stats = self._make_stats()
+        stats = self._make_stats()  # n=100
         result = pywrkr.build_results_dict(stats, 10.0, 10)
-        expected_keys = {"p50", "p75", "p90", "p95", "p99", "p99.9", "p99.99"}
+        # For n < 1000 the high-tail percentiles (p99.9/p99.99) are omitted as
+        # they cannot be resolved at this sample size.
+        expected_keys = {"p50", "p75", "p90", "p95", "p99"}
         self.assertEqual(set(result["percentiles"].keys()), expected_keys)
 
 
@@ -5551,7 +5555,14 @@ class TestDetermineAndRunMode(unittest.TestCase):
 
         config = pywrkr.BenchmarkConfig(url="http://example.com", duration=5)
         args = self._make_args(autofind=True)
-        _determine_and_run_mode(config, args)
+        # Autofind is now a CI gate: it exits non-zero when no step is
+        # sustainable. Return one passing step so it dispatches and exits 0.
+        passing_step = MagicMock()
+        passing_step.passed = True
+        mock_af.return_value = [passing_step]
+        with self.assertRaises(SystemExit) as ctx:
+            _determine_and_run_mode(config, args)
+        self.assertEqual(ctx.exception.code, 0)
         mock_af.assert_called_once()
 
 

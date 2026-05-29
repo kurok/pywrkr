@@ -454,5 +454,5 @@ class TestReportingEdgeCases:
         results = {"rps": 100.5, "latency": {"p95": 0.05}}
         assert _resolve_metric_value(results, "rps", None, 1.0) == pytest.approx(100.5)
         assert _resolve_metric_value(results, "latency", "p95", 1000.0) == pytest.approx(50.0)
-        # Missing key returns 0
-        assert _resolve_metric_value(results, "missing", None, 1.0) == 0.0
+        # Missing key returns None (absent data, not a fabricated zero)
+        assert _resolve_metric_value(results, "missing", None, 1.0) is None

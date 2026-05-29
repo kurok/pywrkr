@@ -157,10 +157,21 @@ def parse_har(path: str) -> list[HarEntry]:
     if not isinstance(log, dict) or "entries" not in log:
         raise ValueError("Invalid HAR file: missing 'log.entries' key")
 
+    if not isinstance(log["entries"], list):
+        raise ValueError("Invalid HAR file: 'log.entries' must be a list")
+
     entries = []
     for entry in log["entries"]:
+        # Buggy exporters/proxies sometimes emit non-dict entries; skip them
+        # rather than crash with AttributeError on entry.get(...).
+        if not isinstance(entry, dict):
+            continue
         request = entry.get("request", {})
         response = entry.get("response", {})
+        if not isinstance(request, dict):
+            continue
+        if not isinstance(response, dict):
+            response = {}
 
         url = request.get("url", "")
         if not url:
@@ -168,13 +179,21 @@ def parse_har(path: str) -> list[HarEntry]:
 
         method = request.get("method", "GET").upper()
 
-        # Extract headers
+        # Extract headers. The HAR spec records headers as a list of
+        # {"name", "value"} objects; guard against exporters that emit a dict
+        # (iterating a dict yields keys, which have no .get) or other shapes.
         headers = {}
-        for h in request.get("headers", []):
-            name = h.get("name", "")
-            value = h.get("value", "")
-            if name:
-                headers[name.lower()] = value
+        raw_headers = request.get("headers", [])
+        if isinstance(raw_headers, list):
+            for h in raw_headers:
+                if not isinstance(h, dict):
+                    continue
+                name = h.get("name", "")
+                value = h.get("value", "")
+                if name:
+                    # Preserve the recorded header name casing so
+                    # --preserve-headers emits the original-cased names.
+                    headers[name] = value
 
         # Extract body. The HAR spec allows postData.text to be a plain string
         # or, when postData.encoding == "base64", a base64-encoded payload.
@@ -187,7 +206,10 @@ def parse_har(path: str) -> list[HarEntry]:
         body = None
         content_type = None
         post_data = request.get("postData")
-        if post_data:
+        # A well-formed HAR records postData as an object; some exporters emit
+        # a bare string/list. Guard so a non-dict postData is ignored rather
+        # than crashing on post_data.get(...).
+        if isinstance(post_data, dict):
             text = post_data.get("text", "")
             content_type = post_data.get("mimeType", "")
             if text and post_data.get("encoding") == "base64":
@@ -204,8 +226,14 @@ def parse_har(path: str) -> list[HarEntry]:
             else:
                 body = text
 
-        # Response status
-        status = response.get("status", 0)
+        # Response status. Some exporters emit status as a string ("200");
+        # coerce to int so HarEntry.status matches its int annotation and
+        # downstream numeric comparisons (e.g. --assert-status) never crash.
+        raw_status = response.get("status", 0)
+        try:
+            status = int(raw_status)
+        except (TypeError, ValueError):
+            status = 0
 
         # Timing
         time_ms = entry.get("time", 0.0)
@@ -245,6 +273,15 @@ def filter_entries(
 
     result = []
     for entry in entries:
+        # Drop non-HTTP(S) pseudo-requests (data:, blob:, about:) and
+        # relative/host-less URLs. These yield a garbage base_url like
+        # "://" or "data://" and are not replayable, so they must not
+        # become scenario steps or pollute base_url derivation.
+        parsed = urlparse(entry.url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            logger.debug("Skipping non-HTTP(S) HAR URL: %r", entry.url)
+            continue
+
         # Filter static assets
         if not config.include_static and _is_static(entry.url):
             continue
@@ -355,6 +392,28 @@ def har_to_scenario(
     if not entries:
         raise ValueError("No HAR entries to convert (all filtered out?)")
 
+    # The scenario format derives a single base_url (scheme + host) and emits
+    # bare per-step paths that the runner concatenates onto it. If the HAR spans
+    # more than one origin, every non-first-origin step would silently replay
+    # against the first one. Key on scheme://host (not host alone) so an
+    # http/https mismatch on the same host is caught too. Refuse to produce that
+    # silent-wrong-result scenario; surface the mismatch so the user can
+    # disambiguate (e.g. --domain filtering).
+    origins = []
+    for entry in entries:
+        parsed = urlparse(entry.url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if parsed.netloc and origin not in origins:
+            origins.append(origin)
+    if len(origins) > 1:
+        raise ValueError(
+            "HAR spans multiple hosts "
+            f"({', '.join(origins)}); the scenario format uses a single "
+            "base_url and would replay all steps against the first host. "
+            "Filter to one host with --domain, or use --format url-file "
+            "which preserves absolute URLs."
+        )
+
     # Compute think times from recorded timing
     think_times = (
         _compute_think_times(entries, config.think_time_multiplier)
@@ -383,14 +442,21 @@ def har_to_scenario(
 
         # Body
         if entry.body:
-            # Try to parse as JSON for cleaner output
+            # Try to parse as JSON for cleaner output, but only adopt the
+            # parsed value when it is structured (dict/list). A plain-text
+            # body that happens to be a JSON scalar ("12345", "true", "null",
+            # a quoted string) must stay a string: coercing it to int/bool/None
+            # makes the scenario serializer emit a raw scalar that aiohttp
+            # rejects at request time, silently dropping the recorded body.
             try:
-                step["body"] = json.loads(entry.body)
+                parsed = json.loads(entry.body)
             except (json.JSONDecodeError, TypeError):
                 step["body"] = entry.body
+            else:
+                step["body"] = parsed if isinstance(parsed, (dict, list)) else entry.body
 
         # Status assertion
-        if config.assert_status and entry.status and 200 <= entry.status < 400:
+        if config.assert_status and isinstance(entry.status, int) and 200 <= entry.status < 400:
             step["assert_status"] = entry.status
 
         # Think time
@@ -418,6 +484,12 @@ def har_to_url_file(
 
     Returns a string with one ``METHOD URL`` per line (suitable for
     ``pywrkr --url-file``). Only unique URLs are included.
+
+    Note:
+        The url-file format cannot carry request bodies, so recorded
+        POST/PUT payloads are dropped. Use ``--format scenario`` to preserve
+        bodies. URLs containing control characters are skipped to prevent
+        line injection.
     """
     if not entries:
         raise ValueError("No HAR entries to convert (all filtered out?)")
@@ -425,6 +497,27 @@ def har_to_url_file(
     seen = set()
     lines = []
     for entry in entries:
+        # The url-file format is line-oriented and parsed line-by-line. A URL
+        # OR method containing a raw newline/carriage-return (a malicious or
+        # buggy HAR can embed one in either field — both are emitted on the
+        # same line as "METHOD URL") would split into extra lines, injecting
+        # unrelated requests (e.g. a POST to another host). Skip entries whose
+        # method or URL holds control/non-printable characters so the output
+        # stays one request per entry.
+        if (
+            "\r" in entry.url
+            or "\n" in entry.url
+            or not entry.url.isprintable()
+            or "\r" in entry.method
+            or "\n" in entry.method
+            or not entry.method.isprintable()
+        ):
+            logger.warning(
+                "Skipping HAR entry with control characters: method=%r url=%r",
+                entry.method,
+                entry.url,
+            )
+            continue
         key = (entry.method, entry.url)
         if key in seen:
             continue
@@ -479,6 +572,17 @@ def convert_har(
         scenario = har_to_scenario(filtered, config, name=scenario_name)
         content = json.dumps(scenario, indent=2) + "\n"
     elif output_format == "url-file":
+        # The url-file format cannot carry request bodies. If any filtered
+        # entry recorded a body, warn so the user knows POST/PUT payloads are
+        # dropped (and can switch to --format scenario to preserve them).
+        dropped = sum(1 for e in filtered if e.body)
+        if dropped > 0:
+            logger.warning(
+                "%d HAR entries with request bodies were dropped; "
+                "--format url-file cannot carry bodies. "
+                "Use --format scenario to preserve them.",
+                dropped,
+            )
         content = har_to_url_file(filtered)
     else:
         raise ValueError(

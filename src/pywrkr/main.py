@@ -66,14 +66,14 @@ def _add_core_options(parser: argparse.ArgumentParser) -> None:
         "--duration",
         type=float,
         default=None,
-        help="Duration of test in seconds (default: 10, ignored if -n is set)",
+        help="Duration of test in seconds (default: 10; mutually exclusive with -n)",
     )
     parser.add_argument(
         "-n",
         "--num-requests",
         type=int,
         default=None,
-        help="Total number of requests to make (ab-style, overrides -d)",
+        help="Total number of requests to make (ab-style; mutually exclusive with -d)",
     )
     parser.add_argument(
         "-t",
@@ -114,15 +114,10 @@ def _add_core_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-k",
         "--keepalive",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable keep-alive (default: on)",
-    )
-    parser.add_argument(
-        "--no-keepalive",
-        action="store_true",
-        default=False,
-        help="Disable keep-alive (close connection after each request)",
+        help="Enable keep-alive (default: on); use --no-keepalive to disable "
+        "(close connection after each request). Last flag wins.",
     )
     parser.add_argument(
         "-l",
@@ -514,6 +509,69 @@ Examples:
     return parser
 
 
+def _require_http_scheme(
+    parser: argparse.ArgumentParser,
+    url: str,
+    context: str,
+) -> None:
+    """Reject any URL whose scheme is not http(s).
+
+    ``context`` is woven into the error message so the user knows which input
+    was rejected (positional URL, url-file entry, or scenario base_url).
+    """
+    scheme = urlparse(url).scheme
+    if scheme not in ("http", "https"):
+        parser.error(f"Invalid URL scheme{context}: {url}. Use http:// or https://")
+
+
+def _validate_mode_conflicts(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> None:
+    """Reject incompatible mode-flag combinations instead of silently resolving them.
+
+    Mode dispatch (``_determine_and_run_mode``) picks a single mode by if/elif
+    order, which would otherwise drop the other flags without warning. Surface
+    those conflicts as clear ``parser.error`` (exit 2) failures.
+    """
+    # --autofind drives its own user ramp and ignores all load-shape flags.
+    if args.autofind:
+        ignored = []
+        if args.num_requests is not None:
+            ignored.append("-n/--num-requests")
+        if args.rate is not None:
+            ignored.append("--rate")
+        if args.rate_ramp is not None:
+            ignored.append("--rate-ramp")
+        if args.traffic_profile is not None:
+            ignored.append("--traffic-profile")
+        if args.users is not None:
+            ignored.append("-u/--users")
+        if args.duration is not None:
+            ignored.append("-d/--duration")
+        if ignored:
+            parser.error(
+                "--autofind manages its own user ramp and cannot be combined with "
+                f"{', '.join(ignored)}; use --start-users/--max-users/--step-duration instead"
+            )
+        # --threshold cannot be evaluated in autofind mode (AutofindConfig carries
+        # no thresholds), so reject it rather than silently ignoring it. Use
+        # --max-p95/--max-error-rate as the autofind pass/fail gate instead.
+        if args.thresholds:
+            parser.error(
+                "--threshold is not supported with --autofind; "
+                "use --max-p95/--max-error-rate as the capacity gate"
+            )
+
+    # --master and --url-file are standalone modes; reject overlap.
+    if args.master and args.autofind:
+        parser.error("--master cannot be combined with --autofind")
+    if args.master and args.url_file is not None:
+        parser.error("--master cannot be combined with --url-file")
+    if args.url_file is not None and args.autofind:
+        parser.error("--url-file cannot be combined with --autofind")
+
+
 def _validate_url_and_mode(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -531,16 +589,20 @@ def _validate_url_and_mode(
         asyncio.run(run_worker_node(host, w_port))
         sys.exit(0)
 
-    # Multi-URL mode: URLs come from a file
+    _validate_mode_conflicts(parser, args)
+
+    # Multi-URL mode: URLs come from a file. Parse exactly once and reuse the
+    # parsed entries for scheme validation and execution (avoids redundant I/O
+    # and the TOCTOU window between validation and run).
     if args.url_file is not None:
         try:
-            load_url_file(args.url_file)
+            entries = load_url_file(args.url_file)
         except (FileNotFoundError, ValueError) as e:
-            parser.error(str(e))
-        for entry in load_url_file(args.url_file):
-            p = urlparse(entry.url)
-            if p.scheme not in ("http", "https"):
-                parser.error(f"Invalid URL scheme in url-file: {entry.url}")
+            parser.error(str(e))  # exits; never returns
+        else:
+            for entry in entries:
+                _require_http_scheme(parser, entry.url, " in url-file")
+            args.url_entries = entries
 
     # Master mode needs both a URL and a worker count
     if args.master:
@@ -554,9 +616,7 @@ def _validate_url_and_mode(
         parser.error("the following arguments are required: url (or --url-file or --scenario)")
 
     if args.url is not None:
-        parsed = urlparse(args.url)
-        if parsed.scheme not in ("http", "https"):
-            parser.error(f"Invalid URL scheme: {parsed.scheme}. Use http:// or https://")
+        _require_http_scheme(parser, args.url, "")
 
 
 def _validate_load_params(
@@ -589,7 +649,32 @@ def _validate_load_params(
             )
         if args.step_multiplier <= 1.0:
             parser.error(f"--step-multiplier ({args.step_multiplier}) must be greater than 1.0")
+        # Autofind capacity-tests a plain GET; request-shaping flags would be
+        # silently dropped (AutofindConfig carries none of them), producing
+        # misleading capacity numbers. Reject the combination explicitly.
+        unsupported = []
+        if args.method != "GET":
+            unsupported.append("-m/--method")
+        if args.headers:
+            unsupported.append("-H/--header")
+        if args.body:
+            unsupported.append("-b/--body")
+        if args.post_file:
+            unsupported.append("-p/--post-file")
+        if args.basic_auth:
+            unsupported.append("-A/--basic-auth")
+        if args.cookies:
+            unsupported.append("-C/--cookie")
+        if args.verify_length:
+            unsupported.append("-l/--verify-length")
+        if unsupported:
+            parser.error(
+                "--autofind only supports plain unauthenticated GET load; "
+                f"{', '.join(unsupported)} are not supported in autofind mode"
+            )
     elif args.users is not None:
+        if args.users < 1:
+            parser.error(f"--users (-u) must be at least 1, got {args.users}")
         if args.num_requests is not None:
             parser.error("Cannot use -n with -u (user simulation). Use -d for duration.")
         if args.duration is None:
@@ -701,6 +786,9 @@ def _parse_and_validate_args(
     if scenario and args.url is None:
         if scenario.base_url:
             args.url = scenario.base_url
+            # base_url is assigned after _validate_url_and_mode ran (args.url was
+            # None then), so re-validate the scheme here to avoid bypass.
+            _require_http_scheme(parser, args.url, " in scenario base_url")
         else:
             parser.error(
                 "--scenario requires a target base URL because scenario steps contain "
@@ -726,7 +814,7 @@ def _parse_and_validate_args(
         headers=dict(args.headers),
         body=body,
         timeout_sec=args.timeout,
-        keepalive=not args.no_keepalive,
+        keepalive=args.keepalive,
         ssl_config=ssl_config,
         basic_auth=args.basic_auth,
         cookies=args.cookies,
@@ -770,7 +858,12 @@ def _parse_and_validate_args(
 def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -> None:
     """Determine which mode to run and execute."""
     if args.url_file is not None:
-        url_entries = load_url_file(args.url_file)
+        # Reuse the entries parsed during validation (see _validate_url_and_mode)
+        # to avoid a redundant re-parse and the TOCTOU window. Fall back to a
+        # fresh parse only if validation did not run (e.g. direct unit calls).
+        url_entries = getattr(args, "url_entries", None)
+        if url_entries is None:
+            url_entries = load_url_file(args.url_file)
         results = asyncio.run(run_multi_url(url_entries, config))
         exit_code = max((r.exit_code for r in results), default=0)
         sys.exit(exit_code)
@@ -781,7 +874,6 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
             sys.exit(exit_code)
         sys.exit(1)
     elif args.autofind:
-        keepalive = not args.no_keepalive
         af_config = AutofindConfig(
             url=args.url,
             max_error_rate=args.max_error_rate,
@@ -794,11 +886,15 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
             think_time_jitter=args.think_jitter,
             random_param=args.random_param,
             timeout_sec=args.timeout,
-            keepalive=keepalive,
+            keepalive=config.keepalive,
             ssl_config=config.ssl_config,
             json_output=args.json,
         )
-        asyncio.run(run_autofind(af_config))
+        steps = asyncio.run(run_autofind(af_config))
+        # Autofind must be usable as a CI gate: exit non-zero when no sustainable
+        # load was found (no step passed the --max-p95/--max-error-rate gate).
+        sustainable = any(step.passed for step in steps)
+        sys.exit(0 if sustainable else 2)
     elif config.users is not None:
         _, exit_code = asyncio.run(run_user_simulation(config))
         sys.exit(exit_code)

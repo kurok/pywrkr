@@ -14,7 +14,7 @@ import ssl
 import sys
 import time
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import aiohttp
 
@@ -26,6 +26,8 @@ from pywrkr.config import (
     RequestCounter,
     StepResult,
     WorkerStats,
+    merge_reservoirs,
+    normalize_timeline,
 )
 from pywrkr.reporting import (
     RICH_AVAILABLE,
@@ -136,6 +138,9 @@ class LiveDashboard:
         self.config = config
         self.start_time = start_time
         self.active_users = active_users
+        # Highest RPS observed so far, used to normalize the throughput bar so
+        # it conveys relative load instead of always rendering full.
+        self._peak_rps = 0.0
 
     def _build_display(self) -> "Panel":  # noqa: F821
         """Build the rich Panel for the current dashboard state."""
@@ -215,7 +220,11 @@ class LiveDashboard:
 
         max_bar = 24
         if rps > 0:
-            bar_len = min(max_bar, max(1, int(rps / max(rps, 1) * max_bar)))
+            # Normalize against the observed peak RPS so the bar reflects
+            # current load relative to the run's high-water mark, rather than
+            # always rendering full (rps / max(rps, 1) == 1.0 for any rps >= 1).
+            self._peak_rps = max(self._peak_rps, rps)
+            bar_len = min(max_bar, max(1, int(rps / max(self._peak_rps, 1e-9) * max_bar)))
             bar = "\u2588" * bar_len + "\u2591" * (max_bar - bar_len)
             table.add_row("Throughput:", f"{bar} {rps:.0f} req/s")
 
@@ -239,11 +248,19 @@ class LiveDashboard:
 
 
 def make_url(url: str, random_param: bool) -> str:
-    """Return the URL, optionally appending a unique cache-busting query parameter."""
+    """Return the URL, optionally appending a unique cache-busting query parameter.
+
+    The cache-busting ``_cb`` parameter is appended to the query component
+    (not the raw end of the string), so URLs containing a ``#fragment`` are
+    handled correctly: ``_cb`` lands in the query and the fragment is
+    preserved.
+    """
     if not random_param:
         return url
-    separator = "&" if "?" in url else "?"
-    return f"{url}{separator}_cb={uuid.uuid4().hex}"
+    parts = urlsplit(url)
+    cb = f"_cb={uuid.uuid4().hex}"
+    new_query = f"{parts.query}&{cb}" if parts.query else cb
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
 
 
 def _build_request_headers(config: BenchmarkConfig) -> dict[str, str]:
@@ -272,13 +289,16 @@ def _merge_all_stats(all_stats: list[WorkerStats]) -> WorkerStats:
     ``_MAX_STEP_NAMES`` to prevent unbounded memory growth.
     """
     merged = WorkerStats()
+    lat_capacity = merged.latencies.capacity
+    bd_capacity = merged.breakdowns.capacity
     for ws in all_stats:
         merged.total_requests += ws.total_requests
         merged.total_bytes += ws.total_bytes
         merged.errors += ws.errors
         merged.content_length_errors += ws.content_length_errors
-        merged.latencies.extend(ws.latencies)
-        merged.rps_timeline.extend(ws.rps_timeline)
+        # Rebase each worker's timeline onto a shared axis before merging;
+        # raw per-process monotonic timestamps are not comparable.
+        merged.rps_timeline.extend(normalize_timeline(ws.rps_timeline))
         for k, v in ws.error_types.items():
             merged.error_types[k] += v
         for k, v in ws.status_codes.items():
@@ -291,7 +311,12 @@ def _merge_all_stats(all_stats: list[WorkerStats]) -> WorkerStats:
                 else:
                     merged.step_latencies[k] = []
             merged.step_latencies[k].extend(v)
-        merged.breakdowns.extend(ws.breakdowns)
+
+    # Weighted reservoir merge preserves each worker's true total_seen and
+    # weights by volume instead of by how many samples survived downsampling,
+    # so merged percentiles are not biased toward low-volume workers.
+    merged.latencies = merge_reservoirs([ws.latencies for ws in all_stats], lat_capacity)
+    merged.breakdowns = merge_reservoirs([ws.breakdowns for ws in all_stats], bd_capacity)
 
     logger.debug(
         "Merged stats from %d workers: %d total requests, %d latency samples, %d breakdown samples",
@@ -508,15 +533,30 @@ async def _execute_request(
             if step_name:
                 _record_step_latency(stats, step_name, latency)
 
-            # Content-length verification (ab -l style)
+            # Content-length verification (ab -l style).
+            #
+            # ab's -l only checks that the *declared* Content-Length is
+            # consistent across responses; it does NOT require the received
+            # body length to equal the declared value. aiohttp transparently
+            # decompresses gzip/deflate bodies, so ``len(data)`` is the
+            # decompressed size while Content-Length is the on-wire compressed
+            # size -- comparing them would flag every compressed response as an
+            # error. We therefore compare declared values for consistency only.
             if config.verify_content_length:
                 cl = resp.headers.get("Content-Length")
                 if cl is not None:
-                    declared = int(cl)
-                    if expected_length_ref[0] is None:
-                        expected_length_ref[0] = declared
-                    if declared != expected_length_ref[0] or len(data) != declared:
+                    try:
+                        declared = int(cl)
+                    except (TypeError, ValueError):
+                        # Malformed Content-Length header: count it and skip
+                        # the comparison rather than letting ValueError escape
+                        # and kill the worker.
                         stats.content_length_errors += 1
+                    else:
+                        if expected_length_ref[0] is None:
+                            expected_length_ref[0] = declared
+                        if declared != expected_length_ref[0]:
+                            stats.content_length_errors += 1
 
             # Assertion checks (scenario mode)
             assertion_failed = False
@@ -529,7 +569,11 @@ async def _execute_request(
             if assert_body_contains is not None:
                 body_text = data.decode("utf-8", errors="replace")
                 if assert_body_contains not in body_text:
-                    stats.errors += 1
+                    # Count at most one error per request: if assert_status
+                    # already failed, this request is already counted. We still
+                    # record the distinct AssertBody diagnostic message.
+                    if not assertion_failed:
+                        stats.errors += 1
                     err_msg = f"AssertBody: '{assert_body_contains}' not found"
                     stats.error_types[err_msg] += 1
                     assertion_failed = True
@@ -724,7 +768,12 @@ async def user_worker(
                 if config.duration is not None and elapsed >= config.duration:
                     break
 
-                if rate_limiter is not None and config.think_time == 0:
+                # The rate limiter is authoritative whenever present. Previously
+                # it was only consulted when think_time == 0, so `-u N --rate R`
+                # with the default think_time=1.0 silently ignored --rate.
+                # Think time (applied below) is now additive on top of the rate
+                # cap rather than overriding it.
+                if rate_limiter is not None:
                     await rate_limiter.acquire()
                     if stop_event.is_set():
                         break
@@ -788,6 +837,7 @@ async def scenario_worker(
     start_time: float,
     active_users: ActiveUsers,
     request_counter: RequestCounter | None = None,
+    rate_limiter: RateLimiter | None = None,
 ) -> None:
     """Execute a scripted multi-step scenario in a loop."""
     logger.debug("Scenario user %d starting", user_id)
@@ -803,6 +853,10 @@ async def scenario_worker(
     active_users.count += 1
     try:
         session_kwargs = _build_session_kwargs(connector, config, stats)
+        # Mirror worker()/user_worker(): when latency breakdown tracing is
+        # enabled the TraceConfig callbacks write into trace_request_ctx, so it
+        # must be a dict (not None) or on_request_start raises TypeError.
+        trace_ctx = {} if config.latency_breakdown else None
         async with aiohttp.ClientSession(**session_kwargs) as session:
             while not stop_event.is_set():
                 for step in scenario.steps:
@@ -818,6 +872,15 @@ async def scenario_worker(
                         if request_counter.remaining <= 0:
                             return
                         request_counter.remaining -= 1
+
+                    # Honor --rate in scenario mode too. Without this the rate
+                    # limiter is built and the banner advertises it, but it is
+                    # never consulted, so --rate was silently ignored for every
+                    # scenario run.
+                    if rate_limiter is not None:
+                        await rate_limiter.acquire()
+                        if stop_event.is_set():
+                            return
 
                     effective_timeout = _calc_effective_timeout(config, start_time)
                     client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
@@ -839,7 +902,7 @@ async def scenario_worker(
                         client_timeout,
                         stats,
                         config,
-                        None,
+                        trace_ctx,
                         expected_length_ref,
                         step_name=step_name,
                         assert_status=step.assert_status,
@@ -877,7 +940,11 @@ async def show_progress(
 ) -> None:
     """Display a text-based progress line during benchmark execution."""
     while not stop.is_set():
-        await asyncio.sleep(1)
+        # Wait up to 1s but wake immediately when stop is set, so the task
+        # exits promptly instead of finishing a full sleep after the run ends.
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=1)
+            break
         elapsed = time.monotonic() - start
         total_req = sum(ws.total_requests for ws in all_stats)
         total_err = sum(ws.errors for ws in all_stats)
@@ -976,16 +1043,39 @@ async def _finalize_run(
     quiet: bool = False,
 ) -> tuple[WorkerStats, int]:
     """Await workers, merge stats, print results, and evaluate thresholds."""
+    worker_crashed = False
     try:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Sample end_time immediately after the workers finish, BEFORE tearing
+        # down the progress task. The progress/dashboard task sleeps in ~1s
+        # increments, so awaiting it can block up to ~1s past the real end of
+        # load, which would inflate the reported duration and deflate RPS.
+        end_time = time.monotonic()
+
+        # Surface (rather than silently swallow) any unexpected worker crash.
+        # _execute_request only catches network errors; any other exception
+        # escaping a worker would otherwise be discarded here, masking dropped
+        # load as a clean, successful run.
+        for i, r in enumerate(results):
+            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+                worker_crashed = True
+                logger.error("Worker %d crashed: %s: %s", i, type(r).__name__, r)
+
         # Signal all workers to stop before accessing shared stats to avoid
         # race conditions where a still-running worker mutates stats during merge.
         stop_event.set()
         _ = await progress_task
     finally:
+        # Cancellation-safe teardown: ensure the progress/dashboard task is
+        # always stopped (it loops on `while not stop.is_set()`), even if this
+        # coroutine is cancelled while awaiting gather above.
+        stop_event.set()
+        if not progress_task.done():
+            progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                _ = await progress_task
         await connector.close()
 
-    end_time = time.monotonic()
     actual_duration = end_time - start_time
     merged = _merge_all_stats(all_stats)
 
@@ -999,6 +1089,11 @@ async def _finalize_run(
             print_threshold_results(th_results, file=sys.stdout)
         if any(not passed for _, _, passed in th_results):
             exit_code = 2
+
+    # A crashed worker means load/data was silently dropped; surface a
+    # non-zero exit code without clobbering a threshold failure (2).
+    if worker_crashed:
+        exit_code = max(exit_code, 1)
 
     return merged, exit_code
 
@@ -1064,8 +1159,12 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
 
     rate_limiter = _create_rate_limiter(config, config.duration)
 
-    # Distribute connections across worker groups
-    conns_per_group = max(1, config.connections // config.threads)
+    # Distribute connections across worker groups. Do NOT floor the per-group
+    # size to 1: with the old `max(1, ...)` floor, when connections < threads
+    # every group still got at least 1 worker PLUS the remainder was added,
+    # over-provisioning workers (e.g. -c 1 -t 4 spawned 5 workers). The empty
+    # groups are skipped below, so this yields exactly `connections` workers.
+    conns_per_group = config.connections // config.threads
     remainder = config.connections % config.threads
 
     # Shared counter for request-count mode
@@ -1109,6 +1208,7 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
                             start_time,
                             _active,
                             request_counter,
+                            rate_limiter,
                         )
                     )
                 )
@@ -1243,40 +1343,78 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         quiet=quiet,
     )
 
-    for i in range(num_users):
-        if stop_event.is_set():
-            break
-        ws = WorkerStats()
-        all_stats.append(ws)
-        if config.scenario:
-            tasks.append(
-                asyncio.create_task(
-                    scenario_worker(i, config, ws, connector, stop_event, start_time, active_users)
-                )
-            )
-        else:
-            tasks.append(
-                asyncio.create_task(
-                    user_worker(
-                        i, config, ws, connector, stop_event, start_time, active_users, rate_limiter
+    # Guard the window between connector creation and _finalize_run (which
+    # owns connector close + task teardown on normal completion). If this
+    # coroutine is cancelled during ramp-up -- a window that can span seconds
+    # to minutes -- the connector and already-spawned worker tasks would
+    # otherwise be orphaned (leaked sockets, never-cancelled tasks).
+    try:
+        for i in range(num_users):
+            if stop_event.is_set():
+                break
+            ws = WorkerStats()
+            all_stats.append(ws)
+            if config.scenario:
+                tasks.append(
+                    asyncio.create_task(
+                        scenario_worker(
+                            i,
+                            config,
+                            ws,
+                            connector,
+                            stop_event,
+                            start_time,
+                            active_users,
+                            None,
+                            rate_limiter,
+                        )
                     )
                 )
-            )
-        if ramp_delay > 0 and i < num_users - 1:
-            await asyncio.sleep(ramp_delay)
+            else:
+                tasks.append(
+                    asyncio.create_task(
+                        user_worker(
+                            i,
+                            config,
+                            ws,
+                            connector,
+                            stop_event,
+                            start_time,
+                            active_users,
+                            rate_limiter,
+                        )
+                    )
+                )
+            if ramp_delay > 0 and i < num_users - 1:
+                await asyncio.sleep(ramp_delay)
 
-    return await _finalize_run(
-        tasks,
-        stop_event,
-        progress_task,
-        connector,
-        all_stats,
-        start_time,
-        config,
-        rate_limiter,
-        num_users,
-        quiet=quiet,
-    )
+        return await _finalize_run(
+            tasks,
+            stop_event,
+            progress_task,
+            connector,
+            all_stats,
+            start_time,
+            config,
+            rate_limiter,
+            num_users,
+            quiet=quiet,
+        )
+    except BaseException:
+        # Cancellation (or any other failure) before/within _finalize_run:
+        # stop and reap outstanding worker tasks, cancel the progress task,
+        # and close the connector if _finalize_run did not already do so.
+        stop_event.set()
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if not progress_task.done():
+            progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                _ = await progress_task
+        if not connector.closed:
+            await connector.close()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1330,7 +1468,22 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
     Starts with start_users, doubles (or multiplies by step_multiplier) each
     step. When a step fails thresholds, binary-searches between the last good
     and first bad user count to refine the answer.
+
+    Raises:
+        ValueError: If ``step_multiplier`` is not greater than 1.0, or
+            ``start_users`` is less than 1. Validating here (not only in the
+            CLI) protects programmatic callers: with step_multiplier <= 1 the
+            phase-1 ramp shrinks rather than grows and oscillates 0<->1
+            forever, never terminating.
     """
+    if config.step_multiplier <= 1.0:
+        raise ValueError(
+            f"step_multiplier ({config.step_multiplier}) must be > 1.0; "
+            "values <= 1.0 cause the autofind ramp to never terminate"
+        )
+    if config.start_users < 1:
+        raise ValueError(f"start_users ({config.start_users}) must be >= 1")
+
     logger.info("Autofind: ramping load on %s", config.url)
     logger.info(
         "  Thresholds: max error rate=%s%%, max p95=%ss", config.max_error_rate, config.max_p95
