@@ -17,7 +17,7 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
-from pywrkr import workers
+import pywrkr.workers as workers
 
 # ---------------------------------------------------------------------------
 # wk-10: cache-busting must land in the query, not the fragment
@@ -446,9 +446,6 @@ class TestMalformedContentLength(unittest.IsolatedAsyncioTestCase):
     async def test_non_numeric_content_length_records_error_no_raise(self):
         import aiohttp
 
-        class _FakeHeaders(dict):
-            pass
-
         class _FakeResp:
             status = 200
 
@@ -530,7 +527,7 @@ class TestRampCancellationCleanup(AioHTTPTestCase):
                 await asyncio.sleep(0.5)  # cancel mid ramp-up
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
-                    await task
+                    _ = await task
         # Pre-fix: connector orphaned (closed == False). Now it must be closed.
         self.assertTrue(created["conn"].closed)
 

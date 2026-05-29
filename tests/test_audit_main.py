@@ -246,7 +246,9 @@ class TestDurationNumRequestsHelp(unittest.TestCase):
         for action in parser._actions:
             if option in action.option_strings:
                 return action.help
-        self.fail(f"option {option} not found")
+        # raise (not self.fail) so this path is a clear no-return, avoiding a
+        # mix of explicit and implicit (fall-through) returns.
+        raise AssertionError(f"option {option} not found")
 
     def test_duration_help_states_mutual_exclusion(self):
         text = self._help_for("-d")

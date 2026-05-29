@@ -12,6 +12,7 @@ import asyncio
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from pywrkr.config import BenchmarkConfig, SSLConfig, Threshold
 from pywrkr.multi_url import UrlEntry, load_url_file, run_multi_url
@@ -113,18 +114,12 @@ class TestMu5ConfigCloneDeepCopy(unittest.TestCase):
 
             return WorkerStats(), 0
 
-        import pywrkr.multi_url as mu
-
-        orig_bench = mu.run_benchmark
-        mu.run_benchmark = fake_runner
-        try:
+        with patch("pywrkr.multi_url.run_benchmark", side_effect=fake_runner):
             entries = [
                 UrlEntry(url="http://127.0.0.1/a", method="GET"),
                 UrlEntry(url="http://127.0.0.1/b", method="GET"),
             ]
             asyncio.run(run_multi_url(entries, base))
-        finally:
-            mu.run_benchmark = orig_bench
 
         self.assertEqual(len(captured), 2)
         c0, c1 = captured
