@@ -345,19 +345,20 @@ class TestDist2ExtraWorker(unittest.IsolatedAsyncioTestCase):
         self.assertLess(elapsed, 5.0)
 
     async def test_surplus_connection_in_handler_is_rejected_not_collected(self):
-        # Exercise the in-handler rejection branch deterministically. With
-        # expect_workers=2 we connect THREE peers concurrently before the master
-        # resumes from ready_event.wait(); whichever connection is accepted
-        # third sees len(worker_connections) >= 2 and is rejected by
-        # handle_worker, never appended to the collection set, so it can never
-        # stall result collection. To guarantee the third connection is accepted
-        # before the listener closes, the first two legit workers withhold their
-        # result until all three peers report they have connected.
+        # Deterministically exercise surplus-connection rejection. The surplus
+        # peer connects only AFTER both legit workers have been accepted (i.e.
+        # received their config frame), so it is always the third connection and
+        # can never displace a legit worker. (Connecting all three concurrently,
+        # as this test originally did, made it flaky: the accept order of
+        # concurrent connections is not guaranteed, so a legit worker could be
+        # the one rejected.) The legit workers withhold their result until the
+        # surplus has been handled, keeping the master in result-collection with
+        # the listener still open so the in-handler rejection branch is hit.
         config = pywrkr.BenchmarkConfig(url="http://example.com", duration=1, _quiet=True)
         port_holder = [0]
-        connected = [0]
-        all_connected = asyncio.Event()
-        rejected_seen = asyncio.Event()
+        accepted = [0]
+        both_accepted = asyncio.Event()
+        surplus_handled = asyncio.Event()
 
         async def _connect():
             while port_holder[0] == 0:
@@ -366,11 +367,15 @@ class TestDist2ExtraWorker(unittest.IsolatedAsyncioTestCase):
 
         async def _legit_worker(n: int):
             reader, writer = await _connect()
-            connected[0] += 1
-            if connected[0] >= 3:
-                all_connected.set()
             ln = int.from_bytes(await reader.readexactly(4), "big")
-            await reader.readexactly(ln)
+            await reader.readexactly(ln)  # received config => accepted as a worker
+            accepted[0] += 1
+            if accepted[0] >= 2:
+                both_accepted.set()
+            # Hold the result until the surplus peer has been handled so the
+            # master is still collecting (listener open) when it connects.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(surplus_handled.wait(), timeout=8)
             stats = pywrkr.WorkerStats()
             stats.total_requests = n
             stats.latencies.extend([0.01] * n)
@@ -379,30 +384,26 @@ class TestDist2ExtraWorker(unittest.IsolatedAsyncioTestCase):
             )
             await writer.drain()
             writer.close()
-            await writer.wait_closed()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
 
         async def _surplus_peer():
+            # Connect only once both legit workers are accepted, so this peer is
+            # guaranteed to be the surplus (third) connection.
+            await both_accepted.wait()
             try:
                 reader, writer = await _connect()
             except OSError:
-                connected[0] += 1
-                if connected[0] >= 3:
-                    all_connected.set()
-                rejected_seen.set()
+                surplus_handled.set()  # listener already closed => rejected
                 return
-            connected[0] += 1
-            if connected[0] >= 3:
-                all_connected.set()
             try:
                 # A rejected surplus peer's socket is closed by the master, so a
-                # read returns EOF (b"") promptly; a *selected* peer would be
-                # sent a config frame instead. Either way, never block.
+                # read returns EOF (b"") promptly; never block.
                 with contextlib.suppress(Exception):
-                    data = await asyncio.wait_for(reader.read(100), timeout=5)
-                    if data == b"":
-                        rejected_seen.set()
+                    await asyncio.wait_for(reader.read(100), timeout=5)
             finally:
                 writer.close()
+                surplus_handled.set()
 
         orig_start = asyncio.start_server
 
