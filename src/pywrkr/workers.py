@@ -1073,7 +1073,7 @@ async def _finalize_run(
         if not progress_task.done():
             progress_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await progress_task
+                _ = await progress_task
         await connector.close()
 
     actual_duration = end_time - start_time
@@ -1411,7 +1411,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         if not progress_task.done():
             progress_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await progress_task
+                _ = await progress_task
         if not connector.closed:
             await connector.close()
         raise

@@ -267,7 +267,7 @@ class TestDist1MeasuredDuration(unittest.IsolatedAsyncioTestCase):
                 result = await asyncio.wait_for(
                     run_master(config, "127.0.0.1", 0, expect_workers=1), timeout=20
                 )
-                await worker
+                _ = await worker
 
         self.assertIsNotNone(result)
         merged, exit_code = result

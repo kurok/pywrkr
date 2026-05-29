@@ -598,10 +598,11 @@ def _validate_url_and_mode(
         try:
             entries = load_url_file(args.url_file)
         except (FileNotFoundError, ValueError) as e:
-            parser.error(str(e))
-        for entry in entries:
-            _require_http_scheme(parser, entry.url, " in url-file")
-        args.url_entries = entries
+            parser.error(str(e))  # exits; never returns
+        else:
+            for entry in entries:
+                _require_http_scheme(parser, entry.url, " in url-file")
+            args.url_entries = entries
 
     # Master mode needs both a URL and a worker count
     if args.master:
