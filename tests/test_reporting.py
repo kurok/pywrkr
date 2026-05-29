@@ -96,7 +96,9 @@ class TestComputePercentiles(unittest.TestCase):
     def test_returns_expected_percentiles(self):
         result = compute_percentiles([1.0, 2.0, 3.0])
         pcts = [p for p, _ in result]
-        self.assertEqual(pcts, [50, 75, 90, 95, 99, 99.9, 99.99])
+        # p99.9 (n>=1000) and p99.99 (n>=10000) are omitted for small samples
+        # that cannot resolve them; n=3 here yields only the core percentiles.
+        self.assertEqual(pcts, [50, 75, 90, 95, 99])
 
 
 class TestParseThreshold(unittest.TestCase):
@@ -329,10 +331,12 @@ class TestExportMetrics(unittest.TestCase):
         val = _resolve_metric_value(results, "percentiles", "p50", 1000)
         self.assertAlmostEqual(val, 50.0)
 
-    def test_resolve_missing_returns_zero(self):
+    def test_resolve_missing_returns_none(self):
+        # Absent data resolves to None (not a fabricated 0) so exporters can
+        # omit the metric instead of reporting a false healthy zero.
         results = {}
         val = _resolve_metric_value(results, "total_requests", None, 1)
-        self.assertEqual(val, 0)
+        self.assertIsNone(val)
 
     def test_export_metrics_list_not_empty(self):
         self.assertGreater(len(_EXPORT_METRICS), 0)

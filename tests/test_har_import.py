@@ -226,8 +226,10 @@ class TestParseHar(unittest.TestCase):
         path = _write_har(har)
         try:
             entries = parse_har(path)
-            self.assertEqual(entries[0].headers["authorization"], "Bearer token123")
-            self.assertEqual(entries[0].headers["content-type"], "application/json")
+            # Recorded header-name casing is preserved (so --preserve-headers
+            # emits the original casing); keys are no longer lowercased.
+            self.assertEqual(entries[0].headers["Authorization"], "Bearer token123")
+            self.assertEqual(entries[0].headers["Content-Type"], "application/json")
         finally:
             os.unlink(path)
 
@@ -634,9 +636,21 @@ class TestConvertHar(unittest.TestCase):
 
     def test_convert_include_static(self):
         config = HarImportConfig(include_static=True)
-        content = convert_har(self.path, output_format="scenario", config=config)
-        data = json.loads(content)
-        self.assertEqual(len(data["steps"]), 3)
+        # The fixture's static asset (CSS) lives on a different host (cdn.*),
+        # so the single-base_url scenario format now refuses it (would replay
+        # against the wrong host). The url-file format preserves absolute URLs,
+        # so include_static surfaces all 3 requests there.
+        content = convert_har(self.path, output_format="url-file", config=config)
+        lines = content.strip().split("\n")
+        self.assertEqual(len(lines), 3)
+
+    def test_convert_multi_host_scenario_rejected(self):
+        # Including the cross-host static asset makes the HAR multi-host; the
+        # scenario format must refuse rather than silently target one host.
+        config = HarImportConfig(include_static=True)
+        with self.assertRaises(ValueError) as ctx:
+            convert_har(self.path, output_format="scenario", config=config)
+        self.assertIn("multiple hosts", str(ctx.exception))
 
     def test_convert_all_filtered_out(self):
         config = HarImportConfig(allowed_domains=["nonexistent.example.com"])

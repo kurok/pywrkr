@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import sys
@@ -19,6 +20,12 @@ from pywrkr.config import (
     SSLConfig,
     Threshold,
     WorkerStats,
+)
+from pywrkr.config import (
+    merge_reservoirs as _merge_reservoirs,
+)
+from pywrkr.config import (
+    normalize_timeline as _normalize_timeline,
 )
 from pywrkr.reporting import (
     evaluate_thresholds,
@@ -129,7 +136,7 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
         "threads": config.threads,
         "method": config.method,
         "headers": dict(config.headers),
-        "body": base64.b64encode(config.body).decode() if config.body else None,
+        "body": base64.b64encode(config.body).decode() if config.body is not None else None,
         "timeout_sec": config.timeout_sec,
         "keepalive": config.keepalive,
         "basic_auth": config.basic_auth,
@@ -161,7 +168,7 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
 
 def _deserialize_config(data: dict) -> BenchmarkConfig:
     """Deserialize a dict back into a BenchmarkConfig."""
-    body = base64.b64decode(data["body"]) if data.get("body") else None
+    body = base64.b64decode(data["body"]) if data.get("body") is not None else None
     return BenchmarkConfig(
         url=data["url"],
         connections=data.get("connections", DEFAULT_CONNECTIONS),
@@ -279,8 +286,10 @@ async def _recv_msg(reader: asyncio.StreamReader) -> dict:
 
     Raises:
         ConnectionError: If the remote end closes before the full message
-            is received (wraps asyncio.IncompleteReadError), or if the peer
-            announces a payload larger than the protocol limit.
+            is received (wraps asyncio.IncompleteReadError), if the peer
+            announces a payload larger than the protocol limit, or if the
+            message body is not valid UTF-8 JSON (wraps UnicodeDecodeError /
+            json.JSONDecodeError).
     """
     try:
         length_bytes = await reader.readexactly(4)
@@ -295,26 +304,33 @@ async def _recv_msg(reader: asyncio.StreamReader) -> dict:
             f"Connection closed before full message received "
             f"(got {len(e.partial)} of {e.expected or '?'} bytes)"
         ) from e
-    return json.loads(payload.decode())
+    try:
+        return json.loads(payload.decode())
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ConnectionError(f"Malformed message body: {e}") from e
 
 
 def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
     """Merge multiple WorkerStats into one."""
     merged = WorkerStats()
+    lat_capacity = merged.latencies.capacity
+    bd_capacity = merged.breakdowns.capacity
     for ws in stats_list:
         merged.total_requests += ws.total_requests
         merged.total_bytes += ws.total_bytes
         merged.errors += ws.errors
         merged.content_length_errors += ws.content_length_errors
-        merged.latencies.extend(ws.latencies)
-        merged.rps_timeline.extend(ws.rps_timeline)
+        merged.rps_timeline.extend(_normalize_timeline(ws.rps_timeline))
         for k, v in ws.error_types.items():
             merged.error_types[k] += v
         for k, v in ws.status_codes.items():
             merged.status_codes[k] += v
         for k, v in ws.step_latencies.items():
             merged.step_latencies[k].extend(v)
-        merged.breakdowns.extend(ws.breakdowns)
+    # Weighted reservoir merge preserves total_seen and weights each worker by
+    # its true volume instead of by how many samples survived downsampling.
+    merged.latencies = _merge_reservoirs([ws.latencies for ws in stats_list], lat_capacity)
+    merged.breakdowns = _merge_reservoirs([ws.breakdowns for ws in stats_list], bd_capacity)
     return merged
 
 
@@ -330,6 +346,14 @@ async def run_master(
     ready_event = asyncio.Event()
 
     async def handle_worker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        # Reject any connection beyond expect_workers so a late/stale/retrying
+        # peer that lands in the race window cannot linger in the connection
+        # list and later stall result collection on a recv that never replies.
+        if len(worker_connections) >= expect_workers:
+            addr = writer.get_extra_info("peername")
+            logger.warning("  Rejecting surplus worker connection: %s", addr)
+            writer.close()
+            return
         addr = writer.get_extra_info("peername")
         worker_connections.append((reader, writer))
         logger.info(
@@ -343,7 +367,8 @@ async def run_master(
             ready_event.set()
 
     server = await asyncio.start_server(handle_worker, host, port)
-    async with server:
+    server_closed = False
+    try:
         # Wait for all workers with a timeout
         try:
             await asyncio.wait_for(ready_event.wait(), timeout=300)
@@ -358,23 +383,45 @@ async def run_master(
                 await w.wait_closed()
             return None
 
+        # Snapshot the first expect_workers connections and stop accepting more
+        # before distributing config, so collection only ever talks to the
+        # fixed set of workers we sent a config to. close() synchronously stops
+        # accepting new connections; we deliberately do NOT await
+        # wait_closed() here because the accepted worker connections are still
+        # in use for the run, and in Python 3.12 wait_closed() blocks until
+        # those handler connections finish, which would deadlock collection.
+        selected = worker_connections[:expect_workers]
+        server.close()
+        server_closed = True
+
         logger.info("Master: all %s workers connected. Distributing config...", expect_workers)
         config_data = _serialize_config(config)
-        for _, writer in worker_connections:
+        for _, writer in selected:
             await _send_msg(writer, {"type": "config", "config": config_data})
 
         logger.info("Master: benchmark running on all workers...")
 
-        # Collect results
+        # Collect results concurrently under a single shared deadline so a slow
+        # worker cannot block reads from already-finished workers and the
+        # timeout is an overall budget rather than per-worker (N * timeout).
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + (config.duration * 3 + 120 if config.duration else 600)
         all_stats: list[WorkerStats] = []
-        for i, (reader, writer) in enumerate(worker_connections):
+        worker_durations: list[float] = []
+
+        async def _collect_one(
+            idx: int, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ):
             try:
                 msg = await asyncio.wait_for(
-                    _recv_msg(reader), timeout=config.duration * 3 + 120 if config.duration else 600
+                    _recv_msg(reader), timeout=max(0.0, deadline - loop.time())
                 )
                 if msg.get("type") == "result":
                     ws = _deserialize_stats(msg["stats"])
                     all_stats.append(ws)
+                    reported = msg.get("duration")
+                    if isinstance(reported, (int, float)) and reported > 0:
+                        worker_durations.append(float(reported))
                     addr = writer.get_extra_info("peername")
                     logger.info(
                         "  Worker %s:%s finished: %s requests, %s errors",
@@ -384,12 +431,22 @@ async def run_master(
                         ws.errors,
                     )
                 else:
-                    logger.error("  Worker %s: unexpected message type: %s", i, msg.get("type"))
+                    logger.error("  Worker %s: unexpected message type: %s", idx, msg.get("type"))
             except (asyncio.TimeoutError, ConnectionError, OSError) as e:
-                logger.error("  Worker %s: error receiving results: %s", i, e)
+                logger.error("  Worker %s: error receiving results: %s", idx, e)
             finally:
                 writer.close()
-                await writer.wait_closed()
+                # A misbehaving peer may have already reset the connection;
+                # a failure while closing must not crash the collection.
+                with contextlib.suppress(OSError, ConnectionError):
+                    await writer.wait_closed()
+
+        await asyncio.gather(
+            *(_collect_one(i, reader, writer) for i, (reader, writer) in enumerate(selected))
+        )
+    finally:
+        if not server_closed:
+            server.close()
 
     if not all_stats:
         logger.error("Master: no results received from workers.")
@@ -397,8 +454,16 @@ async def run_master(
 
     # Merge and report
     merged = merge_worker_stats(all_stats)
-    # Use actual duration from config for reporting
-    actual_duration = config.duration or 10.0
+    # In request-count (-n) mode config.duration is None. Use the real measured
+    # wall-clock reported by the workers (max, since they run in parallel)
+    # instead of fabricating a fixed window, which would otherwise make the
+    # reported Requests/sec and any rps/throughput threshold meaningless.
+    if config.duration:
+        actual_duration = config.duration
+    elif worker_durations:
+        actual_duration = max(worker_durations)
+    else:
+        actual_duration = 10.0
 
     logger.info("Master: %s worker(s) reported. Merged results:", len(all_stats))
     # Override _quiet for printing
@@ -423,11 +488,14 @@ async def run_master(
         rate=config.rate,
         rate_ramp=config.rate_ramp,
     )
+    # Worker timelines are rebased to per-worker [0, duration) offsets in
+    # merge_worker_stats, so the master buckets them from start=0.0 rather than
+    # against its own (unrelated) monotonic clock.
     print_results(
         merged,
         actual_duration,
         report_config.connections,
-        time.monotonic() - actual_duration,
+        0.0,
         report_config,
     )
 
@@ -458,6 +526,9 @@ async def run_worker_node(master_host: str, master_port: int) -> None:
                 _WORKER_RECV_TIMEOUT_SECONDS,
             )
             return
+        except (ConnectionError, OSError) as e:
+            logger.error("Worker: failed to receive config from master: %s", e)
+            return
         if msg.get("type") != "config":
             logger.error("Worker: unexpected message type: %s", msg.get("type"))
             return
@@ -466,11 +537,15 @@ async def run_worker_node(master_host: str, master_port: int) -> None:
         logger.info("Worker: received config. Target: %s", config.url)
         logger.info("Worker: starting benchmark...")
 
+        # Measure real wall-clock so the master can report throughput against the
+        # actual run window in -n (request-count) mode instead of a fixed guess.
+        run_start = time.monotonic()
         # Run the appropriate benchmark
         if config.users is not None:
             stats, _ = await run_user_simulation(config)
         else:
             stats, _ = await run_benchmark(config)
+        run_duration = time.monotonic() - run_start
 
         logger.info(
             "Worker: benchmark complete. %s requests, %s errors",
@@ -478,8 +553,11 @@ async def run_worker_node(master_host: str, master_port: int) -> None:
             stats.errors,
         )
 
-        # Send results back to master
-        await _send_msg(writer, {"type": "result", "stats": _serialize_stats(stats)})
+        # Send results back to master, including the measured run duration.
+        await _send_msg(
+            writer,
+            {"type": "result", "stats": _serialize_stats(stats), "duration": run_duration},
+        )
         logger.info("Worker: results sent to master. Done.")
     finally:
         writer.close()

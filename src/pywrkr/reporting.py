@@ -146,6 +146,9 @@ def print_latency_histogram(
     latencies: list[float], buckets: int = 20, file: TextIO = sys.stdout
 ) -> None:
     """Print an ASCII histogram of latency distribution."""
+    # Drop non-finite samples (inf/NaN) so width math and int() bucketing
+    # cannot crash or silently corrupt the histogram.
+    latencies = [x for x in latencies if math.isfinite(x)]
     if not latencies:
         return
     mn, mx = min(latencies), max(latencies)
@@ -153,6 +156,8 @@ def print_latency_histogram(
         print(f"  All requests: {format_duration(mn)}", file=file)
         return
     width = (mx - mn) / buckets
+    if not math.isfinite(width) or width <= 0:
+        return
     counts = [0] * buckets
     for lat in latencies:
         idx = min(int((lat - mn) / width), buckets - 1)
@@ -174,12 +179,25 @@ def print_latency_histogram(
 
 
 def compute_percentiles(latencies: list[float]) -> list[tuple[float, float]]:
-    """Return list of (percentile, value) pairs."""
-    if not latencies:
+    """Return list of (percentile, value) pairs.
+
+    Non-finite samples (inf/NaN) are dropped before sorting so they cannot
+    poison the nearest-rank result. High tail percentiles are only reported
+    when the sample size can actually resolve them: p99.9 requires n >= 1000
+    and p99.99 requires n >= 10000. For smaller samples these collapse to the
+    max (and to each other / p99), so they are omitted rather than implying
+    tail resolution the data does not support.
+    """
+    finite = [x for x in latencies if math.isfinite(x)]
+    if not finite:
         return []
-    sorted_lat = sorted(latencies)
+    sorted_lat = sorted(finite)
     n = len(sorted_lat)
-    percentiles = [50, 75, 90, 95, 99, 99.9, 99.99]
+    percentiles = [50, 75, 90, 95, 99]
+    if n >= 1000:
+        percentiles.append(99.9)
+    if n >= 10000:
+        percentiles.append(99.99)
     result = []
     for p in percentiles:
         idx = min(int(math.ceil(p / 100 * n)) - 1, n - 1)
@@ -344,11 +362,20 @@ def print_rps_timeline(
         buckets[bucket] += count
     if not buckets:
         return
-    max_rps = max(buckets.values()) / bucket_size
+
+    def _bucket_span(i: int) -> float:
+        # The final partial bucket spans only the remaining real time, so
+        # dividing by the full bucket_size would understate its throughput.
+        span = bucket_size
+        if duration > 0:
+            span = min(bucket_size, duration - i * bucket_size)
+        return span if span > 0 else bucket_size
+
+    max_rps = max(count / _bucket_span(i) for i, count in buckets.items())
     bar_max = 40
     print(f"  Requests/sec Timeline ({bucket_size}s buckets):", file=file)
     for i in range(max(buckets.keys()) + 1):
-        rps = buckets.get(i, 0) / bucket_size
+        rps = buckets.get(i, 0) / _bucket_span(i)
         bar_len = int(rps / max_rps * bar_max) if max_rps else 0
         bar = "#" * bar_len
         t_start = i * bucket_size
@@ -387,17 +414,24 @@ def build_results_dict(
             result["traffic_profile"] = config.traffic_profile.describe()
         if rate_limiter is not None:
             result["rate_limit_waits"] = rate_limiter.waits
-    if stats.latencies:
+    finite_latencies = [x for x in stats.latencies if math.isfinite(x)]
+    if finite_latencies:
+        pct_pairs = compute_percentiles(finite_latencies)
+        pct_map = dict(pct_pairs)
+        # Use the nearest-rank p50 as the median so latency.median and
+        # percentiles.p50 agree (the ab-style table and print_percentiles
+        # also use nearest-rank).
+        median = pct_map.get(50, statistics.median(finite_latencies))
         result["latency"] = {
-            "min": round(min(stats.latencies), 6),
-            "max": round(max(stats.latencies), 6),
-            "mean": round(statistics.mean(stats.latencies), 6),
-            "median": round(statistics.median(stats.latencies), 6),
-            "stdev": round(statistics.stdev(stats.latencies), 6) if len(stats.latencies) > 1 else 0,
+            "min": round(min(finite_latencies), 6),
+            "max": round(max(finite_latencies), 6),
+            "mean": round(statistics.mean(finite_latencies), 6),
+            "median": round(median, 6),
+            "stdev": (
+                round(statistics.stdev(finite_latencies), 6) if len(finite_latencies) > 1 else 0
+            ),
         }
-        result["percentiles"] = {
-            f"p{p}": round(v, 6) for p, v in compute_percentiles(stats.latencies)
-        }
+        result["percentiles"] = {f"p{p}": round(v, 6) for p, v in pct_pairs}
     # Per-step latency stats for scenario mode
     if stats.step_latencies:
         step_stats = {}
@@ -442,9 +476,14 @@ def write_csv_output(path: str, stats: WorkerStats) -> None:
 
 
 def write_json_output(path: str, results: dict) -> None:
-    """Write benchmark results as JSON to a file."""
+    """Write benchmark results as JSON to a file.
+
+    Uses ``allow_nan=False`` so a non-finite float (inf/NaN) fails loudly with
+    a ``ValueError`` instead of silently writing the non-standard
+    ``Infinity``/``NaN`` tokens that strict JSON parsers reject.
+    """
     with open(path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results, f, indent=2, allow_nan=False)
 
 
 def generate_html_report(stats: WorkerStats, duration: float, connections: int) -> str:
@@ -543,8 +582,13 @@ def generate_gatling_html_report(
             bucket = int((ts - start_time) / bucket_size)
             time_buckets[bucket] += count
         for b in sorted(time_buckets.keys()):
+            # Divide the final partial bucket by its real span, not the full
+            # bucket_size, so the last bar reflects the true rate.
+            span = bucket_size
+            if duration > 0:
+                span = min(bucket_size, duration - b * bucket_size)
             rps_labels.append(f"{b * bucket_size}s")
-            rps_values.append(round(time_buckets[b] / bucket_size, 1))
+            rps_values.append(round(time_buckets[b] / max(span, 1e-9), 1))
 
     # -- Status code pie --
     sc_labels = [str(c) for c in sorted(status_codes.keys())]
@@ -763,14 +807,37 @@ _EXPORT_METRICS: list[_MetricSpec] = [
 ]
 
 
+# Valid Prometheus label name per the text exposition format spec.
+_PROM_LABEL_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _escape_prom_label_value(v: str) -> str:
+    """Escape a label value per the Prometheus text exposition format.
+
+    Backslash -> double-backslash, double-quote -> escaped quote, newline -> ``\\n``.
+    Order matters: backslashes must be escaped first.
+    """
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _resolve_metric_value(
     results: dict, results_key: str, nested_key: str | None, multiplier: float
-) -> float:
-    """Resolve a metric value from the results dict."""
+) -> float | None:
+    """Resolve a metric value from the results dict.
+
+    Returns ``None`` when the underlying data is absent (the parent key is
+    missing, or a nested key is missing) so callers can distinguish
+    "no data collected" from a real zero and skip emitting the metric.
+    """
     if nested_key is not None:
-        val = results.get(results_key, {}).get(nested_key, 0)
+        parent = results.get(results_key)
+        if not isinstance(parent, dict) or nested_key not in parent:
+            return None
+        val = parent[nested_key]
     else:
-        val = results.get(results_key, 0)
+        if results_key not in results:
+            return None
+        val = results[results_key]
     return val * multiplier
 
 
@@ -796,6 +863,8 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
             value = _resolve_metric_value(
                 results, spec.results_key, spec.nested_key, spec.multiplier
             )
+            if value is None:
+                continue
             if spec.metric_type == "counter":
                 counter = meter.create_counter(spec.otel_name, description=spec.description)
                 counter.add(value, attributes=attributes)
@@ -816,13 +885,19 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
 
     try:
         lines: list[str] = []
-        labels_parts = [f'{k}="{v}"' for k, v in sorted(tags.items())]
+        labels_parts = [
+            f'{k}="{_escape_prom_label_value(v)}"'
+            for k, v in sorted(tags.items())
+            if _PROM_LABEL_NAME_PATTERN.match(k)
+        ]
         labels_str = "{" + ",".join(labels_parts) + "}" if labels_parts else ""
 
         for spec in _EXPORT_METRICS:
             value = _resolve_metric_value(
                 results, spec.results_key, spec.nested_key, spec.multiplier
             )
+            if value is None:
+                continue
             prom_name = "pywrkr_" + spec.name_suffix
             lines.append(f"# HELP {prom_name} {spec.description}")
             lines.append(f"# TYPE {prom_name} {spec.metric_type}")
@@ -903,35 +978,39 @@ def print_results(
     print(f"  Transfer/sec:      {format_bytes(transfer_rate)}/s", file=out)
     print(f"  Total Transfer:    {format_bytes(stats.total_bytes)}", file=out)
 
-    # Latency stats
-    if stats.latencies:
+    # Latency stats (computed on finite samples only to avoid NaN/inf poisoning)
+    finite_latencies = [x for x in stats.latencies if math.isfinite(x)]
+    if finite_latencies:
+        pct_map = dict(compute_percentiles(finite_latencies))
+        # Nearest-rank p50, consistent with the ab-style table / percentiles.
+        median = pct_map.get(50, statistics.median(finite_latencies))
         print(f"\n{'=' * 70}", file=out)
         print("  LATENCY STATISTICS", file=out)
         print(f"{'=' * 70}", file=out)
-        print(f"    Min:       {format_duration(min(stats.latencies)):>12}", file=out)
-        print(f"    Max:       {format_duration(max(stats.latencies)):>12}", file=out)
-        print(f"    Mean:      {format_duration(statistics.mean(stats.latencies)):>12}", file=out)
-        print(f"    Median:    {format_duration(statistics.median(stats.latencies)):>12}", file=out)
-        if len(stats.latencies) > 1:
+        print(f"    Min:       {format_duration(min(finite_latencies)):>12}", file=out)
+        print(f"    Max:       {format_duration(max(finite_latencies)):>12}", file=out)
+        print(f"    Mean:      {format_duration(statistics.mean(finite_latencies)):>12}", file=out)
+        print(f"    Median:    {format_duration(median):>12}", file=out)
+        if len(finite_latencies) > 1:
             print(
-                f"    Stdev:     {format_duration(statistics.stdev(stats.latencies)):>12}", file=out
+                f"    Stdev:     {format_duration(statistics.stdev(finite_latencies)):>12}",
+                file=out,
             )
 
         print(file=out)
-        print_percentiles(stats.latencies, file=out)
+        print_percentiles(finite_latencies, file=out)
 
         # ab-style "percentage of requests served within" table
-        if stats.latencies:
-            sorted_lat = sorted(stats.latencies)
-            n = len(sorted_lat)
-            print(file=out)
-            print("  Percentage of requests served within a certain time:", file=out)
-            for pct in [50, 66, 75, 80, 90, 95, 98, 99, 100]:
-                idx = min(int(math.ceil(pct / 100 * n)) - 1, n - 1)
-                print(f"    {pct:>3}%    {format_duration(sorted_lat[idx]):>12}", file=out)
+        sorted_lat = sorted(finite_latencies)
+        n = len(sorted_lat)
+        print(file=out)
+        print("  Percentage of requests served within a certain time:", file=out)
+        for pct in [50, 66, 75, 80, 90, 95, 98, 99, 100]:
+            idx = min(int(math.ceil(pct / 100 * n)) - 1, n - 1)
+            print(f"    {pct:>3}%    {format_duration(sorted_lat[idx]):>12}", file=out)
 
         print(file=out)
-        print_latency_histogram(stats.latencies, file=out)
+        print_latency_histogram(finite_latencies, file=out)
 
     # Latency breakdown
     if stats.breakdowns:

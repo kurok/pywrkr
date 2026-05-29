@@ -181,6 +181,63 @@ class ReservoirSampler(list):
         )
 
 
+def normalize_timeline(timeline: list) -> list:
+    """Rebase a worker's rps_timeline onto a common ``[0, duration)`` axis.
+
+    Workers record timeline entries as ``(time.monotonic(), count)``. The
+    monotonic clock has a per-process, host-relative origin, so timestamps from
+    different workers are not directly comparable; bucketing them against another
+    clock collapses or scatters the merged timeline. Subtracting each worker's
+    own earliest timestamp turns its entries into seconds since that worker's
+    benchmark start, so all workers can be bucketed on a shared axis.
+    """
+    if not timeline:
+        return []
+    origin = min(ts for ts, _ in timeline)
+    return [(ts - origin, count) for ts, count in timeline]
+
+
+def merge_reservoirs(samplers: list, capacity: int) -> "ReservoirSampler":
+    """Merge already-sampled reservoirs proportionally to each source's volume.
+
+    Naively concatenating per-worker samples (the old ``extend`` approach)
+    discards ``total_seen`` and over-represents workers whose reservoir filled
+    up: each retained item from a full reservoir stands in for many original
+    observations, so a low-volume worker's samples drown out a high-volume
+    worker's once both are at capacity. This combines the per-source samples
+    with each source weighted by its true ``total_seen`` and sets the merged
+    ``total_seen`` to the sum of inputs, so merged percentiles reflect the true
+    combined distribution and downstream throughput math stays correct.
+    """
+    total_seen = sum(getattr(s, "total_seen", len(s)) for s in samplers)
+    if total_seen <= 0:
+        return ReservoirSampler.from_list([], capacity=capacity, total_seen=0)
+
+    pool: list = []
+    for s in samplers:
+        if not s:
+            continue
+        seen = getattr(s, "total_seen", len(s))
+        # Allocate output slots proportionally to this source's true weight.
+        k = round(capacity * seen / total_seen)
+        if k <= 0:
+            continue
+        items = list(s)
+        if k >= len(items):
+            pool.extend(items)
+        else:
+            pool.extend(random.sample(items, k))
+
+    # Rounding can push the combined allocation a few slots past capacity;
+    # subsample uniformly rather than letting ``from_list`` truncate to the
+    # first ``capacity`` items (which would bias the sample toward whichever
+    # workers were merged first and could drop a later worker entirely).
+    if len(pool) > capacity:
+        pool = random.sample(pool, capacity)
+
+    return ReservoirSampler.from_list(pool, capacity=capacity, total_seen=total_seen)
+
+
 class CappedErrorDict(defaultdict):
     """A ``defaultdict(int)`` that stops accepting new keys after a limit.
 
@@ -438,6 +495,42 @@ def load_scenario(path: str) -> Scenario:
             raise ValueError(f"Step {i} must be a dict, got {type(step_data).__name__}")
         if "path" not in step_data:
             raise ValueError(f"Step {i} must have a 'path' field")
+
+        # Validate value types before constructing the step so configuration
+        # errors are reported clearly at load time instead of crashing deep in
+        # aiohttp at request time.
+        # Use a distinct name so this does not shadow the `path` function
+        # parameter (the scenario file path), which is reused in the trailing
+        # log message after the loop.
+        step_path = step_data["path"]
+        if not isinstance(step_path, str):
+            raise ValueError(f"Step {i} 'path' must be a string, got {type(step_path).__name__}")
+
+        if "method" in step_data and not isinstance(step_data["method"], str):
+            raise ValueError(
+                f"Step {i} 'method' must be a string, got {type(step_data['method']).__name__}"
+            )
+
+        if "headers" in step_data and not isinstance(step_data["headers"], dict):
+            raise ValueError(
+                f"Step {i} 'headers' must be an object, got {type(step_data['headers']).__name__}"
+            )
+
+        body = step_data.get("body")
+        # bool is a subclass of int; reject it explicitly along with int/float/list.
+        if body is not None and not isinstance(body, (str, dict)):
+            raise ValueError(
+                f"Step {i} 'body' must be a string, object, or null, got {type(body).__name__}"
+            )
+
+        think_time = step_data.get("think_time")
+        if think_time is not None and (
+            isinstance(think_time, bool) or not isinstance(think_time, (int, float))
+        ):
+            raise ValueError(
+                f"Step {i} 'think_time' must be a number or null, got {type(think_time).__name__}"
+            )
+
         steps.append(
             ScenarioStep(
                 path=step_data["path"],

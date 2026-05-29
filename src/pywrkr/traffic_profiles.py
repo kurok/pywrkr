@@ -82,7 +82,7 @@ class StepProfile(TrafficProfile):
         if duration <= 0:
             return self.levels[0]
         n = len(self.levels)
-        idx = min(int(elapsed / duration * n), n - 1)
+        idx = max(0, min(int(elapsed / duration * n), n - 1))
         return self.levels[idx]
 
     def describe(self) -> str:
@@ -165,6 +165,12 @@ class SpikeProfile(TrafficProfile):
     ):
         if interval <= 0:
             raise ValueError(f"SpikeProfile interval must be greater than 0, got {interval}")
+        if spike_dur <= 0:
+            raise ValueError(f"SpikeProfile spike_dur must be greater than 0, got {spike_dur}")
+        if multiplier < 0:
+            raise ValueError(f"SpikeProfile multiplier must be non-negative, got {multiplier}")
+        if baseline < 0:
+            raise ValueError(f"SpikeProfile baseline must be non-negative, got {baseline}")
         self.interval = interval
         self.spike_dur = spike_dur
         self.multiplier = multiplier
@@ -259,15 +265,27 @@ class CsvProfile(TrafficProfile):
             self._is_multiplier = any(h in ("multiplier", "factor") for h in header)
             start = 1
 
-        for row in rows[start:]:
+        for i, row in enumerate(rows[start:], start=start + 1):
             if len(row) < 2:
                 continue
-            t, v = float(row[0]), float(row[1])
+            try:
+                t, v = float(row[0]), float(row[1])
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid numeric value in CSV traffic profile {filepath} (line {i}): {row!r}"
+                ) from e
             self._times.append(t)
             self._values.append(v)
 
         if not self._times:
             raise ValueError(f"No data points in CSV traffic profile: {filepath}")
+
+        # rate_at relies on a binary search and positional clamps that assume the
+        # time column is monotonically increasing.  Reject out-of-order input so
+        # hand-edited/concatenated exports surface an error instead of silently
+        # returning wrong rates.
+        if any(self._times[j] < self._times[j - 1] for j in range(1, len(self._times))):
+            raise ValueError(f"CSV traffic profile times must be non-decreasing: {filepath}")
 
     def rate_at(self, elapsed: float, duration: float, base_rate: float) -> float:
         times, values = self._times, self._values
@@ -369,7 +387,11 @@ def parse_traffic_profile(spec: str) -> TrafficProfile:
         except ValueError:
             raise ValueError(f"Invalid parameter for {name} profile: {k}={v!r}")
 
-    return cls(**typed_kwargs)
+    try:
+        return cls(**typed_kwargs)
+    except TypeError as e:
+        params = ", ".join(typed_kwargs) or "(none accepted)"
+        raise ValueError(f"Invalid parameter(s) for {name} profile: {params} ({e})") from e
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +463,21 @@ class RateLimiter:
 
         rate = self._current_rate(now)
         if rate <= 0:
+            # When an active traffic profile legitimately calls for 0 RPS (a
+            # SineProfile trough, a StepProfile/CsvProfile level of 0), that
+            # phase means "emit nothing now" -- pause instead of removing all
+            # throttling.  Sleep a small bounded quantum (never past the end of
+            # the test) so a 0-rate phase actually suppresses traffic.
+            #
+            # A fixed rate of 0 with no profile keeps its historical meaning of
+            # "no rate limiting" and returns immediately.
+            if self.traffic_profile is not None:
+                self.waits += 1
+                elapsed = now - (self._start_time or now)
+                remaining = self.duration - elapsed
+                pause = min(0.1, remaining) if self.duration > 0 else 0.1
+                if pause > 0:
+                    await asyncio.sleep(pause)
             return
         interval = 1.0 / rate
         target = self._last_time + interval
