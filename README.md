@@ -7,7 +7,32 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/kurok/pywrkr/graph/badge.svg)](https://codecov.io/gh/kurok/pywrkr)
 
-A Python HTTP benchmarking tool inspired by [wrk](https://github.com/wg/wrk) and [Apache ab](https://httpd.apache.org/docs/current/programs/ab.html), with extended statistics and virtual user simulation.
+**Load-test any HTTP endpoint in one command — and get wrk/ab-grade numbers without the wrk/ab setup.** `pywrkr` is a pure-Python benchmarking CLI: point it at a URL and get latency percentiles (p50–p99.99), a throughput timeline, status/error breakdowns, and CI-ready SLO checks.
+
+Five load modes (duration, fixed-count, virtual users, constant rate, traffic profiles), HAR-file import to turn a browser recording into a test, and OpenTelemetry / Prometheus export — no JVM, no YAML, no cluster.
+
+## Demo
+
+![Benchmarking an HTTP endpoint with pywrkr: a live requests/sec counter during the run, then a full report with latency percentiles, a status-code breakdown, and a throughput timeline](https://raw.githubusercontent.com/kurok/pywrkr/main/docs/assets/demo.gif)
+
+<sub>Recorded with [asciinema](https://asciinema.org) + [agg](https://github.com/asciinema/agg) — regenerate with `docs/record-demo.sh`.</sub>
+
+## Install
+
+```bash
+pip install pywrkr
+```
+
+## Minimal example
+
+```bash
+# 10 connections, 5-second benchmark
+pywrkr https://example.com -c 10 -d 5
+```
+
+That's it. Add `--json results.json`, `-w report.html`, `--threshold "p95<300ms"`, or `-u 1000` for virtual users when you need more — see [Quick Start](#quick-start) below.
+
+> **See also:** [awesome-http-benchmark](https://github.com/denji/awesome-http-benchmark) — a curated list of HTTP(S) load & benchmarking tools (wrk, ab, k6, vegeta, …) where pywrkr fits in.
 
 ## Features
 
