@@ -425,7 +425,7 @@ class ScenarioStep:
 
     path: str
     method: str = "GET"
-    body: str | dict | None = None
+    body: str | dict | list | None = None
     headers: dict[str, str] = field(default_factory=dict)
     assert_status: int | None = None
     assert_body_contains: str | None = None
@@ -517,10 +517,10 @@ def load_scenario(path: str) -> Scenario:
             )
 
         body = step_data.get("body")
-        # bool is a subclass of int; reject it explicitly along with int/float/list.
-        if body is not None and not isinstance(body, (str, dict)):
+        # bool is a subclass of int; reject it explicitly along with int/float.
+        if body is not None and not isinstance(body, (str, dict, list)):
             raise ValueError(
-                f"Step {i} 'body' must be a string, object, or null, got {type(body).__name__}"
+                f"Step {i} 'body' must be a string, object, array, or null, got {type(body).__name__}"
             )
 
         think_time = step_data.get("think_time")

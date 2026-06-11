@@ -819,7 +819,7 @@ def _prepare_step_body(step_body, headers: dict) -> bytes | None:
     """Serialize a scenario step body and set Content-Type if needed."""
     if step_body is None:
         return None
-    if isinstance(step_body, dict):
+    if isinstance(step_body, (dict, list)):
         if "Content-Type" not in headers:
             headers["Content-Type"] = "application/json"
         return json.dumps(step_body).encode()
