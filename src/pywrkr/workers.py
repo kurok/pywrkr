@@ -1044,6 +1044,9 @@ async def _finalize_run(
 ) -> tuple[WorkerStats, int]:
     """Await workers, merge stats, print results, and evaluate thresholds."""
     worker_crashed = False
+    # Initialize to start_time so the variable is always bound even if
+    # asyncio.gather raises (e.g. CancelledError) before we can sample it.
+    end_time = start_time
     try:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         # Sample end_time immediately after the workers finish, BEFORE tearing
