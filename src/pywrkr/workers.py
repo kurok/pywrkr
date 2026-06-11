@@ -40,6 +40,7 @@ from pywrkr.reporting import (
     print_autofind_summary,
     print_results,
     print_threshold_results,
+    run_observability_exports,
 )
 from pywrkr.traffic_profiles import RateLimiter
 
@@ -1096,6 +1097,12 @@ async def _finalize_run(
     # A crashed worker means load/data was silently dropped; surface a
     # non-zero exit code without clobbering a threshold failure (2).
     if worker_crashed:
+        exit_code = max(exit_code, 1)
+
+    # Observability exports: run after printing so errors don't suppress output.
+    # A misconfigured or unreachable endpoint produces exit code 1 (unless a
+    # threshold failure already set a higher code).
+    if not run_observability_exports(merged, actual_duration, concurrency, config, rate_limiter):
         exit_code = max(exit_code, 1)
 
     return merged, exit_code

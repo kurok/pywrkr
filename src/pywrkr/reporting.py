@@ -4,6 +4,7 @@ import csv
 import importlib.resources
 import importlib.util
 import json
+import logging
 import math
 import re
 import statistics
@@ -20,6 +21,8 @@ from pywrkr.config import (
     WorkerStats,
 )
 from pywrkr.traffic_profiles import RateLimiter
+
+_logger = logging.getLogger(__name__)
 
 # Optional third-party availability flags
 RICH_AVAILABLE = importlib.util.find_spec("rich") is not None
@@ -841,13 +844,17 @@ def _resolve_metric_value(
     return val * multiplier
 
 
-def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
-    """Export benchmark metrics to an OpenTelemetry collector via OTLP/HTTP."""
+def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
+    """Export benchmark metrics to an OpenTelemetry collector via OTLP/HTTP.
+
+    Returns True on success, False on any error (including missing packages).
+    """
     if not OTEL_AVAILABLE:
-        print(
-            "Warning: opentelemetry packages not installed. Install with: pip install pywrkr[otel]"
+        _logger.error(
+            "OTel export failed: opentelemetry packages not installed. "
+            "Install with: pip install pywrkr[otel]"
         )
-        return
+        return False
 
     try:
         resource_attrs = {"service.name": "pywrkr"}
@@ -874,12 +881,17 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
 
         provider.force_flush()
         provider.shutdown()
+        return True
     except Exception as e:
-        print(f"Warning: failed to export metrics to OTel endpoint {endpoint}: {e}")
+        _logger.error("OTel export failed (endpoint=%s): %s", endpoint, e)
+        return False
 
 
-def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> None:
-    """Export benchmark metrics to a Prometheus Pushgateway-compatible endpoint."""
+def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
+    """Export benchmark metrics to a Prometheus Pushgateway-compatible endpoint.
+
+    Returns True on success, False on any error.
+    """
     import urllib.error
     import urllib.request
 
@@ -912,8 +924,29 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
             headers={"Content-Type": "text/plain; version=0.0.4"},
         )
         urllib.request.urlopen(req, timeout=10)
+        return True
     except Exception as e:
-        print(f"Warning: failed to export metrics to Prometheus endpoint {endpoint}: {e}")
+        _logger.error("Prometheus export failed (endpoint=%s): %s", endpoint, e)
+        return False
+
+
+def run_observability_exports(
+    stats: WorkerStats,
+    duration: float,
+    connections: int,
+    config: BenchmarkConfig,
+    rate_limiter: "RateLimiter | None" = None,
+) -> bool:
+    """Run configured OTel/Prometheus exports. Returns True if all succeeded."""
+    if not (config.otel_endpoint or config.prom_remote_write):
+        return True
+    results = build_results_dict(stats, duration, connections, config, rate_limiter)
+    ok = True
+    if config.otel_endpoint:
+        ok = export_to_otel(results, config.otel_endpoint, config.tags) and ok
+    if config.prom_remote_write:
+        ok = export_to_prometheus(results, config.prom_remote_write, config.tags) and ok
+    return ok
 
 
 def print_results(
@@ -1109,13 +1142,8 @@ def print_results(
         write_html_report(config.html_report, html)
         print(f"\n  HTML report written to: {config.html_report}", file=out)
 
-    # Observability exports
-    if config.otel_endpoint or config.prom_remote_write:
-        results = build_results_dict(stats, duration, connections, config, rate_limiter)
-        if config.otel_endpoint:
-            export_to_otel(results, config.otel_endpoint, config.tags)
-        if config.prom_remote_write:
-            export_to_prometheus(results, config.prom_remote_write, config.tags)
+    # Observability exports are handled separately by run_observability_exports
+    # (called from _finalize_run) so that failures can affect the exit code.
 
 
 # ---------------------------------------------------------------------------
