@@ -6,6 +6,7 @@ Usage: python3 generate_report.py results.json report.html
 
 import json
 import sys
+from html import escape
 from pathlib import Path
 
 
@@ -71,14 +72,18 @@ def generate_html(data: dict) -> str:
     if error_types:
         for err_type, count in sorted(error_types.items(), key=lambda x: -x[1]):
             pct = count / total_req * 100 if total_req > 0 else 0
-            error_rows += f"<tr><td>{err_type}</td><td>{count:,}</td><td>{pct:.2f}%</td></tr>\n"
+            safe_type = escape(str(err_type))
+            error_rows += f"<tr><td>{safe_type}</td><td>{count:,}</td><td>{pct:.2f}%</td></tr>\n"
 
     # Tags section
     tags_html = ""
     if tags:
         tags_html = (
             "<div class='tags'>"
-            + " ".join(f"<span class='tag'>{k}={v}</span>" for k, v in tags.items())
+            + " ".join(
+                f"<span class='tag'>{escape(str(k))}={escape(str(v))}</span>"
+                for k, v in tags.items()
+            )
             + "</div>"
         )
 

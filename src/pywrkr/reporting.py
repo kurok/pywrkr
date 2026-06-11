@@ -703,7 +703,9 @@ def generate_gatling_html_report(
 
 def _html_escape(s: str) -> str:
     """Escape HTML special characters."""
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    from html import escape
+
+    return escape(s)
 
 
 def write_html_report(path: str, html: str) -> None:
