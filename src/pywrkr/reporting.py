@@ -89,14 +89,12 @@ def aggregate_breakdowns(breakdowns: list[LatencyBreakdown]) -> dict:
             continue
         sorted_vals = sorted(values)
         n = len(sorted_vals)
-        p50_idx = min(int(math.ceil(50 / 100 * n)) - 1, n - 1)
-        p95_idx = min(int(math.ceil(95 / 100 * n)) - 1, n - 1)
         result[name] = {
             "avg": statistics.mean(values),
             "min": min(values),
             "max": max(values),
-            "p50": sorted_vals[p50_idx],
-            "p95": sorted_vals[p95_idx],
+            "p50": sorted_vals[_nearest_rank_idx(50, n)],
+            "p95": sorted_vals[_nearest_rank_idx(95, n)],
             "count": n,
         }
 
@@ -178,6 +176,11 @@ def print_latency_histogram(
         )
 
 
+def _nearest_rank_idx(percentile: float, n: int) -> int:
+    """Return the nearest-rank index for *percentile* in a sorted list of length *n*."""
+    return min(int(math.ceil(percentile / 100 * n)) - 1, n - 1)
+
+
 def compute_percentiles(latencies: list[float]) -> list[tuple[float, float]]:
     """Return list of (percentile, value) pairs.
 
@@ -200,8 +203,7 @@ def compute_percentiles(latencies: list[float]) -> list[tuple[float, float]]:
         percentiles.append(99.99)
     result = []
     for p in percentiles:
-        idx = min(int(math.ceil(p / 100 * n)) - 1, n - 1)
-        result.append((p, sorted_lat[idx]))
+        result.append((p, sorted_lat[_nearest_rank_idx(p, n)]))
     return result
 
 
@@ -471,8 +473,7 @@ def write_csv_output(path: str, stats: WorkerStats) -> None:
         writer = csv.writer(f)
         writer.writerow(["Percentage", "Time (ms)"])
         for pct in range(1, 101):
-            idx = min(int(math.ceil(pct / 100 * n)) - 1, n - 1)
-            writer.writerow([pct, round(sorted_lat[idx] * 1000, 3)])
+            writer.writerow([pct, round(sorted_lat[_nearest_rank_idx(pct, n)] * 1000, 3)])
 
 
 def write_json_output(path: str, results: dict) -> None:
@@ -1006,8 +1007,10 @@ def print_results(
         print(file=out)
         print("  Percentage of requests served within a certain time:", file=out)
         for pct in [50, 66, 75, 80, 90, 95, 98, 99, 100]:
-            idx = min(int(math.ceil(pct / 100 * n)) - 1, n - 1)
-            print(f"    {pct:>3}%    {format_duration(sorted_lat[idx]):>12}", file=out)
+            print(
+                f"    {pct:>3}%    {format_duration(sorted_lat[_nearest_rank_idx(pct, n)]):>12}",
+                file=out,
+            )
 
         print(file=out)
         print_latency_histogram(finite_latencies, file=out)
