@@ -1,11 +1,13 @@
 """Regression tests for audit finding cfg-1: load_scenario value-type validation.
 
 Before the fix, load_scenario validated only structure (dict, non-empty 'steps'
-list, each step a dict with a 'path'). Wrong-typed values (body as list/int,
+list, each step a dict with a 'path'). Wrong-typed values (body as int/float/bool,
 headers as a list, path/method as int, think_time as str) were accepted verbatim
 and propagated into the worker, crashing far from the config file. These tests
 assert that load_scenario now raises a clear ValueError naming the offending
 step/field at load time.
+
+Note: list bodies are valid (HAR import produces them for JSON-array payloads).
 """
 
 import json
@@ -25,7 +27,6 @@ def _write_scenario(tmp_path, steps, **extra):
 @pytest.mark.parametrize(
     "bad_body",
     [
-        [1, 2, 3],  # list
         42,  # int
         3.14,  # float
         True,  # bool (subclass of int)
@@ -33,23 +34,25 @@ def _write_scenario(tmp_path, steps, **extra):
 )
 def test_body_wrong_type_raises(tmp_path, bad_body):
     path = _write_scenario(tmp_path, [{"path": "/", "body": bad_body}])
-    with pytest.raises(ValueError, match=r"Step 0 'body' must be a string, object, or null"):
+    with pytest.raises(ValueError, match=r"Step 0 'body' must be a string, object, array, or null"):
         load_scenario(path)
 
 
-def test_body_str_and_dict_still_accepted(tmp_path):
+def test_body_str_dict_list_accepted(tmp_path):
     path = _write_scenario(
         tmp_path,
         [
             {"path": "/a", "body": "raw string"},
             {"path": "/b", "body": {"key": "value"}},
-            {"path": "/c"},  # missing body -> None, still fine
+            {"path": "/c", "body": [1, 2, 3]},
+            {"path": "/d"},  # missing body -> None, still fine
         ],
     )
     scenario = load_scenario(path)
     assert scenario.steps[0].body == "raw string"
     assert scenario.steps[1].body == {"key": "value"}
-    assert scenario.steps[2].body is None
+    assert scenario.steps[2].body == [1, 2, 3]
+    assert scenario.steps[3].body is None
 
 
 def test_headers_wrong_type_raises(tmp_path):
@@ -104,10 +107,10 @@ def test_error_message_names_correct_step_index(tmp_path):
         tmp_path,
         [
             {"path": "/ok", "body": "fine"},
-            {"path": "/", "body": [1, 2, 3]},
+            {"path": "/", "body": 42},
         ],
     )
-    with pytest.raises(ValueError, match=r"Step 1 'body' must be a string, object, or null"):
+    with pytest.raises(ValueError, match=r"Step 1 'body' must be a string, object, array, or null"):
         load_scenario(path)
 
 
