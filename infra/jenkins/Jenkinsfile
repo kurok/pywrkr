@@ -85,10 +85,8 @@ pipeline {
     }
 
     environment {
-        TF_DIR                = "${WORKSPACE}/infra/terraform"
-        AWS_DEFAULT_REGION    = "us-east-1"
-        AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
-        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
+        TF_DIR             = "${WORKSPACE}/infra/terraform"
+        AWS_DEFAULT_REGION = "us-east-1"
     }
 
     options {
@@ -107,7 +105,12 @@ pipeline {
 
         stage('Verify AWS Access') {
             steps {
-                sh 'aws sts get-caller-identity'
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id',     variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                ]) {
+                    sh 'aws sts get-caller-identity'
+                }
             }
         }
 
@@ -149,30 +152,49 @@ enable_nat_gateway = false
 
         stage('Terraform Init') {
             steps {
-                dir(env.TF_DIR) {
-                    sh 'terraform init -input=false'
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id',     variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                ]) {
+                    dir(env.TF_DIR) {
+                        sh 'terraform init -input=false'
+                    }
                 }
             }
         }
 
         stage('Terraform Plan') {
             steps {
-                dir(env.TF_DIR) {
-                    sh 'terraform plan -input=false -out=tfplan'
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id',     variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                ]) {
+                    dir(env.TF_DIR) {
+                        sh 'terraform plan -input=false -out=tfplan'
+                    }
                 }
             }
         }
 
         stage('Terraform Apply') {
             steps {
-                dir(env.TF_DIR) {
-                    sh 'terraform apply -input=false -auto-approve tfplan'
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id',     variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                ]) {
+                    dir(env.TF_DIR) {
+                        sh 'terraform apply -input=false -auto-approve tfplan'
+                    }
                 }
             }
         }
 
         stage('Run Load Test') {
             steps {
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id',     variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                ]) {
                 script {
                     env.ECS_CLUSTER = sh(
                         script: "cd ${env.TF_DIR} && terraform output -raw ecs_cluster_name",
@@ -209,11 +231,16 @@ enable_nat_gateway = false
                         echo "Deployment triggered. Waiting for test results in CloudWatch..."
                     """
                 }
+                } // withCredentials
             }
         }
 
         stage('Collect & Generate Report') {
             steps {
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id',     variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                ]) {
                 script {
                     def masterLogGroup = sh(
                         script: "cd ${env.TF_DIR} && terraform output -raw master_log_group",
@@ -285,6 +312,7 @@ print('Extracted results.json (%d bytes)' % len(json.dumps(data)))
                         ls -la pywrkr-report/
                     """
                 }
+                } // withCredentials
             }
         }
 
@@ -309,6 +337,10 @@ print('Extracted results.json (%d bytes)' % len(json.dumps(data)))
                 expression { return params.CLEANUP_AFTER_RUN || params.DESTROY_INFRA }
             }
             steps {
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id',     variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                ]) {
                 script {
                     if (params.DESTROY_INFRA) {
                         dir(env.TF_DIR) {
@@ -334,6 +366,7 @@ print('Extracted results.json (%d bytes)' % len(json.dumps(data)))
                         """
                     }
                 }
+                } // withCredentials
             }
         }
     }
