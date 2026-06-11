@@ -520,7 +520,8 @@ def load_scenario(path: str) -> Scenario:
         # bool is a subclass of int; reject it explicitly along with int/float.
         if body is not None and not isinstance(body, (str, dict, list)):
             raise ValueError(
-                f"Step {i} 'body' must be a string, object, array, or null, got {type(body).__name__}"
+                f"Step {i} 'body' must be a string, object, array, or null, "
+                f"got {type(body).__name__}"
             )
 
         think_time = step_data.get("think_time")
