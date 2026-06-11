@@ -804,6 +804,16 @@ def _parse_and_validate_args(
         ca_bundle=args.ca_bundle or env_ssl.ca_bundle,
     )
 
+    credentials_in_use = bool(args.basic_auth or args.cookies)
+    url_is_https = (args.url or "").startswith("https://")
+    if credentials_in_use and url_is_https and not ssl_config.verify:
+        print(
+            "WARNING: SSL verification is disabled while credentials are in use. "
+            "Your credentials may be exposed to a man-in-the-middle attack. "
+            "Use --ssl-verify to enable certificate validation.",
+            file=sys.stderr,
+        )
+
     config = BenchmarkConfig(
         url=args.url or "",
         connections=args.connections,
