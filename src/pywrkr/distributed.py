@@ -3,8 +3,11 @@
 import asyncio
 import base64
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
+import os
 import sys
 import time
 
@@ -42,6 +45,9 @@ _MAX_MESSAGE_BYTES = 256 * 1024 * 1024  # 256 MiB
 # Default ceiling for how long a worker should wait for the master to send the
 # initial config before assuming the master is dead.
 _WORKER_RECV_TIMEOUT_SECONDS = 300.0
+
+# Timeout for the HMAC challenge-response handshake (master and worker sides).
+_WORKER_AUTH_TIMEOUT_SECONDS = 5.0
 
 
 def _serialize_ssl_config(ssl_cfg: SSLConfig) -> dict:
@@ -314,15 +320,57 @@ def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
 
 
 async def run_master(
-    config: BenchmarkConfig, host: str, port: int, expect_workers: int
+    config: BenchmarkConfig,
+    host: str,
+    port: int,
+    expect_workers: int,
+    worker_secret: str | None = None,
 ) -> tuple[WorkerStats, int] | None:
-    """Run in master mode: wait for workers, distribute config, collect results."""
+    """Run in master mode: wait for workers, distribute config, collect results.
+
+    If *worker_secret* is set, each connecting worker must complete an
+    HMAC-SHA256 challenge-response before it is admitted.  Workers that fail
+    authentication or do not respond within ``_WORKER_AUTH_TIMEOUT_SECONDS``
+    are disconnected.
+    """
     logger.info(
         "Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers
     )
+    if worker_secret:
+        logger.info("Master: worker authentication enabled (HMAC-SHA256).")
 
     worker_connections: list[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
     ready_event = asyncio.Event()
+
+    async def _authenticate_worker(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> bool:
+        """Return True if the worker passes the HMAC challenge, False otherwise."""
+        nonce = os.urandom(32)
+        try:
+            await asyncio.wait_for(
+                _send_msg(writer, {"type": "challenge", "nonce": nonce.hex()}),
+                timeout=_WORKER_AUTH_TIMEOUT_SECONDS,
+            )
+            msg = await asyncio.wait_for(_recv_msg(reader), timeout=_WORKER_AUTH_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("Master: auth timeout for %s", writer.get_extra_info("peername"))
+            return False
+        if msg.get("type") != "auth":
+            logger.warning(
+                "Master: unexpected auth message type %r from %s",
+                msg.get("type"),
+                writer.get_extra_info("peername"),
+            )
+            return False
+        expected = hmac.new(worker_secret.encode(), nonce, digestmod=hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(msg.get("hmac", ""), expected):
+            logger.warning(
+                "Master: auth failed for %s (wrong secret)",
+                writer.get_extra_info("peername"),
+            )
+            return False
+        return True
 
     async def handle_worker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         # Reject any connection beyond expect_workers so a late/stale/retrying
@@ -333,6 +381,10 @@ async def run_master(
             logger.warning("  Rejecting surplus worker connection: %s", addr)
             writer.close()
             return
+        if worker_secret:
+            if not await _authenticate_worker(reader, writer):
+                writer.close()
+                return
         addr = writer.get_extra_info("peername")
         worker_connections.append((reader, writer))
         logger.info(
@@ -489,14 +541,42 @@ async def run_master(
     return merged, exit_code
 
 
-async def run_worker_node(master_host: str, master_port: int) -> None:
-    """Run in worker mode: connect to master, receive config, run benchmark, send results."""
+async def run_worker_node(
+    master_host: str, master_port: int, worker_secret: str | None = None
+) -> None:
+    """Run in worker mode: connect to master, receive config, run benchmark, send results.
+
+    If *worker_secret* is provided, the worker completes the HMAC-SHA256
+    challenge-response expected by a master started with the same secret.
+    """
     logger.info("Worker: connecting to master at %s:%s...", master_host, master_port)
 
     reader, writer = await asyncio.open_connection(master_host, master_port)
     logger.info("Worker: connected to master, waiting for config...")
 
     try:
+        if worker_secret:
+            try:
+                challenge = await asyncio.wait_for(
+                    _recv_msg(reader), timeout=_WORKER_AUTH_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                logger.error("Worker: timed out waiting for auth challenge from master")
+                return
+            if challenge.get("type") != "challenge":
+                logger.error("Worker: expected auth challenge, got %r", challenge.get("type"))
+                return
+            nonce = bytes.fromhex(challenge["nonce"])
+            response = hmac.new(worker_secret.encode(), nonce, digestmod=hashlib.sha256).hexdigest()
+            try:
+                await asyncio.wait_for(
+                    _send_msg(writer, {"type": "auth", "hmac": response}),
+                    timeout=_WORKER_AUTH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.error("Worker: timed out sending auth response to master")
+                return
+
         try:
             msg = await asyncio.wait_for(_recv_msg(reader), timeout=_WORKER_RECV_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:

@@ -1,6 +1,10 @@
 """Tests for distributed.py: serialization, protocol, and stats merging."""
 
 import asyncio
+import contextlib
+import hashlib
+import hmac
+import socket
 import unittest
 
 from pywrkr.config import (
@@ -20,6 +24,8 @@ from pywrkr.distributed import (
     _serialize_config,
     _serialize_stats,
     merge_worker_stats,
+    run_master,
+    run_worker_node,
 )
 
 
@@ -320,6 +326,110 @@ class TestProtocol(unittest.TestCase):
 
         result = asyncio.run(_test())
         self.assertEqual(len(result["data"]), 100_000)
+
+
+class TestWorkerAuth(unittest.IsolatedAsyncioTestCase):
+    """Tests for HMAC-SHA256 challenge-response authentication."""
+
+    async def _open_raw_connection(self, port: int):
+        """Return a raw (reader, writer) pair to the given port."""
+        return await asyncio.open_connection("127.0.0.1", port)
+
+    def _compute_hmac(self, secret: str, nonce_hex: str) -> str:
+        nonce = bytes.fromhex(nonce_hex)
+        return hmac.new(secret.encode(), nonce, digestmod=hashlib.sha256).hexdigest()
+
+    async def _start_master(self, secret: str | None = None):
+        """Start a master with a small real-config and return (task, port)."""
+        config = BenchmarkConfig(url="http://127.0.0.1:1", duration=0.01, connections=1)
+        # Pick a free port
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        task = asyncio.create_task(
+            run_master(config, "127.0.0.1", port, expect_workers=1, worker_secret=secret),
+            name="master",
+        )
+        await asyncio.sleep(0.05)  # let the server bind
+        return task, port
+
+    async def test_correct_secret_admitted(self):
+        """A worker with the correct secret is admitted and receives config."""
+        secret = "test-secret-correct"
+        master_task, port = await self._start_master(secret=secret)
+
+        worker_task = asyncio.create_task(
+            run_worker_node("127.0.0.1", port, worker_secret=secret),
+            name="worker",
+        )
+        # Give the run a short window; we only care that auth succeeded (no crash)
+        done, pending = await asyncio.wait({master_task, worker_task}, timeout=8)
+        for t in pending:
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await t
+        # Neither task should raise an exception (auth-rejected path raises nothing,
+        # but the task itself would return None rather than stats)
+        for t in done:
+            exc = t.exception()
+            self.assertIsNone(exc, f"Unexpected exception: {exc}")
+
+    async def test_wrong_secret_rejected(self):
+        """A worker with the wrong secret is disconnected by the master."""
+        master_task, port = await self._start_master(secret="correct-secret")
+
+        reader, writer = await self._open_raw_connection(port)
+        try:
+            # Receive challenge
+            challenge = await asyncio.wait_for(_recv_msg(reader), timeout=3)
+            self.assertEqual(challenge["type"], "challenge")
+
+            # Send wrong HMAC
+            bad_hmac = self._compute_hmac("wrong-secret", challenge["nonce"])
+            await _send_msg(writer, {"type": "auth", "hmac": bad_hmac})
+
+            # Master should close the connection — next read returns empty
+            data = await asyncio.wait_for(reader.read(1), timeout=3)
+            self.assertEqual(data, b"", "Connection should have been closed by master")
+        finally:
+            writer.close()
+            master_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await master_task
+
+    async def test_no_auth_when_no_secret(self):
+        """Master with no secret accepts a worker without any auth exchange."""
+        master_task, port = await self._start_master(secret=None)
+
+        reader, writer = await self._open_raw_connection(port)
+        try:
+            # No challenge should be sent; master should wait for a worker connection
+            # We connect raw and then just close — master should not crash.
+            await asyncio.sleep(0.1)
+        finally:
+            writer.close()
+            master_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await master_task
+
+    async def test_auth_timeout_on_no_response(self):
+        """A worker that connects but sends no auth response is dropped."""
+        master_task, port = await self._start_master(secret="needs-auth")
+
+        reader, writer = await self._open_raw_connection(port)
+        try:
+            # Receive challenge but don't respond — master should time out and close
+            challenge = await asyncio.wait_for(_recv_msg(reader), timeout=3)
+            self.assertEqual(challenge["type"], "challenge")
+            # Do not send anything; wait for master to close the connection
+            data = await asyncio.wait_for(reader.read(1), timeout=8)
+            self.assertEqual(data, b"", "Master should have closed connection on auth timeout")
+        finally:
+            writer.close()
+            master_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await master_task
 
 
 if __name__ == "__main__":

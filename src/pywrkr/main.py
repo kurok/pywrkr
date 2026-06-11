@@ -369,6 +369,17 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
         metavar="HOST:PORT",
         help="Run as worker node, connecting to master at HOST:PORT",
     )
+    parser.add_argument(
+        "--worker-secret",
+        default=None,
+        metavar="SECRET",
+        help=(
+            "Shared secret for authenticating distributed workers (HMAC-SHA256). "
+            "Can also be set via the PYWRKR_WORKER_SECRET environment variable. "
+            "Master and all workers must use the same secret. "
+            "Omitting this leaves the distributed channel unauthenticated."
+        ),
+    )
 
 
 def _build_har_import_parser() -> argparse.ArgumentParser:
@@ -586,7 +597,8 @@ def _validate_url_and_mode(
             w_port = int(port_str)
         except ValueError:
             parser.error(f"Invalid port in --worker: {port_str}")
-        asyncio.run(run_worker_node(host, w_port))
+        worker_secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
+        asyncio.run(run_worker_node(host, w_port, worker_secret=worker_secret))
         sys.exit(0)
 
     _validate_mode_conflicts(parser, args)
@@ -878,7 +890,12 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
         exit_code = max((r.exit_code for r in results), default=0)
         sys.exit(exit_code)
     elif args.master:
-        result = asyncio.run(run_master(config, args.bind, args.port, args.expect_workers))
+        worker_secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
+        result = asyncio.run(
+            run_master(
+                config, args.bind, args.port, args.expect_workers, worker_secret=worker_secret
+            )
+        )
         if result:
             _, exit_code = result
             sys.exit(exit_code)
