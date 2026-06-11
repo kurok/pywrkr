@@ -199,20 +199,19 @@ locals {
     var.scenario_file == "" ? [var.target_url] : [],
   )
 
-  # Shell script: run pywrkr with --json, then dump JSON to stdout with markers
-  # so Jenkins can extract it from CloudWatch logs.
-  # entryPoint is set to ["sh","-c"] to override the image ENTRYPOINT ["pywrkr"].
-  # command is the shell script as a single string.
-  master_shell_script = join(" ", concat(
-    ["pywrkr"],
-    local.pywrkr_args,
-    ["--json", "/tmp/results.json", ";"],
-    ["EXIT_CODE=$?;"],
-    ["echo '---PYWRKR_JSON_START---';"],
-    ["cat /tmp/results.json;"],
-    ["echo '---PYWRKR_JSON_END---';"],
-    ["exit $EXIT_CODE"],
-  ))
+  # Wrapper script: emits CloudWatch JSON markers around pywrkr output.
+  # Uses "$@" (POSIX positional parameters) so user-supplied args from the
+  # `command` array are never interpreted by the shell — preventing injection
+  # of shell metacharacters via target_url, thresholds, tags, etc.
+  # Docker passes `command` items as $1, $2, … when entryPoint ends with "sh".
+  master_shell_script = join("\n", [
+    "pywrkr \"$@\" --json /tmp/results.json",
+    "EXIT_CODE=$?",
+    "echo '---PYWRKR_JSON_START---'",
+    "cat /tmp/results.json",
+    "echo '---PYWRKR_JSON_END---'",
+    "exit $EXIT_CODE",
+  ])
 
   # Worker command: connect to master via Cloud Map DNS
   worker_command = [
@@ -236,8 +235,8 @@ resource "aws_ecs_task_definition" "master" {
     name       = "pywrkr-master"
     image      = local.image
     essential  = true
-    entryPoint = ["sh", "-c"]
-    command    = [local.master_shell_script]
+    entryPoint = ["sh", "-c", local.master_shell_script, "sh"]
+    command    = local.pywrkr_args
 
     portMappings = [{
       containerPort = 9000
