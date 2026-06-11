@@ -97,12 +97,6 @@ from pywrkr.config import (
     merge_stats,
 )
 from pywrkr.distributed import (
-    _deserialize_config,
-    _deserialize_stats,
-    _recv_msg,
-    _send_msg,
-    _serialize_config,
-    _serialize_stats,
     merge_worker_stats,
     run_master,
     run_worker_node,
@@ -125,10 +119,6 @@ from pywrkr.multi_url import (
 from pywrkr.reporting import (
     OTEL_AVAILABLE,
     RICH_AVAILABLE,
-    _compare,
-    _format_latency_short,
-    _get_metric_value,
-    _html_escape,
     aggregate_breakdowns,
     build_multi_url_json,
     build_results_dict,
@@ -166,11 +156,6 @@ from pywrkr.traffic_profiles import (
 )
 from pywrkr.workers import (
     LiveDashboard,
-    _build_request_headers,
-    _create_ssl_context,
-    _extract_step_result,
-    _step_passed,
-    _write_autofind_json,
     create_trace_config,
     make_url,
     run_autofind,
