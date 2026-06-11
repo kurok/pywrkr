@@ -111,6 +111,24 @@ pywrkr/
 - Keep PRs focused — one feature or fix per PR
 - Make sure CI is green before requesting review
 
+## Known Technical Debt
+
+### Worker coroutine divergence (issue #123)
+
+`worker`, `user_worker`, and `scenario_worker` in `workers.py` share the same
+outer benchmark-loop skeleton (rate limiting, duration tracking, stats recording)
+but are currently three independent copies. Historical divergence has already
+caused bugs (the rate-limiter fix was applied twice independently).
+
+**Rules until consolidation:**
+
+- Any change to the loop skeleton in one worker must be mirrored in the other two.
+- Each function carries a docstring `NOTE:` that names the divergence to watch for.
+
+**Planned fix:** Extract a `_benchmark_loop` coroutine that accepts a per-iteration
+callable. Blocked pending a performance regression suite that can guard against
+timing/allocation regressions introduced during the refactor.
+
 ## Running Tests
 
 ```bash
@@ -131,7 +149,7 @@ pytest --cov=pywrkr
 
 Releases are managed by the maintainers:
 
-1. Version is bumped in `pyproject.toml` and `src/pywrkr/__init__.py`
+1. Version is bumped in `pyproject.toml` (single source; `__version__` is derived at runtime via `importlib.metadata`)
 2. A GitHub Release is created with a tag (e.g., `v1.0.2`)
 3. PyPI publish and Docker image build trigger automatically via GitHub Actions
 
