@@ -197,6 +197,11 @@ from pywrkr.workers import (
     worker,
 )
 
-__version__ = "1.4.4"
+try:
+    from importlib.metadata import PackageNotFoundError, version
+
+    __version__ = version("pywrkr")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
 
 _merge_all_stats = merge_stats  # backward-compat alias
