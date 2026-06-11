@@ -6530,5 +6530,118 @@ class TestReportingRichImport(unittest.TestCase):
         importlib.reload(reporting_mod)
 
 
+class TestLiveDashboardStopEvent(unittest.TestCase):
+    """Verify that LiveDashboard.run() exits cleanly when stop_event is set."""
+
+    def test_run_exits_on_stop_event(self):
+        """run() must return once stop_event is set, within a short timeout.
+
+        rich.live is injected via sys.modules so the test works regardless of
+        whether the tui extra is installed.
+        """
+        import sys
+        from unittest.mock import MagicMock
+
+        stats = [pywrkr.WorkerStats()]
+        config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=10.0)
+        dashboard = pywrkr.LiveDashboard(stats, config, time.monotonic())
+
+        # _build_display does `from rich.panel import Panel` and
+        # `from rich.table import Table`; run() does `from rich.live import Live`.
+        # Inject all three into sys.modules so the test works regardless of
+        # whether the tui extra is installed.
+        mock_live_instance = MagicMock()
+        mock_live_instance.__enter__ = MagicMock(return_value=mock_live_instance)
+        mock_live_instance.__exit__ = MagicMock(return_value=False)
+        mock_live_class = MagicMock(return_value=mock_live_instance)
+        mock_rich_live_module = MagicMock()
+        mock_rich_live_module.Live = mock_live_class
+        mock_rich_panel_module = MagicMock()
+        mock_rich_panel_module.Panel = MagicMock(return_value=MagicMock())
+        mock_rich_table_module = MagicMock()
+        mock_rich_table_module.Table = MagicMock(return_value=MagicMock())
+        mock_rich_module = MagicMock()
+        _mocked = {
+            "rich": mock_rich_module,
+            "rich.live": mock_rich_live_module,
+            "rich.panel": mock_rich_panel_module,
+            "rich.table": mock_rich_table_module,
+        }
+
+        async def _run():
+            stop = asyncio.Event()
+
+            async def _set_stop():
+                await asyncio.sleep(0.1)
+                stop.set()
+
+            saved = {k: sys.modules.get(k) for k in _mocked}
+            sys.modules.update(_mocked)
+            try:
+                task = asyncio.create_task(dashboard.run(stop))
+                asyncio.create_task(_set_stop())
+                await asyncio.wait_for(task, timeout=3.0)
+            finally:
+                for k, v in saved.items():
+                    if v is None:
+                        sys.modules.pop(k, None)
+                    else:
+                        sys.modules[k] = v
+
+        asyncio.run(_run())
+
+
+class TestScenarioThinkTimeFallback(AioHTTPTestCase):
+    """Verify the think_time fallback chain in scenario_worker.
+
+    workers.py:887-889: step.think_time → scenario.think_time → config.think_time
+    The fallback to config.think_time (when both step and scenario think_time are
+    0) was previously untested.
+    """
+
+    async def get_application(self):
+        app = web.Application()
+        app.router.add_get("/", lambda r: web.Response(text="ok"))
+        return app
+
+    def _url(self):
+        return f"http://localhost:{self.server.port}/"
+
+    async def test_scenario_think_time_falls_back_to_config(self):
+        """When step.think_time is None and scenario.think_time is 0,
+        the worker should use config.think_time."""
+        scenario_data = {
+            "name": "Fallback Think",
+            "think_time": 0.0,  # scenario-level think_time = 0
+            "steps": [
+                {"method": "GET", "path": "/"},  # no step-level think_time
+            ],
+        }
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        json.dump(scenario_data, f)
+        f.close()
+        try:
+            scenario = pywrkr.load_scenario(f.name)
+            config = pywrkr.BenchmarkConfig(
+                url=self._url(),
+                users=2,
+                duration=2.0,
+                think_time=0.2,  # fallback think_time applied per-step
+                think_time_jitter=0.0,
+                ramp_up=0.0,
+                timeout_sec=5,
+                scenario=scenario,
+            )
+            with patch("sys.stdout", new_callable=StringIO):
+                stats, _ = await pywrkr.run_user_simulation(config)
+            # With 2 users, 2s duration, and 0.2s think_time per step the loop
+            # can run at most 2 / 0.2 = 10 times per user. Expect far fewer
+            # requests than a think_time=0 run would produce.
+            self.assertGreater(stats.total_requests, 0)
+            self.assertLess(stats.total_requests, 40)
+        finally:
+            os.unlink(f.name)
+
+
 if __name__ == "__main__":
     unittest.main()
