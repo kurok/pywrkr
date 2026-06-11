@@ -20,12 +20,10 @@ from pywrkr.config import (
     SSLConfig,
     Threshold,
     WorkerStats,
+    merge_stats,
 )
 from pywrkr.config import (
-    merge_reservoirs as _merge_reservoirs,
-)
-from pywrkr.config import (
-    normalize_timeline as _normalize_timeline,
+    normalize_timeline as _normalize_timeline,  # noqa: F401 (re-exported for tests)
 )
 from pywrkr.reporting import (
     evaluate_thresholds,
@@ -311,27 +309,8 @@ async def _recv_msg(reader: asyncio.StreamReader) -> dict:
 
 
 def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
-    """Merge multiple WorkerStats into one."""
-    merged = WorkerStats()
-    lat_capacity = merged.latencies.capacity
-    bd_capacity = merged.breakdowns.capacity
-    for ws in stats_list:
-        merged.total_requests += ws.total_requests
-        merged.total_bytes += ws.total_bytes
-        merged.errors += ws.errors
-        merged.content_length_errors += ws.content_length_errors
-        merged.rps_timeline.extend(_normalize_timeline(ws.rps_timeline))
-        for k, v in ws.error_types.items():
-            merged.error_types[k] += v
-        for k, v in ws.status_codes.items():
-            merged.status_codes[k] += v
-        for k, v in ws.step_latencies.items():
-            merged.step_latencies[k].extend(v)
-    # Weighted reservoir merge preserves total_seen and weights each worker by
-    # its true volume instead of by how many samples survived downsampling.
-    merged.latencies = _merge_reservoirs([ws.latencies for ws in stats_list], lat_capacity)
-    merged.breakdowns = _merge_reservoirs([ws.breakdowns for ws in stats_list], bd_capacity)
-    return merged
+    """Merge multiple WorkerStats into one. Delegates to config.merge_stats."""
+    return merge_stats(stats_list)
 
 
 async def run_master(
