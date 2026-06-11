@@ -1494,7 +1494,7 @@ tui = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.14.0" },
+    { name = "aiohttp", specifier = "~=3.14" },
     { name = "aiohttp", marker = "extra == 'dev'", specifier = ">=3.14.0" },
     { name = "bandit", marker = "extra == 'security'", specifier = ">=1.7" },
     { name = "mypy", marker = "extra == 'lint'", specifier = ">=1.0" },
