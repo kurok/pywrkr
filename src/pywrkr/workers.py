@@ -688,6 +688,7 @@ async def worker(
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
     session_kwargs = _build_session_kwargs(connector, config, stats)
+    client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
 
     async with aiohttp.ClientSession(**session_kwargs) as session:
         while not stop_event.is_set():
@@ -706,8 +707,9 @@ async def worker(
                 if stop_event.is_set():
                     break
 
-            effective_timeout = _calc_effective_timeout(config, start_time)
-            client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
+            if config.duration is not None:
+                effective_timeout = _calc_effective_timeout(config, start_time)
+                client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
             request_url = make_url(config.url, config.random_param)
             trace_ctx = {} if config.latency_breakdown else None
 
@@ -760,6 +762,7 @@ async def user_worker(
     expected_length_ref: list[int | None] = [None]
     active_users.count += 1
     session_kwargs = _build_session_kwargs(connector, config, stats)
+    client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
 
     try:
         async with aiohttp.ClientSession(**session_kwargs) as session:
@@ -778,8 +781,9 @@ async def user_worker(
                     if stop_event.is_set():
                         break
 
-                effective_timeout = _calc_effective_timeout(config, start_time)
-                client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
+                if config.duration is not None:
+                    effective_timeout = _calc_effective_timeout(config, start_time)
+                    client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
                 request_url = make_url(config.url, config.random_param)
                 trace_ctx = {} if config.latency_breakdown else None
 
@@ -849,6 +853,7 @@ async def scenario_worker(
     parsed = urlparse(config.url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     expected_length_ref: list[int | None] = [None]
+    client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
 
     active_users.count += 1
     try:
@@ -878,8 +883,9 @@ async def scenario_worker(
                         if stop_event.is_set():
                             return
 
-                    effective_timeout = _calc_effective_timeout(config, start_time)
-                    client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
+                    if config.duration is not None:
+                        effective_timeout = _calc_effective_timeout(config, start_time)
+                        client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
                     request_url = make_url(f"{base_url}{step.path}", config.random_param)
 
                     req_headers = dict(base_headers)
