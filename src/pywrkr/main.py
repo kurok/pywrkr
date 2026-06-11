@@ -431,14 +431,24 @@ Examples:
         action="append",
         default=[],
         dest="exclude_patterns",
-        help="Exclude URLs matching this regex pattern (repeatable)",
+        help=(
+            "Exclude URLs matching this regex pattern (repeatable). "
+            "WARNING: patterns with catastrophic backtracking (e.g. '(a+)+') "
+            "matched against long URLs will hang the process. Use simple, "
+            "anchored patterns such as r'^https://example\\.com/api'."
+        ),
     )
     parser.add_argument(
         "--include",
         action="append",
         default=[],
         dest="include_patterns",
-        help="Only include URLs matching this regex pattern (repeatable)",
+        help=(
+            "Only include URLs matching this regex pattern (repeatable). "
+            "WARNING: patterns with catastrophic backtracking (e.g. '(a+)+') "
+            "matched against long URLs will hang the process. Use simple, "
+            "anchored patterns such as r'^https://example\\.com/api'."
+        ),
     )
     parser.add_argument(
         "--preserve-headers",

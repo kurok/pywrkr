@@ -126,7 +126,14 @@ def _compile_patterns(patterns: list[str]) -> list[re.Pattern[str]]:
 
 
 def _matches_patterns(url: str, patterns: list[re.Pattern[str]]) -> bool:
-    """Return True if the URL matches any precompiled regex pattern."""
+    """Return True if the URL matches any precompiled regex pattern.
+
+    Security note: there is no per-match timeout. Patterns with catastrophic
+    backtracking (e.g. ``(a+)+``, ``(.*a){20}``) matched against long URLs
+    will hang the process. This is self-DoS only — both the pattern and the
+    HAR file are supplied by the local operator. Use simple, anchored patterns
+    to avoid this risk.
+    """
     if len(url) > _MATCH_URL_MAX:
         url = url[:_MATCH_URL_MAX]
     for pattern in patterns:
