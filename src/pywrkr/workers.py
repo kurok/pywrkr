@@ -853,10 +853,6 @@ async def scenario_worker(
     active_users.count += 1
     try:
         session_kwargs = _build_session_kwargs(connector, config, stats)
-        # Mirror worker()/user_worker(): when latency breakdown tracing is
-        # enabled the TraceConfig callbacks write into trace_request_ctx, so it
-        # must be a dict (not None) or on_request_start raises TypeError.
-        trace_ctx = {} if config.latency_breakdown else None
         async with aiohttp.ClientSession(**session_kwargs) as session:
             while not stop_event.is_set():
                 for step in scenario.steps:
@@ -891,6 +887,10 @@ async def scenario_worker(
                     body = _prepare_step_body(step.body, req_headers)
 
                     step_name = step.name or f"{step.method} {step.path}"
+
+                    # Fresh dict per request so TraceConfig callbacks don't
+                    # bleed timing from the previous step into this one.
+                    trace_ctx = {} if config.latency_breakdown else None
 
                     result = await _execute_request(
                         session,
@@ -1044,6 +1044,9 @@ async def _finalize_run(
 ) -> tuple[WorkerStats, int]:
     """Await workers, merge stats, print results, and evaluate thresholds."""
     worker_crashed = False
+    # Initialize to start_time so the variable is always bound even if
+    # asyncio.gather raises (e.g. CancelledError) before we can sample it.
+    end_time = start_time
     try:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         # Sample end_time immediately after the workers finish, BEFORE tearing
