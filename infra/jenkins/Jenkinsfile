@@ -145,35 +145,29 @@ pipeline {
         stage('Prepare Terraform Vars') {
             steps {
                 script {
-                    def thresholdList = params.THRESHOLDS
-                        ? params.THRESHOLDS.split(',').collect { "\"${it.trim()}\"" }.join(', ')
-                        : ''
-
-                    def region      = params.AWS_REGION ?: 'us-east-1'
-                    def environment = params.ENVIRONMENT ?: 'dev'
-                    def imageTag    = params.IMAGE_TAG ?: 'latest'
-                    def targetUrl   = params.TARGET_URL ?: 'https://example.com'
-                    def duration    = params.TEST_DURATION ?: '60'
-                    def conns       = params.CONNECTIONS ?: '10'
-                    def users       = params.USERS ?: '0'
-                    def rate        = params.RATE ?: '0'
-                    def workers     = params.WORKER_COUNT ?: '2'
-                    def scenario    = params.SCENARIO_FILE ?: ''
-
-                    writeFile file: "${env.TF_DIR}/jenkins.auto.tfvars", text: """
-aws_region         = "${region}"
-environment        = "${environment}"
-container_image    = "ghcr.io/kurok/pywrkr:${imageTag}"
-target_url         = "${targetUrl}"
-test_duration      = ${duration}
-connections        = ${conns}
-users              = ${users}
-rate               = ${rate}
-worker_count       = ${workers}
-thresholds         = [${thresholdList}]
-scenario_file      = "${scenario}"
-enable_nat_gateway = false
-"""
+                    // Use JSON tfvars to avoid HCL injection via user-supplied parameters.
+                    // groovy.json.JsonOutput serializes values safely without string interpolation.
+                    def tfvars = [
+                        aws_region:          params.AWS_REGION ?: 'us-east-1',
+                        environment:         params.ENVIRONMENT ?: 'dev',
+                        container_image:     "ghcr.io/kurok/pywrkr:${params.IMAGE_TAG ?: 'latest'}",
+                        target_url:          params.TARGET_URL ?: 'https://example.com',
+                        test_duration:       (params.TEST_DURATION ?: '60').toInteger(),
+                        connections:         (params.CONNECTIONS ?: '10').toInteger(),
+                        users:               (params.USERS ?: '0').toInteger(),
+                        rate:                (params.RATE ?: '0').toInteger(),
+                        worker_count:        (params.WORKER_COUNT ?: '2').toInteger(),
+                        thresholds:          params.THRESHOLDS
+                                                ? params.THRESHOLDS.split(',').collect { it.trim() }
+                                                : [],
+                        scenario_file:       params.SCENARIO_FILE ?: '',
+                        enable_nat_gateway:  false,
+                    ]
+                    writeFile(
+                        file: "${env.TF_DIR}/jenkins.auto.tfvars.json",
+                        text: groovy.json.JsonOutput.prettyPrint(
+                                  groovy.json.JsonOutput.toJson(tfvars)),
+                    )
                 }
             }
         }
@@ -225,39 +219,39 @@ enable_nat_gateway = false
                 ]) {
                 script {
                     env.ECS_CLUSTER = sh(
-                        script: "cd ${env.TF_DIR} && terraform output -raw ecs_cluster_name",
+                        script: 'cd "$TF_DIR" && terraform output -raw ecs_cluster_name',
                         returnStdout: true
                     ).trim()
                     env.MASTER_SERVICE = sh(
-                        script: "cd ${env.TF_DIR} && terraform output -raw master_service_name",
+                        script: 'cd "$TF_DIR" && terraform output -raw master_service_name',
                         returnStdout: true
                     ).trim()
                     env.WORKER_SERVICE = sh(
-                        script: "cd ${env.TF_DIR} && terraform output -raw worker_service_name",
+                        script: 'cd "$TF_DIR" && terraform output -raw worker_service_name',
                         returnStdout: true
                     ).trim()
 
                     // Record the start timestamp before triggering deployment
                     env.TEST_START_TIME = "${System.currentTimeMillis()}"
 
-                    sh """
+                    sh '''
                         echo "Triggering new deployment (fresh test run)..."
                         aws ecs update-service \
-                            --cluster ${env.ECS_CLUSTER} \
-                            --service ${env.MASTER_SERVICE} \
+                            --cluster "$ECS_CLUSTER" \
+                            --service "$MASTER_SERVICE" \
                             --force-new-deployment \
-                            --region ${AWS_DEFAULT_REGION} \
+                            --region "$AWS_DEFAULT_REGION" \
                             --no-cli-pager > /dev/null
 
                         aws ecs update-service \
-                            --cluster ${env.ECS_CLUSTER} \
-                            --service ${env.WORKER_SERVICE} \
+                            --cluster "$ECS_CLUSTER" \
+                            --service "$WORKER_SERVICE" \
                             --force-new-deployment \
-                            --region ${AWS_DEFAULT_REGION} \
+                            --region "$AWS_DEFAULT_REGION" \
                             --no-cli-pager > /dev/null
 
                         echo "Deployment triggered. Waiting for test results in CloudWatch..."
-                    """
+                    '''
                 }
                 } // withCredentials
             }
@@ -270,29 +264,26 @@ enable_nat_gateway = false
                     string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
                 ]) {
                 script {
-                    def masterLogGroup = sh(
-                        script: "cd ${env.TF_DIR} && terraform output -raw master_log_group",
+                    env.MASTER_LOG_GROUP = sh(
+                        script: 'cd "$TF_DIR" && terraform output -raw master_log_group',
                         returnStdout: true
                     ).trim()
-
-                    // Use the timestamp from before we triggered the deployment
-                    def startTime = env.TEST_START_TIME
 
                     // Poll CloudWatch for the JSON end marker (max 10 min)
                     // This accounts for: Fargate task startup + test duration + result upload
                     def foundJson = false
                     for (int i = 0; i < 60; i++) {
                         def check = sh(
-                            script: """
+                            script: '''
                                 aws logs filter-log-events \
-                                    --log-group-name "${masterLogGroup}" \
-                                    --start-time ${startTime} \
+                                    --log-group-name "$MASTER_LOG_GROUP" \
+                                    --start-time "$TEST_START_TIME" \
                                     --filter-pattern "PYWRKR_JSON_END" \
-                                    --region ${AWS_DEFAULT_REGION} \
+                                    --region "$AWS_DEFAULT_REGION" \
                                     --no-cli-pager \
                                     --output text \
                                     --query 'events[0].message' 2>/dev/null || true
-                            """,
+                            ''',
                             returnStdout: true
                         ).trim()
 
@@ -312,13 +303,13 @@ enable_nat_gateway = false
                     }
 
                     // Fetch all master logs and extract JSON between markers
-                    sh """
+                    sh '''
                         mkdir -p pywrkr-report
 
                         aws logs filter-log-events \
-                            --log-group-name "${masterLogGroup}" \
-                            --start-time ${startTime} \
-                            --region ${AWS_DEFAULT_REGION} \
+                            --log-group-name "$MASTER_LOG_GROUP" \
+                            --start-time "$TEST_START_TIME" \
+                            --region "$AWS_DEFAULT_REGION" \
                             --no-cli-pager \
                             --output json \
                             --query 'events[*].message' > raw_logs.json
@@ -338,7 +329,7 @@ print('Extracted results.json (%d bytes)' % len(json.dumps(data)))
 
                         python3 infra/jenkins/generate_report.py pywrkr-report/results.json pywrkr-report/report.html
                         ls -la pywrkr-report/
-                    """
+                    '''
                 }
                 } // withCredentials
             }
@@ -375,23 +366,23 @@ print('Extracted results.json (%d bytes)' % len(json.dumps(data)))
                             sh 'terraform destroy -input=false -auto-approve'
                         }
                     } else if (params.CLEANUP_AFTER_RUN) {
-                        sh """
+                        sh '''
                             aws ecs update-service \
-                                --cluster ${env.ECS_CLUSTER} \
-                                --service ${env.WORKER_SERVICE} \
+                                --cluster "$ECS_CLUSTER" \
+                                --service "$WORKER_SERVICE" \
                                 --desired-count 0 \
-                                --region ${AWS_DEFAULT_REGION} \
+                                --region "$AWS_DEFAULT_REGION" \
                                 --no-cli-pager > /dev/null
 
                             aws ecs update-service \
-                                --cluster ${env.ECS_CLUSTER} \
-                                --service ${env.MASTER_SERVICE} \
+                                --cluster "$ECS_CLUSTER" \
+                                --service "$MASTER_SERVICE" \
                                 --desired-count 0 \
-                                --region ${AWS_DEFAULT_REGION} \
+                                --region "$AWS_DEFAULT_REGION" \
                                 --no-cli-pager > /dev/null
 
                             echo "Services scaled to 0. Infrastructure remains for next run."
-                        """
+                        '''
                     }
                 }
                 } // withCredentials
