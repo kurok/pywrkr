@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (breaking for `from pywrkr import *` consumers)
+
+- Removed 15 underscore-prefixed internal names from `__all__`: `_get_metric_value`, `_compare`, `_html_escape`, `_format_latency_short`, `_build_request_headers`, `_create_ssl_context`, `_step_passed`, `_extract_step_result`, `_write_autofind_json`, `_serialize_config`, `_deserialize_config`, `_serialize_stats`, `_deserialize_stats`, `_send_msg`, `_recv_msg`. These were never intended as public API. They remain importable directly from their source modules (`pywrkr.reporting`, `pywrkr.workers`, `pywrkr.distributed`). (#122)
+
 ## [1.4.1] - 2026-05-02
 
 ### Fixed
