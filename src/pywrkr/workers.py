@@ -7,7 +7,6 @@ import base64
 import contextlib
 import json
 import logging
-import math
 import random
 import signal
 import ssl
@@ -1441,14 +1440,10 @@ def _extract_step_result(
     rps = stats.total_requests / duration if duration > 0 else 0.0
     error_rate = (stats.errors / stats.total_requests * 100) if stats.total_requests > 0 else 0.0
 
-    if stats.latencies:
-        sorted_lat = sorted(stats.latencies)
-        n = len(sorted_lat)
-        p50 = sorted_lat[min(int(math.ceil(50 / 100 * n)) - 1, n - 1)]
-        p95 = sorted_lat[min(int(math.ceil(95 / 100 * n)) - 1, n - 1)]
-        p99 = sorted_lat[min(int(math.ceil(99 / 100 * n)) - 1, n - 1)]
-    else:
-        p50 = p95 = p99 = 0.0
+    pct_map = dict(compute_percentiles(stats.latencies)) if stats.latencies else {}
+    p50 = pct_map.get(50, 0.0)
+    p95 = pct_map.get(95, 0.0)
+    p99 = pct_map.get(99, 0.0)
 
     result = StepResult(
         users=num_users,
