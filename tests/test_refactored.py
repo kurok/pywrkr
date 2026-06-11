@@ -591,9 +591,7 @@ class TestDistributedSerialization(unittest.TestCase):
         EXCLUDED = {"_quiet", "traffic_profile"}
 
         config_fields = {f.name for f in fields(BenchmarkConfig)} - EXCLUDED
-        serialized_keys = set(
-            _serialize_config(BenchmarkConfig(url="http://localhost/")).keys()
-        )
+        serialized_keys = set(_serialize_config(BenchmarkConfig(url="http://localhost/")).keys())
 
         missing = config_fields - serialized_keys
         self.assertEqual(
