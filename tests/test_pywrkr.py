@@ -4692,7 +4692,7 @@ class TestDistributedCLIArgs(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     main()
                 # Should call run_worker_node with the right args
-                mock_run.assert_called_once_with("10.0.0.1", 9220)
+                mock_run.assert_called_once_with("10.0.0.1", 9220, worker_secret=None)
 
     def test_master_requires_expect_workers(self):
         """--master without --expect-workers should error."""
@@ -5481,6 +5481,7 @@ class TestDetermineAndRunMode(unittest.TestCase):
             bind="0.0.0.0",
             port=9220,
             expect_workers=1,
+            worker_secret=None,
             no_keepalive=False,
             max_error_rate=5.0,
             max_p95=500,
