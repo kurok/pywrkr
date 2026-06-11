@@ -3542,10 +3542,10 @@ class TestOtelExport(unittest.TestCase):
         with patch(
             "pywrkr.reporting.OTLPMetricExporter", side_effect=Exception("connection refused")
         ):
-            buf = StringIO()
-            with patch("sys.stdout", buf):
-                pywrkr.export_to_otel(self._make_results(), "http://bad:4318", {})
-            self.assertIn("Warning: failed to export", buf.getvalue())
+            with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+                result = pywrkr.export_to_otel(self._make_results(), "http://bad:4318", {})
+        self.assertFalse(result)
+        self.assertTrue(any("OTel export failed" in line for line in cm.output))
 
 
 # ---------------------------------------------------------------------------
