@@ -548,3 +548,37 @@ class TestMasterMode:
         """--master with --expect-workers 0."""
         with pytest.raises(SystemExit):
             _parse(["--master", "--expect-workers", "0", "http://localhost/"])
+
+
+# ---------------------------------------------------------------------------
+# SSL + credential warning
+# ---------------------------------------------------------------------------
+
+
+class TestSslCredentialWarning:
+    def test_warning_with_basic_auth_no_verify(self, capsys):
+        _parse(["-A", "user:pass", "https://example.com/"])
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "--ssl-verify" in captured.err
+
+    def test_warning_with_cookie_no_verify(self, capsys):
+        _parse(["-C", "session=abc", "https://example.com/"])
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "--ssl-verify" in captured.err
+
+    def test_no_warning_when_ssl_verify_enabled(self, capsys):
+        _parse(["--ssl-verify", "-A", "user:pass", "https://example.com/"])
+        captured = capsys.readouterr()
+        assert "WARNING" not in captured.err
+
+    def test_no_warning_without_credentials(self, capsys):
+        _parse(["https://example.com/"])
+        captured = capsys.readouterr()
+        assert "WARNING" not in captured.err
+
+    def test_no_warning_for_http_with_credentials(self, capsys):
+        _parse(["-A", "user:pass", "http://example.com/"])
+        captured = capsys.readouterr()
+        assert "WARNING" not in captured.err
