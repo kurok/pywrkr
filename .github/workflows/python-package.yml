@@ -128,3 +128,25 @@ jobs:
       run: uv run python -m bandit -r src/pywrkr/ -c pyproject.toml
     - name: Run pip-audit (dependency vulnerabilities)
       run: uv run python -m pip_audit
+
+  # -------------------------------------------------------------------
+  # Gate: all required checks must pass before merging
+  # -------------------------------------------------------------------
+  all-checks-pass:
+    name: All checks pass
+    needs: [lint, pre-commit, test, test-otel, typecheck, security]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Verify all required jobs succeeded
+        run: |
+          results='${{ toJSON(needs) }}'
+          echo "$results"
+          if echo "$results" | grep -q '"result": "failure"'; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
+          if echo "$results" | grep -q '"result": "cancelled"'; then
+            echo "One or more required jobs were cancelled."
+            exit 1
+          fi
