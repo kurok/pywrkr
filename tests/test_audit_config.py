@@ -34,9 +34,7 @@ def _write_scenario(tmp_path, steps, **extra):
 )
 def test_body_wrong_type_raises(tmp_path, bad_body):
     path = _write_scenario(tmp_path, [{"path": "/", "body": bad_body}])
-    with pytest.raises(
-        ValueError, match=r"Step 0 'body' must be a string, object, array, or null"
-    ):
+    with pytest.raises(ValueError, match=r"Step 0 'body' must be a string, object, array, or null"):
         load_scenario(path)
 
 
@@ -112,9 +110,7 @@ def test_error_message_names_correct_step_index(tmp_path):
             {"path": "/", "body": 42},
         ],
     )
-    with pytest.raises(
-        ValueError, match=r"Step 1 'body' must be a string, object, array, or null"
-    ):
+    with pytest.raises(ValueError, match=r"Step 1 'body' must be a string, object, array, or null"):
         load_scenario(path)
 
 
