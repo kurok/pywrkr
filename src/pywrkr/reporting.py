@@ -950,7 +950,7 @@ def run_observability_exports(
     return ok
 
 
-def print_results(
+def _print_console_results(
     stats: WorkerStats,
     duration: float,
     connections: int,
@@ -959,7 +959,11 @@ def print_results(
     rate_limiter: RateLimiter | None = None,
     file: TextIO | None = None,
 ) -> None:
-    """Print full benchmark results to stdout."""
+    """Render all console output for a completed benchmark run.
+
+    Pure console I/O — no files are written and no network calls are made.
+    Callers that need to suppress or redirect output pass ``file``.
+    """
     out = file if file is not None else sys.stdout
 
     rps = stats.total_requests / duration if duration > 0 else 0
@@ -1121,23 +1125,39 @@ def print_results(
 
     print(f"\n{'=' * 70}", file=out)
 
-    # CSV output
+
+def _write_output_files(
+    stats: WorkerStats,
+    duration: float,
+    connections: int,
+    start_time: float,
+    config: BenchmarkConfig,
+    rate_limiter: RateLimiter | None = None,
+    file: TextIO | None = None,
+) -> None:
+    """Write any configured output files (CSV, JSON, HTML).
+
+    Only file I/O — no console output except the brief confirmation
+    lines that tell the user where each file was written.
+    Observability exports (OTel, Prometheus) are handled separately by
+    ``run_observability_exports`` (called from ``_finalize_run``) so that
+    their failures can influence the process exit code.
+    """
+    out = file if file is not None else sys.stdout
+
     if config.csv_output:
         write_csv_output(config.csv_output, stats)
         print(f"\n  CSV percentile data written to: {config.csv_output}", file=out)
 
-    # JSON output
     if config.json_output:
         results = build_results_dict(stats, duration, connections, config, rate_limiter)
         write_json_output(config.json_output, results)
         print(f"\n  JSON results written to: {config.json_output}", file=out)
 
-    # HTML output
     if config.html_output:
         html = generate_html_report(stats, duration, connections)
         print(f"\n{html}", file=out)
 
-    # Interactive HTML report (Gatling-style)
     if config.html_report:
         html = generate_gatling_html_report(
             stats, duration, connections, config, rate_limiter, start_time
@@ -1145,8 +1165,19 @@ def print_results(
         write_html_report(config.html_report, html)
         print(f"\n  HTML report written to: {config.html_report}", file=out)
 
-    # Observability exports are handled separately by run_observability_exports
-    # (called from _finalize_run) so that failures can affect the exit code.
+
+def print_results(
+    stats: WorkerStats,
+    duration: float,
+    connections: int,
+    start_time: float,
+    config: BenchmarkConfig,
+    rate_limiter: RateLimiter | None = None,
+    file: TextIO | None = None,
+) -> None:
+    """Print full benchmark results to stdout and write any configured output files."""
+    _print_console_results(stats, duration, connections, start_time, config, rate_limiter, file)
+    _write_output_files(stats, duration, connections, start_time, config, rate_limiter, file)
 
 
 # ---------------------------------------------------------------------------
