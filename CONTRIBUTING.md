@@ -19,6 +19,9 @@ cd pywrkr
 # Install in development mode with all extras
 pip install -e ".[dev,lint,otel,tui]"
 
+# Install pre-commit hooks (required — CI enforces these)
+pre-commit install
+
 # Verify everything works
 pytest
 ```
