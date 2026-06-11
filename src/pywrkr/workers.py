@@ -644,6 +644,12 @@ async def worker(
 
     Executes HTTP requests against the configured URL until the stop condition
     is met (duration elapsed, request count reached, or stop_event set).
+
+    NOTE: user_worker and scenario_worker share this loop skeleton (rate
+    limiting, duration tracking, stats recording). Any change to the loop
+    logic here must be mirrored in both. Known divergence: rps_timeline is
+    batched per-second here but recorded per-request in user_worker /
+    scenario_worker. See issue #123 for the consolidation plan.
     """
     logger.debug("Worker starting (target=%s)", config.url)
     start_time = time.monotonic()
@@ -721,7 +727,13 @@ async def user_worker(
     active_users: ActiveUsers,
     rate_limiter: RateLimiter | None = None,
 ) -> None:
-    """Simulate a single virtual user with configurable think time."""
+    """Simulate a single virtual user with configurable think time.
+
+    NOTE: Shares a loop skeleton with worker and scenario_worker (rate
+    limiting, duration tracking, stats recording). Any change to that logic
+    must be mirrored across all three. Known divergence: rps_timeline is
+    recorded per-request here but batched per-second in worker. See #123.
+    """
     logger.debug("User %d starting", user_id)
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
@@ -817,7 +829,13 @@ async def scenario_worker(
     request_counter: RequestCounter | None = None,
     rate_limiter: RateLimiter | None = None,
 ) -> None:
-    """Execute a scripted multi-step scenario in a loop."""
+    """Execute a scripted multi-step scenario in a loop.
+
+    NOTE: Shares a loop skeleton with worker and user_worker (rate limiting,
+    duration tracking, stats recording). Any change to that logic must be
+    mirrored across all three. Known divergence: rps_timeline is recorded
+    per-request here but batched per-second in worker. See #123.
+    """
     logger.debug("Scenario user %d starting", user_id)
     scenario = config.scenario
     if not scenario:
