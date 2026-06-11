@@ -3464,10 +3464,10 @@ class TestOtelExport(unittest.TestCase):
         original = pywrkr.reporting.OTEL_AVAILABLE
         try:
             pywrkr.reporting.OTEL_AVAILABLE = False
-            buf = StringIO()
-            with patch("sys.stdout", buf):
-                pywrkr.export_to_otel(self._make_results(), "http://localhost:4318", {})
-            self.assertIn("opentelemetry packages not installed", buf.getvalue())
+            with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+                result = pywrkr.export_to_otel(self._make_results(), "http://localhost:4318", {})
+            self.assertFalse(result)
+            self.assertTrue(any("opentelemetry packages not installed" in m for m in cm.output))
         finally:
             pywrkr.reporting.OTEL_AVAILABLE = original
 
@@ -3674,14 +3674,14 @@ class TestPrometheusExport(unittest.TestCase):
         with patch(
             "urllib.request.urlopen", side_effect=urllib.error.URLError("connection refused")
         ):
-            buf = StringIO()
-            with patch("sys.stdout", buf):
-                pywrkr.export_to_prometheus(
+            with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+                result = pywrkr.export_to_prometheus(
                     self._make_results(),
                     "http://bad:9091",
                     {},
                 )
-            self.assertIn("Warning: failed to export", buf.getvalue())
+            self.assertFalse(result)
+            self.assertTrue(any("Prometheus export failed" in m for m in cm.output))
 
     def test_latency_values_in_milliseconds(self):
         """Latency values should be exported in milliseconds."""
