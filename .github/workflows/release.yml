@@ -37,6 +37,17 @@ jobs:
           exit 1
         fi
 
+    - name: Verify pywrkr.__version__ matches tag
+      env:
+        TAG_VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        pip install --quiet .
+        RUNTIME_VERSION=$(python -c "import pywrkr; print(pywrkr.__version__)")
+        if [ "$RUNTIME_VERSION" != "$TAG_VERSION" ]; then
+          echo "::error::pywrkr.__version__ ($RUNTIME_VERSION) != tag ($TAG_VERSION)"
+          exit 1
+        fi
+
     - name: Generate changelog from commits
       id: changelog
       run: |
