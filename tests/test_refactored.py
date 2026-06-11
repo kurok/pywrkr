@@ -23,7 +23,15 @@ from pywrkr.config import (
     BenchmarkConfig,
     SSLConfig,
     WorkerStats,
+    merge_stats,
 )
+from pywrkr.distributed import (
+    _deserialize_config,
+    _deserialize_stats,
+    _serialize_config,
+    _serialize_stats,
+)
+from pywrkr.workers import _build_request_headers, _create_ssl_context
 
 # ---------------------------------------------------------------------------
 # SSLConfig tests
@@ -124,7 +132,7 @@ class TestBuildRequestHeaders(unittest.TestCase):
             url="http://example.com",
             headers={"Accept": "application/json"},
         )
-        headers = pywrkr._build_request_headers(config)
+        headers = _build_request_headers(config)
         self.assertEqual(headers["Accept"], "application/json")
 
     def test_basic_auth_header(self):
@@ -132,7 +140,7 @@ class TestBuildRequestHeaders(unittest.TestCase):
             url="http://example.com",
             basic_auth="user:pass",
         )
-        headers = pywrkr._build_request_headers(config)
+        headers = _build_request_headers(config)
         self.assertIn("Authorization", headers)
         self.assertTrue(headers["Authorization"].startswith("Basic "))
 
@@ -141,7 +149,7 @@ class TestBuildRequestHeaders(unittest.TestCase):
             url="http://example.com",
             cookies=["session=abc", "token=xyz"],
         )
-        headers = pywrkr._build_request_headers(config)
+        headers = _build_request_headers(config)
         self.assertEqual(headers["Cookie"], "session=abc; token=xyz")
 
     def test_all_combined(self):
@@ -151,7 +159,7 @@ class TestBuildRequestHeaders(unittest.TestCase):
             basic_auth="admin:secret",
             cookies=["sid=123"],
         )
-        headers = pywrkr._build_request_headers(config)
+        headers = _build_request_headers(config)
         self.assertEqual(headers["X-Custom"], "val")
         self.assertIn("Authorization", headers)
         self.assertEqual(headers["Cookie"], "sid=123")
@@ -159,8 +167,8 @@ class TestBuildRequestHeaders(unittest.TestCase):
     def test_returns_new_dict(self):
         """Each call should return a fresh dict to avoid shared state."""
         config = BenchmarkConfig(url="http://example.com", headers={"A": "1"})
-        h1 = pywrkr._build_request_headers(config)
-        h2 = pywrkr._build_request_headers(config)
+        h1 = _build_request_headers(config)
+        h2 = _build_request_headers(config)
         self.assertIsNot(h1, h2)
 
 
@@ -168,7 +176,7 @@ class TestMergeAllStats(unittest.TestCase):
     """Tests for _merge_all_stats helper."""
 
     def test_merge_empty(self):
-        merged = pywrkr._merge_all_stats([])
+        merged = merge_stats([])
         self.assertEqual(merged.total_requests, 0)
         self.assertEqual(merged.total_bytes, 0)
 
@@ -178,7 +186,7 @@ class TestMergeAllStats(unittest.TestCase):
         ws.total_bytes = 5000
         ws.errors = 1
         ws.latencies = [0.1, 0.2]
-        merged = pywrkr._merge_all_stats([ws])
+        merged = merge_stats([ws])
         self.assertEqual(merged.total_requests, 10)
         self.assertEqual(merged.total_bytes, 5000)
         self.assertEqual(merged.errors, 1)
@@ -198,7 +206,7 @@ class TestMergeAllStats(unittest.TestCase):
             ws.content_length_errors = i
             stats.append(ws)
 
-        merged = pywrkr._merge_all_stats(stats)
+        merged = merge_stats(stats)
         self.assertEqual(merged.total_requests, 30)
         self.assertEqual(merged.total_bytes, 3000)
         self.assertEqual(merged.errors, 3)  # 0 + 1 + 2
@@ -214,7 +222,7 @@ class TestMergeAllStats(unittest.TestCase):
         ws2.step_latencies["step1"].extend([0.3])
         ws2.step_latencies["step2"].extend([0.4])
 
-        merged = pywrkr._merge_all_stats([ws1, ws2])
+        merged = merge_stats([ws1, ws2])
         self.assertEqual(len(merged.step_latencies["step1"]), 3)
         self.assertEqual(len(merged.step_latencies["step2"]), 1)
 
@@ -224,7 +232,7 @@ class TestCreateSSLContext(unittest.TestCase):
 
     def test_http_returns_none(self):
         config = BenchmarkConfig(url="http://example.com")
-        ctx = pywrkr._create_ssl_context(config)
+        ctx = _create_ssl_context(config)
         self.assertIsNone(ctx)
 
     def test_https_no_verify(self):
@@ -232,7 +240,7 @@ class TestCreateSSLContext(unittest.TestCase):
             url="https://example.com",
             ssl_config=SSLConfig(verify=False),
         )
-        ctx = pywrkr._create_ssl_context(config)
+        ctx = _create_ssl_context(config)
         self.assertIsNotNone(ctx)
         self.assertFalse(ctx.check_hostname)
         self.assertEqual(ctx.verify_mode, ssl.CERT_NONE)
@@ -242,7 +250,7 @@ class TestCreateSSLContext(unittest.TestCase):
             url="https://example.com",
             ssl_config=SSLConfig(verify=True),
         )
-        ctx = pywrkr._create_ssl_context(config)
+        ctx = _create_ssl_context(config)
         self.assertIsNotNone(ctx)
         self.assertTrue(ctx.check_hostname)
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
@@ -449,8 +457,8 @@ class TestDistributedSerialization(unittest.TestCase):
             cookies=["session=abc"],
             timeout_sec=10.0,
         )
-        serialized = pywrkr._serialize_config(config)
-        deserialized = pywrkr._deserialize_config(serialized)
+        serialized = _serialize_config(config)
+        deserialized = _deserialize_config(serialized)
 
         self.assertEqual(deserialized.url, config.url)
         self.assertEqual(deserialized.connections, config.connections)
@@ -514,8 +522,8 @@ class TestDistributedSerialization(unittest.TestCase):
             html_output=True,
             live_dashboard=True,
         )
-        serialized = pywrkr._serialize_config(config)
-        d = pywrkr._deserialize_config(serialized)
+        serialized = _serialize_config(config)
+        d = _deserialize_config(serialized)
 
         self.assertEqual(d.url, config.url)
         self.assertEqual(d.connections, 50)
@@ -583,9 +591,7 @@ class TestDistributedSerialization(unittest.TestCase):
         EXCLUDED = {"_quiet", "traffic_profile"}
 
         config_fields = {f.name for f in fields(BenchmarkConfig)} - EXCLUDED
-        serialized_keys = set(
-            pywrkr._serialize_config(BenchmarkConfig(url="http://localhost/")).keys()
-        )
+        serialized_keys = set(_serialize_config(BenchmarkConfig(url="http://localhost/")).keys())
 
         missing = config_fields - serialized_keys
         self.assertEqual(
@@ -605,8 +611,8 @@ class TestDistributedSerialization(unittest.TestCase):
         ws.status_codes[500] = 5
         ws.error_types["HTTP 500"] = 5
 
-        serialized = pywrkr._serialize_stats(ws)
-        deserialized = pywrkr._deserialize_stats(serialized)
+        serialized = _serialize_stats(ws)
+        deserialized = _deserialize_stats(serialized)
 
         self.assertEqual(deserialized.total_requests, 1000)
         self.assertEqual(deserialized.total_bytes, 500000)
@@ -640,8 +646,8 @@ class TestDistributedSerialization(unittest.TestCase):
             ),
         ]
 
-        serialized = pywrkr._serialize_stats(ws)
-        d = pywrkr._deserialize_stats(serialized)
+        serialized = _serialize_stats(ws)
+        d = _deserialize_stats(serialized)
 
         self.assertEqual(d.total_requests, 100)
         self.assertEqual(d.total_bytes, 50000)

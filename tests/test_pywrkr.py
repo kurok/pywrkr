@@ -21,6 +21,16 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
+from pywrkr.distributed import (
+    _deserialize_config,
+    _deserialize_stats,
+    _recv_msg,
+    _send_msg,
+    _serialize_config,
+    _serialize_stats,
+)
+from pywrkr.reporting import _format_latency_short, _html_escape
+from pywrkr.workers import _extract_step_result, _step_passed
 
 # ---------------------------------------------------------------------------
 # Unit tests for refactored argument parser helpers
@@ -590,12 +600,12 @@ class TestHtmlEscape(unittest.TestCase):
 
     def test_escapes_special_chars(self):
         self.assertEqual(
-            pywrkr._html_escape('<b>"Tom & Jerry"</b>'),
+            _html_escape('<b>"Tom & Jerry"</b>'),
             "&lt;b&gt;&quot;Tom &amp; Jerry&quot;&lt;/b&gt;",
         )
 
     def test_plain_text_unchanged(self):
-        self.assertEqual(pywrkr._html_escape("hello world"), "hello world")
+        self.assertEqual(_html_escape("hello world"), "hello world")
 
 
 # ---------------------------------------------------------------------------
@@ -3046,12 +3056,12 @@ class TestAutofindHelpers(unittest.TestCase):
     """Test autofind helper functions."""
 
     def test_format_latency_short_ms(self):
-        self.assertEqual(pywrkr._format_latency_short(0.120), "120ms")
-        self.assertEqual(pywrkr._format_latency_short(0.001), "1ms")
+        self.assertEqual(_format_latency_short(0.120), "120ms")
+        self.assertEqual(_format_latency_short(0.001), "1ms")
 
     def test_format_latency_short_s(self):
-        self.assertEqual(pywrkr._format_latency_short(1.5), "1.5s")
-        self.assertEqual(pywrkr._format_latency_short(10.0), "10.0s")
+        self.assertEqual(_format_latency_short(1.5), "1.5s")
+        self.assertEqual(_format_latency_short(10.0), "10.0s")
 
     def test_step_passed_ok(self):
         cfg = pywrkr.AutofindConfig(url="http://x/", max_error_rate=1.0, max_p95=5.0)
@@ -3066,7 +3076,7 @@ class TestAutofindHelpers(unittest.TestCase):
             total_errors=0,
             passed=True,
         )
-        self.assertTrue(pywrkr._step_passed(step, cfg))
+        self.assertTrue(_step_passed(step, cfg))
 
     def test_step_passed_error_rate_exceeded(self):
         cfg = pywrkr.AutofindConfig(url="http://x/", max_error_rate=1.0, max_p95=5.0)
@@ -3081,7 +3091,7 @@ class TestAutofindHelpers(unittest.TestCase):
             total_errors=2,
             passed=True,
         )
-        self.assertFalse(pywrkr._step_passed(step, cfg))
+        self.assertFalse(_step_passed(step, cfg))
 
     def test_step_passed_p95_exceeded(self):
         cfg = pywrkr.AutofindConfig(url="http://x/", max_error_rate=1.0, max_p95=5.0)
@@ -3096,7 +3106,7 @@ class TestAutofindHelpers(unittest.TestCase):
             total_errors=0,
             passed=True,
         )
-        self.assertFalse(pywrkr._step_passed(step, cfg))
+        self.assertFalse(_step_passed(step, cfg))
 
     def test_extract_step_result(self):
         stats = pywrkr.WorkerStats()
@@ -3104,7 +3114,7 @@ class TestAutofindHelpers(unittest.TestCase):
         stats.errors = 2
         stats.latencies = [0.1 * i for i in range(1, 101)]  # 0.1 to 10.0
         cfg = pywrkr.AutofindConfig(url="http://x/", max_error_rate=5.0, max_p95=20.0)
-        result = pywrkr._extract_step_result(stats, 10.0, 20, cfg)
+        result = _extract_step_result(stats, 10.0, 20, cfg)
         self.assertEqual(result.users, 20)
         self.assertAlmostEqual(result.rps, 10.0)
         self.assertAlmostEqual(result.error_rate, 2.0)
@@ -3118,7 +3128,7 @@ class TestAutofindHelpers(unittest.TestCase):
         stats.total_requests = 0
         stats.errors = 0
         cfg = pywrkr.AutofindConfig(url="http://x/")
-        result = pywrkr._extract_step_result(stats, 10.0, 5, cfg)
+        result = _extract_step_result(stats, 10.0, 5, cfg)
         self.assertEqual(result.p50, 0.0)
         self.assertEqual(result.p95, 0.0)
         self.assertEqual(result.p99, 0.0)
@@ -4326,8 +4336,8 @@ class TestSerializeConfig(unittest.TestCase):
             rate=100.0,
             rate_ramp=500.0,
         )
-        data = pywrkr._serialize_config(config)
-        restored = pywrkr._deserialize_config(data)
+        data = _serialize_config(config)
+        restored = _deserialize_config(data)
 
         self.assertEqual(restored.url, config.url)
         self.assertEqual(restored.connections, config.connections)
@@ -4345,8 +4355,8 @@ class TestSerializeConfig(unittest.TestCase):
 
     def test_none_body(self):
         config = pywrkr.BenchmarkConfig(url="http://example.com/", body=None)
-        data = pywrkr._serialize_config(config)
-        restored = pywrkr._deserialize_config(data)
+        data = _serialize_config(config)
+        restored = _deserialize_config(data)
         self.assertIsNone(restored.body)
 
     def test_user_simulation_fields(self):
@@ -4357,8 +4367,8 @@ class TestSerializeConfig(unittest.TestCase):
             think_time=2.0,
             think_time_jitter=0.3,
         )
-        data = pywrkr._serialize_config(config)
-        restored = pywrkr._deserialize_config(data)
+        data = _serialize_config(config)
+        restored = _deserialize_config(data)
         self.assertEqual(restored.users, 100)
         self.assertEqual(restored.ramp_up, 10.0)
         self.assertEqual(restored.think_time, 2.0)
@@ -4381,8 +4391,8 @@ class TestSerializeStats(unittest.TestCase):
         ws.status_codes[500] = 5
         ws.rps_timeline = [(1.0, 100), (2.0, 150)]
 
-        data = pywrkr._serialize_stats(ws)
-        restored = pywrkr._deserialize_stats(data)
+        data = _serialize_stats(ws)
+        restored = _deserialize_stats(data)
 
         self.assertEqual(restored.total_requests, ws.total_requests)
         self.assertEqual(restored.total_bytes, ws.total_bytes)
@@ -4395,8 +4405,8 @@ class TestSerializeStats(unittest.TestCase):
 
     def test_empty_stats(self):
         ws = pywrkr.WorkerStats()
-        data = pywrkr._serialize_stats(ws)
-        restored = pywrkr._deserialize_stats(data)
+        data = _serialize_stats(ws)
+        restored = _deserialize_stats(data)
         self.assertEqual(restored.total_requests, 0)
         self.assertEqual(restored.latencies, [])
 
@@ -4447,7 +4457,7 @@ class TestMessageProtocol(unittest.TestCase):
             ready = asyncio.Event()
 
             async def handler(reader, writer):
-                msg = await pywrkr._recv_msg(reader)
+                msg = await _recv_msg(reader)
                 received.update(msg)
                 writer.close()
                 ready.set()
@@ -4456,7 +4466,7 @@ class TestMessageProtocol(unittest.TestCase):
             port = server.sockets[0].getsockname()[1]
 
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            await pywrkr._send_msg(writer, original)
+            await _send_msg(writer, original)
             writer.close()
 
             await asyncio.wait_for(ready.wait(), timeout=5)
@@ -4477,7 +4487,7 @@ class TestMessageProtocol(unittest.TestCase):
             ready = asyncio.Event()
 
             async def handler(reader, writer):
-                msg = await pywrkr._recv_msg(reader)
+                msg = await _recv_msg(reader)
                 received.update(msg)
                 writer.close()
                 ready.set()
@@ -4486,7 +4496,7 @@ class TestMessageProtocol(unittest.TestCase):
             port = server.sockets[0].getsockname()[1]
 
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            await pywrkr._send_msg(writer, original)
+            await _send_msg(writer, original)
             writer.close()
 
             await asyncio.wait_for(ready.wait(), timeout=5)
@@ -4650,7 +4660,7 @@ class TestDistributedIntegration(AioHTTPTestCase):
 
         async def handler(reader, writer):
             connected.set()
-            await pywrkr._send_msg(writer, {"type": "unknown"})
+            await _send_msg(writer, {"type": "unknown"})
             await asyncio.sleep(0.5)
             writer.close()
 
