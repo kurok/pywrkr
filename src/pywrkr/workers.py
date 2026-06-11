@@ -18,6 +18,7 @@ from urllib.parse import urlparse, urlsplit, urlunsplit
 import aiohttp
 
 from pywrkr.config import (
+    _MAX_STEP_NAMES,
     ActiveUsers,
     AutofindConfig,
     BenchmarkConfig,
@@ -25,8 +26,7 @@ from pywrkr.config import (
     RequestCounter,
     StepResult,
     WorkerStats,
-    merge_reservoirs,
-    normalize_timeline,
+    merge_stats,
 )
 from pywrkr.reporting import (
     RICH_AVAILABLE,
@@ -46,6 +46,8 @@ from pywrkr.traffic_profiles import RateLimiter
 # Re-export aggregate_breakdowns for backward compatibility
 __all__ = ["aggregate_breakdowns"]
 
+_merge_all_stats = merge_stats  # backward-compat alias; canonical impl is in config.merge_stats
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,11 +63,6 @@ _V4_TAG = "[v4]"
 _PROGRESS_BAR_WIDTH = 20
 _PROGRESS_FILLED_CHAR = "\u2588"
 _PROGRESS_EMPTY_CHAR = "\u2591"
-
-# Maximum number of unique step names tracked per WorkerStats.
-# Prevents unbounded memory growth from dynamic step names.
-_MAX_STEP_NAMES = 500
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -277,55 +274,6 @@ def _build_request_headers(config: BenchmarkConfig) -> dict[str, str]:
     if config.cookies:
         headers["Cookie"] = "; ".join(config.cookies)
     return headers
-
-
-def _merge_all_stats(all_stats: list[WorkerStats]) -> WorkerStats:
-    """Merge a list of WorkerStats into a single aggregated WorkerStats.
-
-    Combines all counters, latencies, timelines, and breakdowns from
-    multiple workers into one unified stats object.
-
-    Step latencies are bounded: unique step names are capped at
-    ``_MAX_STEP_NAMES`` to prevent unbounded memory growth.
-    """
-    merged = WorkerStats()
-    lat_capacity = merged.latencies.capacity
-    bd_capacity = merged.breakdowns.capacity
-    for ws in all_stats:
-        merged.total_requests += ws.total_requests
-        merged.total_bytes += ws.total_bytes
-        merged.errors += ws.errors
-        merged.content_length_errors += ws.content_length_errors
-        # Rebase each worker's timeline onto a shared axis before merging;
-        # raw per-process monotonic timestamps are not comparable.
-        merged.rps_timeline.extend(normalize_timeline(ws.rps_timeline))
-        for k, v in ws.error_types.items():
-            merged.error_types[k] += v
-        for k, v in ws.status_codes.items():
-            merged.status_codes[k] += v
-        for k, v in ws.step_latencies.items():
-            # Enforce the cap on unique step names during merge
-            if k not in merged.step_latencies:
-                if len(merged.step_latencies) >= _MAX_STEP_NAMES:
-                    k = "[other steps]"
-                else:
-                    merged.step_latencies[k] = []
-            merged.step_latencies[k].extend(v)
-
-    # Weighted reservoir merge preserves each worker's true total_seen and
-    # weights by volume instead of by how many samples survived downsampling,
-    # so merged percentiles are not biased toward low-volume workers.
-    merged.latencies = merge_reservoirs([ws.latencies for ws in all_stats], lat_capacity)
-    merged.breakdowns = merge_reservoirs([ws.breakdowns for ws in all_stats], bd_capacity)
-
-    logger.debug(
-        "Merged stats from %d workers: %d total requests, %d latency samples, %d breakdown samples",
-        len(all_stats),
-        merged.total_requests,
-        len(merged.latencies),
-        len(merged.breakdowns),
-    )
-    return merged
 
 
 def _create_ssl_context(config: BenchmarkConfig) -> "ssl.SSLContext | None":
@@ -763,6 +711,8 @@ async def user_worker(
     active_users.count += 1
     session_kwargs = _build_session_kwargs(connector, config, stats)
     client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
+    interval_start = start_time
+    interval_count = 0
 
     try:
         async with aiohttp.ClientSession(**session_kwargs) as session:
@@ -804,11 +754,18 @@ async def user_worker(
                 if result.cancelled:
                     break
 
+                interval_count += 1
                 now = time.monotonic()
-                stats.rps_timeline.append((now, 1))
+                if now - interval_start >= 1.0:
+                    stats.rps_timeline.append((interval_start, interval_count))
+                    interval_start = now
+                    interval_count = 0
 
                 if await _think_time_wait(config.think_time, config.think_time_jitter, stop_event):
                     break
+
+        if interval_count > 0:
+            stats.rps_timeline.append((interval_start, interval_count))
     finally:
         active_users.count -= 1
         logger.debug(
@@ -854,6 +811,8 @@ async def scenario_worker(
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     expected_length_ref: list[int | None] = [None]
     client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
+    interval_start = start_time
+    interval_count = 0
 
     active_users.count += 1
     try:
@@ -918,15 +877,22 @@ async def scenario_worker(
                     if result.cancelled:
                         return
 
+                    interval_count += 1
                     now = time.monotonic()
-                    stats.rps_timeline.append((now, 1))
+                    if now - interval_start >= 1.0:
+                        stats.rps_timeline.append((interval_start, interval_count))
+                        interval_start = now
+                        interval_count = 0
 
                     think = step.think_time if step.think_time is not None else scenario.think_time
                     if think <= 0 and config.think_time > 0:
                         think = config.think_time
                     if await _think_time_wait(think, config.think_time_jitter, stop_event):
                         return
+
     finally:
+        if interval_count > 0:
+            stats.rps_timeline.append((interval_start, interval_count))
         active_users.count -= 1
         logger.debug(
             "Scenario user %d finished: %d requests, %d errors",
@@ -1086,7 +1052,14 @@ async def _finalize_run(
         await connector.close()
 
     actual_duration = end_time - start_time
-    merged = _merge_all_stats(all_stats)
+    merged = merge_stats(all_stats)
+    logger.debug(
+        "Merged stats from %d workers: %d total requests, %d latency samples, %d breakdown samples",
+        len(all_stats),
+        merged.total_requests,
+        len(merged.latencies),
+        len(merged.breakdowns),
+    )
 
     if not quiet:
         print_results(merged, actual_duration, concurrency, start_time, config, rate_limiter)

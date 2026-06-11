@@ -243,6 +243,8 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--tag` | Metadata tag as `key=value` (repeatable), e.g. `--tag environment=staging` |
 | | `--otel-endpoint` | Export metrics to OpenTelemetry collector (OTLP/HTTP) |
 | | `--prom-remote-write` | Push metrics to Prometheus Pushgateway endpoint |
+| | `--ssl-verify` / `PYWRKR_SSL_VERIFY` | Enable TLS certificate verification (default: disabled). Recommended when using `--basic-auth` or `--cookie` against `https://` targets |
+| | `--ca-bundle PATH` / `PYWRKR_CA_BUNDLE` | Path to a custom CA certificate bundle (PEM format). Used when `--ssl-verify` is enabled and the target uses a private or corporate CA |
 
 ### User Simulation Options
 
@@ -668,6 +670,23 @@ pywrkr --worker master-host:9220
 | `--port` | Master listen port (default: `9220`) |
 
 The master splits the workload evenly across workers, collects results, and produces a single aggregated report.
+
+### TLS / SSL Verification
+
+By default, SSL certificate verification is **disabled** to allow benchmarking dev/staging servers with self-signed certs. Enable it for production targets and supply a custom CA bundle when needed:
+
+```bash
+# Enable standard TLS verification
+pywrkr https://example.com --ssl-verify -c 50 -d 30
+
+# Benchmark an internal HTTPS service with a corporate CA
+pywrkr https://internal.corp.example.com/api/health \
+  --ssl-verify \
+  --ca-bundle /etc/ssl/certs/corporate-ca.pem \
+  --duration 60
+```
+
+The same options are available via environment variables: `PYWRKR_SSL_VERIFY=true` and `PYWRKR_CA_BUNDLE=/path/to/ca.pem`.
 
 ## Installation
 
