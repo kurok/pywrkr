@@ -238,6 +238,40 @@ def merge_reservoirs(samplers: list, capacity: int) -> "ReservoirSampler":
     return ReservoirSampler.from_list(pool, capacity=capacity, total_seen=total_seen)
 
 
+_MAX_STEP_NAMES = 500
+
+
+def merge_stats(all_stats: "list[WorkerStats]") -> "WorkerStats":
+    """Merge a list of WorkerStats into one aggregated WorkerStats.
+
+    Step latencies are capped at _MAX_STEP_NAMES unique keys to prevent
+    unbounded memory growth from dynamic step names.
+    """
+    merged = WorkerStats()
+    lat_capacity = merged.latencies.capacity
+    bd_capacity = merged.breakdowns.capacity
+    for ws in all_stats:
+        merged.total_requests += ws.total_requests
+        merged.total_bytes += ws.total_bytes
+        merged.errors += ws.errors
+        merged.content_length_errors += ws.content_length_errors
+        merged.rps_timeline.extend(normalize_timeline(ws.rps_timeline))
+        for k, v in ws.error_types.items():
+            merged.error_types[k] += v
+        for k, v in ws.status_codes.items():
+            merged.status_codes[k] += v
+        for k, v in ws.step_latencies.items():
+            if k not in merged.step_latencies:
+                if len(merged.step_latencies) >= _MAX_STEP_NAMES:
+                    k = "[other steps]"
+                else:
+                    merged.step_latencies[k] = []
+            merged.step_latencies[k].extend(v)
+    merged.latencies = merge_reservoirs([ws.latencies for ws in all_stats], lat_capacity)
+    merged.breakdowns = merge_reservoirs([ws.breakdowns for ws in all_stats], bd_capacity)
+    return merged
+
+
 class CappedErrorDict(defaultdict):
     """A ``defaultdict(int)`` that stops accepting new keys after a limit.
 

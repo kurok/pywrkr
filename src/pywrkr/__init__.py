@@ -57,7 +57,7 @@ __all__ = [
     "LiveDashboard",
     "make_url",
     "_build_request_headers",
-    "_merge_all_stats",
+    "merge_stats",
     "_create_ssl_context",
     "create_trace_config",
     "worker",
@@ -109,6 +109,7 @@ from pywrkr.config import (
     Threshold,
     WorkerStats,
     load_scenario,
+    merge_stats,
 )
 from pywrkr.distributed import (
     _deserialize_config,
@@ -183,7 +184,6 @@ from pywrkr.workers import (
     _build_request_headers,
     _create_ssl_context,
     _extract_step_result,
-    _merge_all_stats,
     _step_passed,
     _write_autofind_json,
     create_trace_config,
@@ -198,3 +198,5 @@ from pywrkr.workers import (
 )
 
 __version__ = "1.4.4"
+
+_merge_all_stats = merge_stats  # backward-compat alias

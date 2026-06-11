@@ -2,13 +2,14 @@
 
 import unittest
 
-from pywrkr.config import BenchmarkConfig, LatencyBreakdown, WorkerStats
+from pywrkr.config import BenchmarkConfig, LatencyBreakdown, WorkerStats, merge_stats
 from pywrkr.workers import (
     _build_request_headers,
-    _merge_all_stats,
     aggregate_breakdowns,
     make_url,
 )
+
+_merge_all_stats = merge_stats
 
 
 class TestMakeUrl(unittest.TestCase):
