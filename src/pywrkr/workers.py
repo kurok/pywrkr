@@ -139,8 +139,16 @@ class LiveDashboard:
         # it conveys relative load instead of always rendering full.
         self._peak_rps = 0.0
 
-    def _build_display(self) -> "Panel":  # noqa: F821
-        """Build the rich Panel for the current dashboard state."""
+    def _build_display(
+        self,
+        pct_pairs: "list[tuple[int, float]] | None" = None,
+    ) -> "Panel":  # noqa: F821
+        """Build the rich Panel for the current dashboard state.
+
+        ``pct_pairs`` is a pre-computed list of (percentile, value) tuples
+        produced by ``compute_percentiles``.  Callers that run the sort in an
+        executor pass the result here; passing ``None`` renders a placeholder.
+        """
         from rich.panel import Panel
         from rich.table import Table
 
@@ -151,10 +159,6 @@ class LiveDashboard:
         total_bytes = sum(ws.total_bytes for ws in self.all_stats)
         transfer_rate = total_bytes / elapsed if elapsed > 0 else 0.0
         error_rate = (total_err / total_req * 100) if total_req > 0 else 0.0
-
-        all_latencies = []
-        for ws in self.all_stats:
-            all_latencies.extend(ws.latencies)
 
         status_codes: dict[int, int] = {}
         for ws in self.all_stats:
@@ -197,9 +201,8 @@ class LiveDashboard:
         table.add_row("Transfer:", f"{format_bytes(transfer_rate)}/s")
         table.add_row("", "")
 
-        if all_latencies:
-            pairs = compute_percentiles(all_latencies)
-            pair_dict = dict(pairs)
+        if pct_pairs:
+            pair_dict = dict(pct_pairs)
             p50 = format_duration(pair_dict.get(50, 0))
             p95 = format_duration(pair_dict.get(95, 0))
             p99 = format_duration(pair_dict.get(99, 0))
@@ -227,16 +230,30 @@ class LiveDashboard:
 
         return Panel(table, title="pywrkr Live Dashboard", border_style="green")
 
+    def _sample_percentiles(self) -> "list[tuple[int, float]] | None":
+        """Gather all latency samples and compute percentiles.
+
+        Intentionally a plain (non-async) method so it can be dispatched to a
+        thread-pool executor, keeping the sort off the asyncio event loop.
+        """
+        all_latencies: list[float] = []
+        for ws in self.all_stats:
+            all_latencies.extend(ws.latencies)
+        return compute_percentiles(all_latencies) if all_latencies else None
+
     async def run(self, stop_event: asyncio.Event) -> None:
         """Update the dashboard every 0.5s until stop_event is set."""
         from rich.live import Live
 
-        with Live(self._build_display(), refresh_per_second=2) as live:
+        loop = asyncio.get_running_loop()
+        pct_pairs = None
+        with Live(self._build_display(pct_pairs), refresh_per_second=2) as live:
             while not stop_event.is_set():
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(stop_event.wait(), timeout=0.5)
                     break
-                live.update(self._build_display())
+                pct_pairs = await loop.run_in_executor(None, self._sample_percentiles)
+                live.update(self._build_display(pct_pairs))
 
 
 # ---------------------------------------------------------------------------
