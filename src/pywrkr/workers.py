@@ -763,6 +763,8 @@ async def user_worker(
     active_users.count += 1
     session_kwargs = _build_session_kwargs(connector, config, stats)
     client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
+    interval_start = start_time
+    interval_count = 0
 
     try:
         async with aiohttp.ClientSession(**session_kwargs) as session:
@@ -804,11 +806,18 @@ async def user_worker(
                 if result.cancelled:
                     break
 
+                interval_count += 1
                 now = time.monotonic()
-                stats.rps_timeline.append((now, 1))
+                if now - interval_start >= 1.0:
+                    stats.rps_timeline.append((interval_start, interval_count))
+                    interval_start = now
+                    interval_count = 0
 
                 if await _think_time_wait(config.think_time, config.think_time_jitter, stop_event):
                     break
+
+        if interval_count > 0:
+            stats.rps_timeline.append((interval_start, interval_count))
     finally:
         active_users.count -= 1
         logger.debug(
@@ -854,6 +863,8 @@ async def scenario_worker(
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     expected_length_ref: list[int | None] = [None]
     client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
+    interval_start = start_time
+    interval_count = 0
 
     active_users.count += 1
     try:
@@ -918,15 +929,22 @@ async def scenario_worker(
                     if result.cancelled:
                         return
 
+                    interval_count += 1
                     now = time.monotonic()
-                    stats.rps_timeline.append((now, 1))
+                    if now - interval_start >= 1.0:
+                        stats.rps_timeline.append((interval_start, interval_count))
+                        interval_start = now
+                        interval_count = 0
 
                     think = step.think_time if step.think_time is not None else scenario.think_time
                     if think <= 0 and config.think_time > 0:
                         think = config.think_time
                     if await _think_time_wait(think, config.think_time_jitter, stop_event):
                         return
+
     finally:
+        if interval_count > 0:
+            stats.rps_timeline.append((interval_start, interval_count))
         active_users.count -= 1
         logger.debug(
             "Scenario user %d finished: %d requests, %d errors",
