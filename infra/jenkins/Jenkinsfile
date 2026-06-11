@@ -103,6 +103,34 @@ pipeline {
             }
         }
 
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    // SSRF protection: block RFC 1918, link-local, loopback, and IMDS endpoints.
+                    // An operator with Jenkins build access could otherwise direct the Fargate task
+                    // to the EC2 instance metadata service (169.254.169.254) or internal VPC hosts.
+                    def url = params.TARGET_URL ?: ''
+                    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                        error "TARGET_URL must start with http:// or https://. Got: '${url}'"
+                    }
+                    def blockedRanges = [
+                        ~/https?:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}/,          // RFC 1918 10/8
+                        ~/https?:\/\/172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}/, // RFC 1918 172.16/12
+                        ~/https?:\/\/192\.168\.\d{1,3}\.\d{1,3}/,              // RFC 1918 192.168/16
+                        ~/https?:\/\/127\.\d{1,3}\.\d{1,3}\.\d{1,3}/,         // loopback
+                        ~/https?:\/\/169\.254\.\d{1,3}\.\d{1,3}/,             // link-local / IMDS
+                        ~/https?:\/\/localhost(:\d+)?([\/\?#]|$)/,             // localhost
+                    ]
+                    for (pattern in blockedRanges) {
+                        if (url =~ pattern) {
+                            error "TARGET_URL '${url}' is blocked: host is an RFC 1918, link-local, or loopback address. This check prevents SSRF attacks via the Fargate task role."
+                        }
+                    }
+                    echo "TARGET_URL validated: ${url}"
+                }
+            }
+        }
+
         stage('Verify AWS Access') {
             steps {
                 withCredentials([

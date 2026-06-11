@@ -1279,6 +1279,25 @@ The cluster defaults to `FARGATE_SPOT` capacity provider, which provides up to 7
 - `.gitignore` excludes `*.tfstate`, `*.auto.tfvars`, and `.terraform/`
 - No secrets are baked into Docker images
 
+### SSRF Risk and TARGET_URL Allowlisting
+
+The Fargate task has IAM permissions scoped to CloudWatch Logs and ECS Exec, but it runs inside
+your VPC and can reach any host reachable from its subnet. A user with Jenkins build access who
+sets `TARGET_URL` to a link-local or RFC 1918 address can therefore reach internal services —
+most critically the EC2 Instance Metadata Service (IMDS) at `169.254.169.254`, which could
+expose the Fargate task's IAM role credentials.
+
+**Mitigations applied:**
+
+- The Jenkinsfile's `Validate Parameters` stage blocks `TARGET_URL` values that resolve to
+  RFC 1918 ranges (10/8, 172.16/12, 192.168/16), loopback (127.0.0.0/8), link-local /
+  IMDS (169.254.0.0/16), and `localhost` using Groovy regex checks.
+- If you extend this pipeline, preserve or strengthen these checks rather than removing them.
+
+**If you need to test internal endpoints** (e.g., a staging service inside the VPC), add
+approved host patterns to the allowlist in the `Validate Parameters` stage, scoped as
+narrowly as possible (full hostnames, not subnet ranges).
+
 ### Container Image
 
 - Default: `ghcr.io/kurok/pywrkr:latest` from GitHub Container Registry (public)
