@@ -6390,15 +6390,10 @@ class TestAutofindBinarySearch(unittest.TestCase):
         from pywrkr.config import AutofindConfig
         from pywrkr.workers import run_autofind
 
-        call_count = {"n": 0}
-
-        async def mock_run_user_sim(config):
-            call_count["n"] += 1
-            stats = pywrkr.WorkerStats()
-            stats.total_requests = 100
-            stats.latencies.extend([0.01] * 100)
-            return stats, 0
-
+        # fail_at=5: ramp 1→2→4 pass, 8 fail → last_good=4, first_bad=8 (gap=4).
+        # step_multiplier=2.0 is required so the gap exceeds 1 and the
+        # binary-search refinement branch (`first_bad - last_good > 1`) is entered.
+        fail_at = 5
         config = AutofindConfig(
             url="http://example.com",
             max_error_rate=5.0,
@@ -6406,35 +6401,37 @@ class TestAutofindBinarySearch(unittest.TestCase):
             step_duration=1,
             start_users=1,
             max_users=100,
-            step_multiplier=1.01,  # Very small to trigger next_users == current_users + 1
+            step_multiplier=2.0,
             json_output=None,
         )
 
+        async def _conditional_sim(cfg):
+            stats = pywrkr.WorkerStats()
+            stats.total_requests = 100
+            if cfg.users and cfg.users >= fail_at:
+                stats.errors = 50
+                stats.latencies.extend([2.0] * 100)
+            else:
+                stats.latencies.extend([0.01] * 100)
+            return stats, 0
+
         async def _run():
-            with patch("pywrkr.workers.run_user_simulation", side_effect=mock_run_user_sim):
+            with patch("pywrkr.workers.run_user_simulation", side_effect=_conditional_sim):
                 with patch("sys.stdout", new_callable=StringIO):
-                    # Make some steps fail to trigger binary search
-                    fail_at = 5
-
-                    async def _conditional_sim(cfg):
-                        stats = pywrkr.WorkerStats()
-                        stats.total_requests = 100
-                        # Fail when users >= fail_at by having high error rate
-                        if cfg.users and cfg.users >= fail_at:
-                            stats.errors = 50  # 50% error rate
-                            stats.latencies.extend([2.0] * 100)  # high latency too
-                        else:
-                            stats.latencies.extend([0.01] * 100)
-                        return stats, 0
-
-                    with patch("pywrkr.workers.run_user_simulation", side_effect=_conditional_sim):
-                        steps = await run_autofind(config)
-
+                    steps = await run_autofind(config)
             return steps
 
         steps = asyncio.run(_run())
-        # Should have done exponential ramp + binary search steps
-        self.assertGreater(len(steps), 2)
+        # Phase-1 ramp: users 1, 2, 4 pass; 8 fails → 4 steps
+        # Phase-2 binary search refines [4, 8] → at least one extra step
+        self.assertGreaterEqual(len(steps), 5)
+        tested_users = [s.users for s in steps]
+        # Binary search must probe at least one user count strictly between
+        # last_good (4) and first_bad (8).
+        self.assertTrue(
+            any(4 < u < 8 for u in tested_users),
+            f"No binary-search probe found between 4 and 8; tested={tested_users}",
+        )
 
     def test_autofind_next_users_increment(self):
         """Cover the next_users == current_users branch (line 1426)."""
