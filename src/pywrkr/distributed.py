@@ -346,6 +346,7 @@ async def run_master(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> bool:
         """Return True if the worker passes the HMAC challenge, False otherwise."""
+        assert worker_secret is not None  # only called when worker_secret is truthy
         nonce = os.urandom(32)
         try:
             await asyncio.wait_for(
