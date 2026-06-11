@@ -1008,8 +1008,7 @@ def print_results(
         print("  Percentage of requests served within a certain time:", file=out)
         for pct in [50, 66, 75, 80, 90, 95, 98, 99, 100]:
             print(
-                f"    {pct:>3}%    "
-                f"{format_duration(sorted_lat[_nearest_rank_idx(pct, n)]):>12}",
+                f"    {pct:>3}%    {format_duration(sorted_lat[_nearest_rank_idx(pct, n)]):>12}",
                 file=out,
             )
 
