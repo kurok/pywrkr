@@ -302,7 +302,6 @@ class RequestCounter:
 class WorkerStats:
     """Aggregated statistics collected by a single worker."""
 
-    results: list[RequestResult] = field(default_factory=list)
     total_requests: int = 0
     total_bytes: int = 0
     errors: int = 0
