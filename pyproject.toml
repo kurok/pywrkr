@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: System :: Benchmark",
 ]
 dependencies = [
-    "aiohttp>=3.14.0",
+    "aiohttp~=3.14",
 ]
 
 [project.optional-dependencies]
