@@ -368,7 +368,7 @@ class TestWorkerAuth(unittest.IsolatedAsyncioTestCase):
         for t in pending:
             t.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
-                await t
+                _ = await t
         # Neither task should raise an exception (auth-rejected path raises nothing,
         # but the task itself would return None rather than stats)
         for t in done:
@@ -396,7 +396,7 @@ class TestWorkerAuth(unittest.IsolatedAsyncioTestCase):
             writer.close()
             master_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
-                await master_task
+                _ = await master_task
 
     async def test_no_auth_when_no_secret(self):
         """Master with no secret accepts a worker without any auth exchange."""
@@ -411,7 +411,7 @@ class TestWorkerAuth(unittest.IsolatedAsyncioTestCase):
             writer.close()
             master_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
-                await master_task
+                _ = await master_task
 
     async def test_auth_timeout_on_no_response(self):
         """A worker that connects but sends no auth response is dropped."""
@@ -429,7 +429,7 @@ class TestWorkerAuth(unittest.IsolatedAsyncioTestCase):
             writer.close()
             master_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
-                await master_task
+                _ = await master_task
 
 
 if __name__ == "__main__":
