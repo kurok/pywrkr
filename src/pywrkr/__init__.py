@@ -174,4 +174,3 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
-_merge_all_stats = merge_stats  # backward-compat alias
