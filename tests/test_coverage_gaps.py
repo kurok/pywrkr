@@ -238,7 +238,7 @@ class TestStepLatencyOverflow:
     def test_merge_step_latencies_overflow(self):
         """Line 288: _merge_all_stats step latency overflow."""
         from pywrkr.workers import _MAX_STEP_NAMES
-        from pywrkr.workers import _merge_all_stats as merge_all_stats
+        from pywrkr.workers import merge_stats as merge_all_stats
 
         stats1 = WorkerStats()
         stats2 = WorkerStats()
