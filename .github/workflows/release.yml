@@ -51,18 +51,18 @@ jobs:
     - name: Generate changelog from commits
       id: changelog
       run: |
-        # Get commits since the previous tag
         PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
         if [ -n "$PREV_TAG" ]; then
           RANGE="${PREV_TAG}..HEAD"
         else
           RANGE="HEAD"
         fi
+        DELIM="CHANGELOG_$(uuidgen)"
         {
-          echo "changelog<<EOF"
+          echo "changelog<<$DELIM"
           git log "$RANGE" --pretty=format:"- %s (%h)" --no-merges
           echo ""
-          echo "EOF"
+          echo "$DELIM"
         } >> "$GITHUB_OUTPUT"
 
     - name: Create GitHub Release

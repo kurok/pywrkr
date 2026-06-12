@@ -132,7 +132,7 @@ Coverage uploads to Codecov from Ubuntu/3.12 job.
 - HAR import is a subcommand (`pywrkr har-import`) — keep it decoupled from core benchmarking logic
 - Distributed mode uses TCP protocol on port 9220 — be careful with serialization changes
 - Observability exports (OTel, Prometheus) are optional deps — guard imports with try/except
-- When releasing, update version in both `pyproject.toml` and `src/pywrkr/__init__.py`
+- When releasing, update `version` in `pyproject.toml` only — `__version__` is derived from installed package metadata via `importlib.metadata` (see #149), so there is no second location to update
 - Release automation triggers on `v*` tags — verifies version matches pyproject.toml
 - Timing-sensitive tests should assert on **total elapsed time**, not individual intervals (CI runners have jitter)
 - pytest runs with `-n 7` by default (parallel) — tests must not depend on shared state
