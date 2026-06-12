@@ -46,8 +46,6 @@ from pywrkr.traffic_profiles import RateLimiter
 # Re-export aggregate_breakdowns for backward compatibility
 __all__ = ["aggregate_breakdowns"]
 
-_merge_all_stats = merge_stats  # backward-compat alias; canonical impl is in config.merge_stats
-
 logger = logging.getLogger(__name__)
 
 
@@ -245,14 +243,13 @@ class LiveDashboard:
         """Update the dashboard every 0.5s until stop_event is set."""
         from rich.live import Live
 
-        loop = asyncio.get_running_loop()
         pct_pairs = None
         with Live(self._build_display(pct_pairs), refresh_per_second=2) as live:
             while not stop_event.is_set():
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(stop_event.wait(), timeout=0.5)
                     break
-                pct_pairs = await loop.run_in_executor(None, self._sample_percentiles)
+                pct_pairs = await asyncio.to_thread(self._sample_percentiles)
                 live.update(self._build_display(pct_pairs))
 
 
@@ -1051,9 +1048,6 @@ async def _finalize_run(
 ) -> tuple[WorkerStats, int]:
     """Await workers, merge stats, print results, and evaluate thresholds."""
     worker_crashed = False
-    # Initialize to start_time so the variable is always bound even if
-    # asyncio.gather raises (e.g. CancelledError) before we can sample it.
-    end_time = start_time
     try:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         # Sample end_time immediately after the workers finish, BEFORE tearing
