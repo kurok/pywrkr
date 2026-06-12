@@ -550,7 +550,7 @@ class TestMergeAllStatsAudit(unittest.TestCase):
         ws2.latencies = ReservoirSampler.from_list([0.02] * cap, capacity=cap, total_seen=500_000)
         ws1.total_requests = ws2.total_requests = 500_000
 
-        merged = workers._merge_all_stats([ws1, ws2])
+        merged = workers.merge_stats([ws1, ws2])
         # Pre-fix: total_seen collapsed to the surviving sample count.
         self.assertEqual(merged.latencies.total_seen, 1_000_000)
         self.assertLessEqual(len(merged.latencies), cap)
@@ -562,7 +562,7 @@ class TestMergeAllStatsAudit(unittest.TestCase):
         ws2 = WorkerStats()
         ws1.rps_timeline = [(1000.0, 5), (1001.0, 7)]
         ws2.rps_timeline = [(2000.0, 3), (2001.0, 9)]
-        merged = workers._merge_all_stats([ws1, ws2])
+        merged = workers.merge_stats([ws1, ws2])
         # Each worker's monotonic origin is rebased to 0, so no raw timestamp
         # (>= 1000) survives; entries land on a shared [0, duration) axis.
         self.assertTrue(all(ts < 2.0 for ts, _ in merged.rps_timeline))

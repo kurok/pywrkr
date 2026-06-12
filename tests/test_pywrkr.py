@@ -5950,7 +5950,7 @@ class TestDistributedHelpers(unittest.TestCase):
         asyncio.run(_run())
 
     def test_merge_worker_stats_step_latency_cap(self):
-        from pywrkr.workers import _MAX_STEP_NAMES, _merge_all_stats
+        from pywrkr.workers import _MAX_STEP_NAMES, merge_stats as _merge_all_stats
 
         stats1 = pywrkr.WorkerStats()
         # Fill up to the cap
@@ -6360,7 +6360,7 @@ class TestWorkerStepLatencyMergeCap(unittest.TestCase):
     """Cover _merge_all_stats step_latencies cap when merging overflow."""
 
     def test_merge_overflow_step_names(self):
-        from pywrkr.workers import _MAX_STEP_NAMES, _merge_all_stats
+        from pywrkr.workers import _MAX_STEP_NAMES, merge_stats as _merge_all_stats
 
         # One stats fills up to cap, another has a new key
         stats1 = pywrkr.WorkerStats()
