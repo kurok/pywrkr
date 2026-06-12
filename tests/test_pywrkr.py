@@ -5950,7 +5950,7 @@ class TestDistributedHelpers(unittest.TestCase):
         asyncio.run(_run())
 
     def test_merge_worker_stats_step_latency_cap(self):
-        from pywrkr.workers import _MAX_STEP_NAMES, merge_stats as _merge_all_stats
+        from pywrkr.workers import _MAX_STEP_NAMES, merge_stats
 
         stats1 = pywrkr.WorkerStats()
         # Fill up to the cap
@@ -5960,7 +5960,7 @@ class TestDistributedHelpers(unittest.TestCase):
         stats2 = pywrkr.WorkerStats()
         stats2.step_latencies["overflow_step"] = [0.2]
 
-        merged = _merge_all_stats([stats1, stats2])
+        merged = merge_stats([stats1, stats2])
         # The overflow step should be folded into "[other steps]"
         self.assertIn("[other steps]", merged.step_latencies)
 
@@ -6360,7 +6360,7 @@ class TestWorkerStepLatencyMergeCap(unittest.TestCase):
     """Cover _merge_all_stats step_latencies cap when merging overflow."""
 
     def test_merge_overflow_step_names(self):
-        from pywrkr.workers import _MAX_STEP_NAMES, merge_stats as _merge_all_stats
+        from pywrkr.workers import _MAX_STEP_NAMES, merge_stats
 
         # One stats fills up to cap, another has a new key
         stats1 = pywrkr.WorkerStats()
@@ -6370,7 +6370,7 @@ class TestWorkerStepLatencyMergeCap(unittest.TestCase):
         stats2 = pywrkr.WorkerStats()
         stats2.step_latencies["brand_new_step"] = [0.02]
 
-        merged = _merge_all_stats([stats1, stats2])
+        merged = merge_stats([stats1, stats2])
         self.assertIn("[other steps]", merged.step_latencies)
         self.assertIn(0.02, merged.step_latencies["[other steps]"])
 

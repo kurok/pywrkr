@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/kurok/pywrkr/actions/workflows/python-package.yml/badge.svg)](https://github.com/kurok/pywrkr/actions/workflows/python-package.yml)
 [![CodeQL](https://github.com/kurok/pywrkr/actions/workflows/codeql.yml/badge.svg)](https://github.com/kurok/pywrkr/actions/workflows/codeql.yml)
-[![PyPI version](https://img.shields.io/pypi/v/pywrkr)](https://pypi.org/project/pywrkr/)
+[![Latest release](https://img.shields.io/github/v/release/kurok/pywrkr)](https://github.com/kurok/pywrkr/releases/latest)
 [![Python versions](https://img.shields.io/pypi/pyversions/pywrkr)](https://pypi.org/project/pywrkr/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/kurok/pywrkr/graph/badge.svg)](https://codecov.io/gh/kurok/pywrkr)
