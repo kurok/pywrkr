@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 import pywrkr
 from pywrkr.config import DEFAULT_RESERVOIR_SIZE, ReservoirSampler
+from pywrkr.config import normalize_timeline as _normalize_timeline
 from pywrkr.distributed import (
     _deserialize_config,
-    _normalize_timeline,
     _recv_msg,
     _serialize_config,
     _serialize_stats,
