@@ -6531,7 +6531,7 @@ class TestReportingRichImport(unittest.TestCase):
         import importlib
         import unittest.mock as _mock
 
-        import pywrkr.reporting as reporting_mod
+        reporting_mod = importlib.import_module("pywrkr.reporting")
 
         mock_spec = _mock.MagicMock()
         with _mock.patch("importlib.util.find_spec", return_value=mock_spec):

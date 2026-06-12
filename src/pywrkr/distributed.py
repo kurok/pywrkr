@@ -25,9 +25,6 @@ from pywrkr.config import (
     WorkerStats,
     merge_stats,
 )
-from pywrkr.config import (
-    normalize_timeline as _normalize_timeline,  # noqa: F401 (re-exported for tests)
-)
 from pywrkr.reporting import (
     evaluate_thresholds,
     print_results,
