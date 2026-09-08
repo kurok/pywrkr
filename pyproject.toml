@@ -101,3 +101,8 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+
+[tool.uv]
+# Transitive via pip-audit (the `security` extra). Floor for GHSA-qwm4-qh6w-59xr /
+# CVE-2026-13346 (doubly-encoded index URLs), fixed in pip 26.2.0.
+constraint-dependencies = ["pip>=26.2.0"]
