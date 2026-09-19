@@ -289,7 +289,7 @@ def upsert_pr_comment(
     token: str,
     api_url: str = "https://api.github.com",
     marker: str = COMMENT_MARKER,
-    request: Callable[..., Any] | None = None,
+    request: Callable[..., Any] = _github_request,
 ) -> str:
     """Edit this action's previous comment, or post the first one.
 
@@ -297,10 +297,14 @@ def upsert_pr_comment(
     a bot that appends a fresh comment on every push is the usual reason a
     performance action gets uninstalled.
     """
-    # Typed rather than Any: with Any, nothing can tell that what gets called
-    # below is callable, including CodeQL, which reported py/call-to-non-callable
-    # on all three call sites once the GET moved into a loop.
-    call: Callable[..., Any] = _github_request if request is None else request
+    # The injection point defaults to the real function rather than to None.
+    #
+    # It used to be `request: Any = None` with a `None`-check here, which meant
+    # a None was genuinely reachable at every call site as far as any analysis
+    # could tell -- CodeQL reported py/call-to-non-callable on all three once
+    # the GET moved into a loop. Defaulting to the function removes the None
+    # instead of explaining it away, and no caller ever passed one.
+    call = request
     base = f"{api_url.rstrip('/')}/repos/{repo}/issues/{issue_number}/comments"
     if marker not in body:
         body = f"{marker}\n{body}"
