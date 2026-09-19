@@ -19,6 +19,10 @@ class TrafficProfile:
     """
 
     name: str = "custom"
+    #: The ``--traffic-profile`` string this profile was parsed from, when it
+    #: came from one. Distributed mode ships it to the workers so they shape
+    #: their load the same way the master was asked to.
+    spec: "str | None" = None
 
     def rate_at(self, elapsed: float, duration: float, base_rate: float) -> float:
         """Return the target RPS at *elapsed* seconds into a test of *duration*."""
@@ -248,6 +252,34 @@ class CsvProfile(TrafficProfile):
         self._is_multiplier: bool = False
         self._load(filepath)
 
+    @classmethod
+    def from_points(
+        cls, filepath: str, points: "list[tuple[float, float]]", is_multiplier: bool
+    ) -> "CsvProfile":
+        """Build a profile from already-parsed points, reading no file.
+
+        A distributed worker has the master's CSV path but not the file, so the
+        points travel on the wire instead.
+        """
+        profile = cls.__new__(cls)
+        profile.filepath = filepath
+        profile._times = [float(t) for t, _ in points]
+        profile._values = [float(v) for _, v in points]
+        profile._is_multiplier = is_multiplier
+        if not profile._times:
+            raise ValueError("CSV traffic profile has no data points")
+        return profile
+
+    @property
+    def points(self) -> "list[tuple[float, float]]":
+        """The parsed (time, value) pairs, for serialization."""
+        return list(zip(self._times, self._values))
+
+    @property
+    def is_multiplier(self) -> bool:
+        """True when the CSV's second column scales base_rate rather than setting it."""
+        return self._is_multiplier
+
     def _load(self, filepath: str) -> None:
         """Load and parse CSV data points from file."""
         with open(filepath, newline="") as f:
@@ -348,7 +380,9 @@ def parse_traffic_profile(spec: str) -> TrafficProfile:
     if name == "csv":
         if not params_str:
             raise ValueError("csv profile requires a file path: csv:path/to/file.csv")
-        return CsvProfile(params_str.strip())
+        csv_profile = CsvProfile(params_str.strip())
+        csv_profile.spec = spec
+        return csv_profile
 
     if name not in _BUILTIN_PROFILES:
         available = ", ".join(sorted(list(_BUILTIN_PROFILES.keys()) + ["csv"]))
@@ -364,7 +398,9 @@ def parse_traffic_profile(spec: str) -> TrafficProfile:
         if not levels_str.strip():
             raise ValueError("step profile requires levels: step:100,500,1000")
         levels = [float(x.strip()) for x in levels_str.split(",") if x.strip()]
-        return StepProfile(levels=levels)
+        step_profile = StepProfile(levels=levels)
+        step_profile.spec = spec
+        return step_profile
 
     # Parse key=value params for all other profiles
     kwargs: dict[str, str] = {}
@@ -388,7 +424,9 @@ def parse_traffic_profile(spec: str) -> TrafficProfile:
             raise ValueError(f"Invalid parameter for {name} profile: {k}={v!r}")
 
     try:
-        return cls(**typed_kwargs)
+        profile = cls(**typed_kwargs)
+        profile.spec = spec
+        return profile
     except TypeError as e:
         params = ", ".join(typed_kwargs) or "(none accepted)"
         raise ValueError(f"Invalid parameter(s) for {name} profile: {params} ({e})") from e

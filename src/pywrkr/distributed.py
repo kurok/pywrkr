@@ -42,6 +42,7 @@ from pywrkr.reporting import (
     print_threshold_results,
     run_baseline_gate,
 )
+from pywrkr.traffic_profiles import CsvProfile, TrafficProfile, parse_traffic_profile
 from pywrkr.workers import run_benchmark, run_user_simulation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -217,6 +218,47 @@ def _shard_config_feeders(config_data: dict, index: int, count: int) -> dict:
     return {**config_data, "scenario": {**scenario, "data": sharded}}
 
 
+def _serialize_traffic_profile(profile: "TrafficProfile | None") -> "dict | None":
+    """Put a --traffic-profile on the wire.
+
+    Built-ins travel as the spec string the worker re-parses. A csv profile
+    carries its parsed points instead: the worker has the master's file path
+    but not the file. Without this the key was simply absent, every worker
+    deserialized ``traffic_profile=None`` and ran a flat --rate -- and the
+    report was labelled as a shaped run that never happened.
+    """
+    if profile is None:
+        return None
+    if isinstance(profile, CsvProfile):
+        return {
+            "kind": "csv",
+            "filepath": profile.filepath,
+            "points": [[t, v] for t, v in profile.points],
+            "is_multiplier": profile.is_multiplier,
+        }
+    if profile.spec is None:
+        raise ValueError(
+            f"Cannot send traffic profile {profile.describe()!r} to workers: it was built "
+            f"programmatically rather than parsed from --traffic-profile, so there is nothing "
+            f"to reconstruct it from."
+        )
+    return {"kind": "spec", "spec": profile.spec}
+
+
+def _deserialize_traffic_profile(data: "dict | None") -> "TrafficProfile | None":
+    if data is None:
+        return None
+    if data.get("kind") == "csv":
+        profile: TrafficProfile = CsvProfile.from_points(
+            data.get("filepath", "<master>"),
+            [(float(t), float(v)) for t, v in data.get("points", [])],
+            bool(data.get("is_multiplier", False)),
+        )
+    else:
+        profile = parse_traffic_profile(data["spec"])
+    return profile
+
+
 def _serialize_config(config: BenchmarkConfig) -> dict:
     """Serialize a BenchmarkConfig to a JSON-safe dict for network transport."""
     return {
@@ -240,6 +282,7 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
         "random_param": config.random_param,
         "rate": config.rate,
         "rate_ramp": config.rate_ramp,
+        "traffic_profile": _serialize_traffic_profile(config.traffic_profile),
         "latency_breakdown": config.latency_breakdown,
         "users": config.users,
         "ramp_up": config.ramp_up,
@@ -295,6 +338,7 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
         random_param=data.get("random_param", False),
         rate=data.get("rate"),
         rate_ramp=data.get("rate_ramp"),
+        traffic_profile=_deserialize_traffic_profile(data.get("traffic_profile")),
         latency_breakdown=data.get("latency_breakdown", False),
         users=data.get("users"),
         ramp_up=data.get("ramp_up", 0.0),

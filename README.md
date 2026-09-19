@@ -1413,6 +1413,10 @@ pywrkr --rate 2000 -d 300 --traffic-profile business-hours http://localhost:8080
 pywrkr --rate 1000 -d 300 --traffic-profile "csv:traffic.csv" http://localhost:8080/
 ```
 
+**Distributed runs are shaped too.** The profile travels to every worker, so `--master
+--traffic-profile sine` really does produce a sine across the cluster. A `csv:` profile sends its
+parsed points rather than the path — the workers do not need the master's file.
+
 **Built-in profiles:**
 
 | Profile | Pattern | Use case |
