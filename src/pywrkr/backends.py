@@ -365,7 +365,15 @@ def finalize_breakdown(stats: WorkerStats, ctx: dict, read_body: bool) -> None:
 class AiohttpSession(BackendSession):
     """aiohttp ClientSession wrapper."""
 
-    __slots__ = ("_session", "_ssl", "_jar", "_timeout_sec", "_timeout", "_stats")
+    __slots__ = (
+        "_session",
+        "_ssl",
+        "_jar",
+        "_timeout_sec",
+        "_timeout",
+        "_stats",
+        "_follow_redirects",
+    )
 
     def __init__(
         self,
@@ -373,10 +381,12 @@ class AiohttpSession(BackendSession):
         ssl_verify: bool,
         jar,
         stats: "WorkerStats | None" = None,
+        follow_redirects: bool = False,
     ) -> None:
         self._session = session
         self._ssl = ssl_verify
         self._jar = jar
+        self._follow_redirects = follow_redirects
         # Only set when the run asked for a latency breakdown: finalizing one
         # needs the body-read to be over, which is here rather than in a trace
         # hook.
@@ -420,6 +430,10 @@ class AiohttpSession(BackendSession):
             ssl=self._ssl,
             timeout=self._client_timeout(timeout_sec),
             trace_request_ctx=trace_ctx,
+            # aiohttp's default is to follow up to 10 hops silently: the 3xx
+            # never lands in status_codes, the latency covers the whole chain,
+            # and the target chooses which host the benchmark actually hits.
+            allow_redirects=self._follow_redirects,
         ) as resp:
             if read_body:
                 data = await resp.read()
@@ -491,6 +505,7 @@ class AiohttpBackend(Backend):
             self._ssl_verify,
             jar,
             stats if self._config.latency_breakdown else None,
+            self._config.follow_redirects,
         )
 
     async def aclose(self) -> None:
@@ -658,7 +673,7 @@ class HttpxBackend(Backend):
             http1=not self._cleartext,
             limits=self._limits,
             verify=self._verify(),
-            follow_redirects=False,
+            follow_redirects=self._config.follow_redirects,
             timeout=self._httpx.Timeout(self._config.timeout_sec),
         )
         return HttpxSession(

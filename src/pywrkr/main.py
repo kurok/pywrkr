@@ -151,6 +151,15 @@ def _add_core_options(parser: argparse.ArgumentParser) -> None:
         "static -C cookies (e.g. when benchmarking a cache or CDN layer).",
     )
     parser.add_argument(
+        "--follow-redirects",
+        action="store_true",
+        default=False,
+        help="Follow 3xx responses (up to the client's hop limit) instead of "
+        "measuring them. Off by default, as in wrk and ab: a followed redirect "
+        "never appears in the status-code distribution, its latency covers the "
+        "whole chain, and the server chooses which host is actually benchmarked",
+    )
+    parser.add_argument(
         "--http2",
         action="store_true",
         default=False,
@@ -1100,6 +1109,7 @@ _HTTP_ONLY_IN_WS_MODE = (
     ("post_file", "-p/--post-file", None),
     ("num_requests", "-n/--num-requests", None),
     ("http2", "--http2", False),
+    ("follow_redirects", "--follow-redirects", False),
     ("latency_breakdown", "--latency-breakdown", False),
     ("random_param", "-R/--random-param", False),
     ("verify_length", "-l/--verify-length", False),
@@ -1654,6 +1664,7 @@ def _parse_and_validate_args(
         cookies=args.cookies,
         session_cookies=args.session_cookies,
         http2=args.http2,
+        follow_redirects=args.follow_redirects,
         verify_content_length=args.verify_length,
         verbosity=args.verbosity,
         csv_output=args.csv,
