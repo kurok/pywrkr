@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping
@@ -255,9 +256,19 @@ def _build_config(target: "str | BenchmarkConfig", kwargs: dict[str, Any]) -> Be
     else:
         if not isinstance(target, str) or not target.strip():
             raise TypeError("The first argument must be a target URL or a pywrkr.Config")
-        unknown = [k for k in kwargs if not hasattr(BenchmarkConfig, k) and k != "url"]
+        # dataclasses.fields, not hasattr: a field declared with
+        # field(default_factory=...) is not a class attribute, so hasattr said
+        # headers/cookies/tags/thresholds/ssl_config/fail_on did not exist and
+        # the public API rejected every one of them.
+        known = {f.name for f in dataclasses.fields(BenchmarkConfig)}
+        unknown = [k for k in kwargs if k not in known or k == "url"]
         if unknown:
-            raise TypeError(f"Unknown option(s): {', '.join(sorted(unknown))}")
+            message = f"Unknown option(s): {', '.join(sorted(unknown))}"
+            if "url" in unknown:
+                # Previously this slipped through and surfaced as
+                # "got multiple values for keyword argument 'url'".
+                message += ". The target URL is the first argument."
+            raise TypeError(message)
         config = BenchmarkConfig(url=target, thresholds=thresholds, **kwargs)
 
     # Library mode: no banner, no result printing, no output files unless the

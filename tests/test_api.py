@@ -167,6 +167,49 @@ class TestArgumentHandling(unittest.IsolatedAsyncioTestCase):
             await pywrkr.arun("http://example.com", nonsense=1)
         self.assertIn("nonsense", str(ctx.exception))
 
+    async def test_run_accepts_headers_and_cookies_kwargs(self):
+        """Every Config field must be reachable, including default_factory ones.
+
+        _build_config validated kwargs with hasattr(BenchmarkConfig, k), and a
+        field declared with field(default_factory=...) is not a class
+        attribute -- so the public API rejected headers, cookies, tags,
+        thresholds, ssl_config and fail_on, all of which the docstring promises.
+        """
+        from pywrkr.api import _build_config
+
+        config = _build_config(
+            "http://example.com",
+            {"headers": {"X-A": "1"}, "cookies": ["a=b"], "tags": {"env": "t"}},
+        )
+        self.assertEqual(config.headers, {"X-A": "1"})
+        self.assertEqual(config.cookies, ["a=b"])
+        self.assertEqual(config.tags, {"env": "t"})
+
+    async def test_every_config_field_is_accepted(self):
+        """The guard against this drifting again as fields are added."""
+        import dataclasses
+
+        from pywrkr.api import _build_config
+
+        rejected = []
+        for field in dataclasses.fields(pywrkr.Config):
+            if field.name == "url":
+                continue
+            try:
+                _build_config(
+                    "http://example.com", {field.name: getattr(pywrkr.Config(url="x"), field.name)}
+                )
+            except TypeError as exc:
+                if "Unknown option" in str(exc):
+                    rejected.append(field.name)
+        self.assertEqual(rejected, [], f"public API rejects Config fields: {rejected}")
+
+    async def test_url_keyword_says_where_the_url_goes(self):
+        """It used to reach the dataclass and raise 'multiple values for url'."""
+        with self.assertRaises(TypeError) as ctx:
+            await pywrkr.arun("http://example.com", url="http://elsewhere/")
+        self.assertIn("first argument", str(ctx.exception))
+
     async def test_rejects_keywords_alongside_a_config(self):
         config = pywrkr.Config(url="http://example.com")
         with self.assertRaises(TypeError) as ctx:

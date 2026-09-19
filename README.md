@@ -151,6 +151,12 @@ assert result.error_rate < 1.0
 print(f"{result.requests_per_sec:,.0f} req/s over {result.duration:.1f}s")
 ```
 
+Any `Config` field works as a keyword — `headers`, `cookies`, `tags` and `ssl_config` included:
+
+```python
+result = pywrkr.run(url, headers={"Authorization": "Bearer …"}, tags={"env": "staging"})
+```
+
 Nothing is printed, no signal handlers are installed, and a breached threshold comes back as a
 **verdict on the result** rather than an `exit()`:
 
