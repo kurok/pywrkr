@@ -126,6 +126,16 @@ pywrkr har-import recording.har --no-think-time -o scenario.json               #
 | `--think-time-multiplier` | Scale derived think times (default: 1.0) |
 | `--assert-status` | Assert recorded 2xx/3xx status codes |
 
+> **Recorded credentials.** A HAR captured from a logged-in session contains
+> whatever that session was authenticating with. `--preserve-headers` keeps
+> `Authorization`, `X-API-Key` and similar, and the query string is copied into
+> the step path whether or not that flag is used — so `?access_token=...` ends
+> up in the generated file too. These are deliberately not stripped, because a
+> scenario is usually replayed against the same environment, but `har-import`
+> warns when it writes something that looks like a credential. Replace the
+> values with a template such as `${token}` and supply them at run time before
+> committing the file.
+
 ## Library usage
 
 pywrkr is pure Python, so a load test can live *inside* a pytest suite, a notebook, or an
