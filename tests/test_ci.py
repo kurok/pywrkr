@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
+import re
 import unittest
 from io import StringIO
 from pathlib import Path
@@ -661,3 +663,63 @@ class TestStepThresholds(unittest.TestCase):
         out = self.outcome("step:checkout error_rate < 5%", results)
         self.assertAlmostEqual(out.actual, 20.0)
         self.assertFalse(out.passed)
+
+
+class TestDockerfile(unittest.TestCase):
+    """The published image is what people actually run.
+
+    These read the Dockerfile rather than the built image, so they catch a
+    regression in a unit run; docker-publish.yml asks the built image the same
+    questions, which is the check that cannot be fooled by a later layer.
+    """
+
+    @property
+    def dockerfile(self) -> str:
+        root = pathlib.Path(__file__).resolve().parent.parent
+        return (root / "Dockerfile").read_text()
+
+    def test_dockerfile_has_user_and_pinned_base(self):
+        text = self.dockerfile
+
+        # A load generator opens sockets and writes reports. Neither needs uid 0,
+        # and this runs on Fargate.
+        self.assertRegex(text, r"(?m)^USER\s+\S+", "the runtime stage must drop root")
+
+        # Every FROM pinned by digest: a floating tag makes the build-provenance
+        # attestation attest to inputs that can change underneath it.
+        froms = re.findall(r"(?m)^FROM\s+(\S+)", text)
+        self.assertTrue(froms, "no FROM found")
+        for ref in froms:
+            self.assertIn("@sha256:", ref, f"unpinned base image: {ref}")
+
+        # Same for the tool image copied in.
+        for ref in re.findall(r"COPY --from=(\S+)", text):
+            if "/" in ref:  # a registry reference rather than a build stage
+                self.assertIn("@sha256:", ref, f"unpinned COPY --from image: {ref}")
+
+    def test_dockerfile_is_not_on_a_prerelease_interpreter(self):
+        # The published image ran python:3.15-rc-alpine, which has no prebuilt
+        # musllinux wheels, so aiohttp compiled from source at build time.
+        self.assertNotIn("-rc-", self.dockerfile)
+
+    def test_healthcheck_uses_a_command_that_exists(self):
+        lines = self.dockerfile.splitlines()
+        idx = [i for i, ln in enumerate(lines) if ln.startswith("HEALTHCHECK")]
+        self.assertTrue(idx, "no HEALTHCHECK")
+
+        # The directive plus any continuation lines -- scoped deliberately,
+        # because the comment above it mentions --version and a whole-file
+        # search would match that instead of the command.
+        directive = []
+        i = idx[0]
+        while i < len(lines):
+            directive.append(lines[i])
+            if not lines[i].rstrip().endswith("\\"):
+                break
+            i += 1
+        command = "\n".join(directive)
+
+        # pywrkr has no --version flag, so that probe would fail on every
+        # interval and mark the container permanently unhealthy.
+        self.assertNotIn("--version", command, f"unusable health command: {command}")
+        self.assertIn("--help", command)
