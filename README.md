@@ -315,7 +315,8 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
               [--step-duration STEP_DURATION] [--start-users START_USERS]
               [--max-users MAX_USERS] [--step-multiplier STEP_MULTIPLIER]
               [--url-file FILE] [--master] [--worker HOST:PORT]
-              [--expect-workers N] [--bind ADDR] [--port PORT]
+              [--worker-secret SECRET] [--expect-workers N] [--bind ADDR]
+              [--port PORT]
               [url]
 ```
 
@@ -845,8 +846,20 @@ pywrkr -c 50 -d 30 --json results.json http://localhost:8080/
 pywrkr summary results.json \
        --threshold "p95 < 500ms" \
        --baseline perf/baseline.json --fail-on "p95 > +10%" \
+       --title "Checkout API" --target "staging" \
        --output report.md --github-output "$GITHUB_OUTPUT"
 ```
+
+| Option | Description |
+|--------|-------------|
+| `--threshold` | Threshold to re-check against the results; repeatable |
+| `--baseline` | Baseline file or glob to compare against |
+| `--fail-on` | Regression rule against the baseline delta; repeatable |
+| `--title` | Heading for the report (default: `pywrkr performance report`) |
+| `--target` | Target label shown under the heading |
+| `--marker` | Prepend the hidden marker the GitHub Action uses to edit its own comment instead of posting a new one |
+| `-o`, `--output` | Write the markdown here instead of stdout |
+| `--github-output` | Append `key=value` action outputs to this file (usually `$GITHUB_OUTPUT`) |
 
 It re-reads the results file rather than re-running anything, and exits `0` / `2` / `3` on the same
 rules as the main command.
@@ -1092,7 +1105,7 @@ pywrkr openapi-import spec.yaml --include '/api/v2' --exclude '/admin' \
 | `--name` | Scenario name (default: the spec's `info.title`) |
 | `--method` | Method to include; repeatable. **Default: GET and HEAD only** |
 | `--include` / `--exclude` | Path regexes; repeatable. Exclude wins |
-| `--tag` | Only operations carrying this tag; repeatable |
+| `--tag` (`--tag-filter`) | Only operations carrying this tag; repeatable |
 | `--base-url` | Override the spec's `servers[]` entry |
 | `--assert-status` | Add `assert_status` from each operation's documented success code |
 | `--think-time` | Scenario-wide think time between steps |
@@ -1692,11 +1705,24 @@ pywrkr --worker master-host:9220
 |------|-------------|
 | `--master` | Run as distributed master (coordinates workers) |
 | `--worker HOST:PORT` | Run as distributed worker, connecting to master at HOST:PORT |
+| `--worker-secret SECRET` | Shared secret authenticating the master/worker channel (HMAC-SHA256). Also read from `PYWRKR_WORKER_SECRET` |
 | `--expect-workers` | Number of workers the master should wait for before starting |
 | `--bind` | Master bind address (default: `0.0.0.0`) |
 | `--port` | Master listen port (default: `9220`) |
 
 The master splits the workload evenly across workers, collects results, and produces a single aggregated report.
+
+**Set `--worker-secret` on any run that leaves localhost.** Without it the control channel is
+unauthenticated: anything that can reach the master's port can register as a worker and feed it
+results, and anything that can reach a worker can hand it a config and make it generate traffic.
+The master and every worker must use the same value, and passing it through the environment keeps
+it out of the process table:
+
+```bash
+export PYWRKR_WORKER_SECRET='...'          # on the master and on every worker
+pywrkr http://target:8080/ --master --expect-workers 3 -c 300 -d 60
+pywrkr --worker master-host:9220
+```
 
 ### TLS / SSL Verification
 

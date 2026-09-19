@@ -6,17 +6,22 @@ _resolve_body, _parse_tags_and_thresholds, _parse_and_validate_args,
 _determine_and_run_mode, _run_har_import, and main().
 """
 
+import argparse
 import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from pywrkr.main import (
+    _build_compare_parser,
     _build_har_import_parser,
+    _build_openapi_import_parser,
     _build_parser,
+    _build_summary_parser,
     _parse_and_validate_args,
     _run_har_import,
     main,
@@ -582,3 +587,47 @@ class TestSslCredentialWarning:
         _parse(["-A", "user:pass", "http://example.com/"])
         captured = capsys.readouterr()
         assert "WARNING" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# README / argparse parity
+# ---------------------------------------------------------------------------
+
+# Flags argparse adds for us, or that exist only as internal plumbing, and so
+# have nothing to document.
+_README_PARITY_ALLOWLIST = {"--help"}
+
+
+def _collect_long_options(parser):
+    """Every ``--long`` option string in a parser, following its subparsers."""
+    found = set()
+    for action in parser._actions:
+        found.update(s for s in action.option_strings if s.startswith("--"))
+        if isinstance(action, argparse._SubParsersAction):
+            for subparser in action.choices.values():
+                found |= _collect_long_options(subparser)
+    return found
+
+
+def test_readme_documents_every_cli_flag():
+    """CLAUDE.md requires README parity with argparse; this is the guard."""
+    parsers = [
+        _build_parser(),
+        _build_compare_parser(),
+        _build_har_import_parser(),
+        _build_openapi_import_parser(),
+        _build_summary_parser(),
+    ]
+    flags = set()
+    for parser in parsers:
+        flags |= _collect_long_options(parser)
+    flags -= _README_PARITY_ALLOWLIST
+
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    undocumented = sorted(flag for flag in flags if flag not in readme)
+
+    assert not undocumented, (
+        "CLI flags missing from README.md: "
+        + ", ".join(undocumented)
+        + " — document them or add them to _README_PARITY_ALLOWLIST with a reason."
+    )
