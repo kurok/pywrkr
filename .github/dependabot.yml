@@ -19,3 +19,16 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 5
+
+  # The Dockerfile pins its base and tool images by digest, which is what makes
+  # the build-provenance attestation mean anything -- and what makes them go
+  # stale silently without something watching them.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "fix(deps)"
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 5

@@ -60,8 +60,40 @@ jobs:
           context: .
           # Build on PRs to validate the image; only push on main/release.
           push: ${{ github.event_name != 'pull_request' }}
+          # Loaded into the local daemon as well, so the checks below can run
+          # against the image that was actually built -- on a pull request
+          # nothing is pushed, so there would otherwise be nothing to inspect.
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # A Dockerfile can say USER and still ship an image that runs as root if
+      # a later layer changes it back, so this asks the built image rather than
+      # reading the source.
+      - name: The image does not run as root and has a health check
+        run: |
+          set -euo pipefail
+          image="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+          echo "inspecting $image"
+
+          uid="$(docker run --rm --entrypoint id "$image" -u)"
+          if [ "$uid" = "0" ]; then
+            echo "::error::the image runs as root (uid 0)"
+            exit 1
+          fi
+          echo "runs as uid $uid"
+
+          health="$(docker inspect --format '{{json .Config.Healthcheck}}' "$image")"
+          if [ "$health" = "null" ]; then
+            echo "::error::the image has no HEALTHCHECK"
+            exit 1
+          fi
+          echo "healthcheck: $health"
+
+          # And the health command has to succeed, or the container is
+          # permanently unhealthy. pywrkr has no --version, which is the
+          # obvious thing to reach for here.
+          docker run --rm "$image" --help > /dev/null
 
       - name: Attest build provenance
         if: github.event_name != 'pull_request'
