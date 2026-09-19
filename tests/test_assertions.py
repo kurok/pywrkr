@@ -710,9 +710,19 @@ class TestAssertionsIntegration(AioHTTPTestCase):
         with open(json_path, encoding="utf-8") as fh:
             results = json.load(fh)
         self.assertEqual(set(results["step_stats"]), {"fast", "slow"})
-        self.assertGreater(
-            results["step_stats"]["slow"]["p95"], results["step_stats"]["fast"]["p95"]
-        )
+        # Compare medians, not p95. A 0.6s run at ~50ms per iteration yields
+        # about ten samples per step, so p95 is effectively the maximum: one
+        # scheduling spike on a loaded runner made the fast step's p95 beat the
+        # slow step's (seen on macos-latest 3.13: 0.081356 vs 0.071880). The
+        # median cannot be moved by a single outlier, and the claim under test
+        # -- that the 50ms handler is the slower step -- is about the typical
+        # request, not the worst one.
+        slow = results["step_stats"]["slow"]
+        fast = results["step_stats"]["fast"]
+        self.assertGreater(slow["p50"], fast["p50"])
+        # And the slow step's median tracks the handler's 50ms sleep rather
+        # than merely being larger than a fast step that was itself slow.
+        self.assertGreater(slow["p50"], 0.04)
 
         with open(html_path, encoding="utf-8") as fh:
             html = fh.read()
