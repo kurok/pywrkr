@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import pathlib
 import re
 import tempfile
 import unittest
@@ -426,6 +427,51 @@ class TestGatlingHtmlReport(unittest.TestCase):
             all(v <= 200 for v in values),
             f"a bucket at t == duration produced an impossible rate: {values}",
         )
+
+    def test_histogram_ignores_non_finite_latencies(self):
+        """build_results_dict, compute_percentiles and the console histogram
+        all filter non-finite samples; the HTML histogram used the raw list.
+
+        One inf makes the bucket step inf, (inf - lo) / inf is NaN, and int()
+        raises -- so --html-report died after the run had finished and its
+        results were otherwise fine. A NaN is quieter and worse: hi > lo is
+        False, so every request is drawn as a single bar.
+        """
+        stats = WorkerStats()
+        stats.total_requests = 5
+        stats.latencies.extend([0.1, 0.2, 0.3, float("inf"), float("nan")])
+        config = BenchmarkConfig(url="http://localhost:8080/", method="GET")
+
+        html = generate_gatling_html_report(stats, 10.0, 4, config, start_time=1000.0)
+
+        match = re.search(r"histChart.*?label: '[^']*',\s*data:\s*(\[[^\]]*\])", html, re.S)
+        self.assertIsNotNone(match, "the histogram must carry its counts")
+        counts = json.loads(match.group(1))
+        self.assertEqual(
+            sum(counts), 3, f"only the finite samples belong in the histogram: {counts}"
+        )
+
+    def test_csv_output_skips_non_finite(self):
+        """An inf in a column of millisecond timings is not a number any
+        spreadsheet or plotting tool reads back."""
+        stats = WorkerStats()
+        stats.latencies.extend([0.1, 0.2, 0.3, float("inf"), float("nan")])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.csv")
+            write_csv_output(path, stats)
+            body = pathlib.Path(path).read_text()
+        self.assertNotIn("inf", body.lower())
+        self.assertNotIn("nan", body.lower())
+        # 1..100 percentiles plus the header.
+        self.assertEqual(len(body.strip().splitlines()), 101)
+
+    def test_csv_output_with_only_non_finite_writes_nothing(self):
+        stats = WorkerStats()
+        stats.latencies.extend([float("inf"), float("nan")])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.csv")
+            write_csv_output(path, stats)
+            self.assertFalse(os.path.exists(path), "nothing measurable means no file")
 
     def test_contains_chart_data(self):
         stats = self._make_stats()

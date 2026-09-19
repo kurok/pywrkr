@@ -760,10 +760,15 @@ def build_results_dict(
 
 
 def write_csv_output(path: str, stats: WorkerStats) -> None:
-    """Write ab-style CSV with percentile served times."""
-    if not stats.latencies:
+    """Write ab-style CSV with percentile served times.
+
+    Non-finite samples are dropped here too: writing ``inf`` into a CSV of
+    millisecond timings produces a column no spreadsheet or plotting tool
+    reads back as a number.
+    """
+    sorted_lat = sorted(x for x in stats.latencies if math.isfinite(x))
+    if not sorted_lat:
         return
-    sorted_lat = sorted(stats.latencies)
     n = len(sorted_lat)
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -830,8 +835,15 @@ def generate_gatling_html_report(
     hist_labels: list[str] = []
     hist_counts: list[int] = []
     hist_colors: list[str] = []
-    if stats.latencies:
-        sorted_lat = sorted(stats.latencies)
+    # Filtered for the same reason build_results_dict, compute_percentiles and
+    # print_latency_histogram filter: a single inf makes step inf, (inf - lo) /
+    # inf is NaN, and int(NaN) raises -- so --html-report aborted after the run
+    # had already finished and its results were otherwise fine. A NaN is worse
+    # than a crash: hi > lo is False, so every request collapses into one bar
+    # and the chart quietly lies.
+    finite_lat = [x for x in stats.latencies if math.isfinite(x)]
+    if finite_lat:
+        sorted_lat = sorted(finite_lat)
         lo, hi = sorted_lat[0], sorted_lat[-1]
         if hi > lo:
             # Create ~20 buckets
