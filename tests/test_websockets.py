@@ -680,6 +680,104 @@ class TestTlsOptions(unittest.TestCase):
         self.assertFalse(from_ws.check_hostname)
         self.assertEqual(from_ws.verify_mode, from_http.verify_mode)
 
+    def test_ws_step_honours_ssl_config_on_http_base(self):
+        """A wss:// step under an http:// base must still get the TLS options.
+
+        execute_ws_step passed no ``ssl`` at all, so the handshake inherited the
+        shared TCPConnector -- which AiohttpBackend builds from the scenario's
+        base URL. A plain http:// base means ``ssl=True``: full verification and
+        no custom CA, whatever --ssl-verify / --ca-bundle said.
+        """
+        import ssl as ssl_mod
+
+        from pywrkr.backends import create_backend
+        from pywrkr.config import SSLConfig
+        from pywrkr.workers import _run_ws_step
+
+        captured: dict = {}
+
+        async def _drive():
+            config = BenchmarkConfig(
+                url="http://app.internal/", ssl_config=SSLConfig(verify=False), connections=1
+            )
+            backend = create_backend(config, 1)
+            stats = WorkerStats()
+            session = backend.create_session(stats)
+            client = session.raw_websocket_session()
+
+            async def _fake_ws_connect(_self, url, **kwargs):
+                captured["url"] = url
+                captured["kwargs"] = kwargs
+                raise OSError("handshake not attempted in this test")
+
+            try:
+                with patch.object(type(client), "ws_connect", _fake_ws_connect):
+                    await _run_ws_step(
+                        ScenarioStep(method="GET", path="wss://h/feed", name="feed"),
+                        "wss://h/feed",
+                        {},
+                        session,
+                        config,
+                        stats,
+                        "feed",
+                        0,
+                        {},
+                        False,
+                        None,
+                        None,
+                        asyncio.Event(),
+                    )
+            finally:
+                await backend.aclose()
+
+        asyncio.run(_drive())
+
+        context = captured["kwargs"].get("ssl")
+        self.assertIsInstance(context, ssl_mod.SSLContext)
+        self.assertEqual(context.verify_mode, ssl_mod.CERT_NONE)
+        self.assertFalse(context.check_hostname)
+
+    def test_ws_step_over_plain_ws_gets_no_tls_context(self):
+        """A ws:// step has nothing to verify; it must not be handed a context."""
+        from pywrkr.backends import create_backend
+        from pywrkr.workers import _run_ws_step
+
+        captured: dict = {}
+
+        async def _drive():
+            config = BenchmarkConfig(url="http://app.internal/", connections=1)
+            backend = create_backend(config, 1)
+            stats = WorkerStats()
+            session = backend.create_session(stats)
+            client = session.raw_websocket_session()
+
+            async def _fake_ws_connect(_self, url, **kwargs):
+                captured["kwargs"] = kwargs
+                raise OSError("handshake not attempted in this test")
+
+            try:
+                with patch.object(type(client), "ws_connect", _fake_ws_connect):
+                    await _run_ws_step(
+                        ScenarioStep(method="GET", path="ws://h/feed", name="feed"),
+                        "ws://h/feed",
+                        {},
+                        session,
+                        config,
+                        stats,
+                        "feed",
+                        0,
+                        {},
+                        False,
+                        None,
+                        None,
+                        asyncio.Event(),
+                    )
+            finally:
+                await backend.aclose()
+
+        asyncio.run(_drive())
+        self.assertNotIn("ssl", captured["kwargs"])
+
     def test_ssl_verify_turns_verification_on_for_wss(self):
         """--ssl-verify is opt-in for http(s); wss:// must follow the same rule."""
         from pywrkr.config import SSLConfig

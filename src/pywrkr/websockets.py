@@ -599,6 +599,7 @@ async def execute_ws_step(
     stats: WorkerStats,
     ws_stats: WsStats,
     stop: "asyncio.Event | None" = None,
+    ssl_context: "ssl.SSLContext | None" = None,
 ) -> WsStepOutcome:
     """Run one WebSocket step of a scenario and report what happened.
 
@@ -611,6 +612,12 @@ async def execute_ws_step(
     reader: "asyncio.Task | None" = None
     shutdown = asyncio.Event()
     ws_kwargs: dict[str, Any] = {"headers": headers or None, "autoping": True}
+    if ssl_context is not None:
+        # Without this the handshake inherits the shared TCPConnector's TLS,
+        # which AiohttpBackend builds from the *scenario's base URL*. A plain
+        # http:// base therefore gave a wss:// step full verification and no
+        # custom CA, whatever --ssl-verify / --ca-bundle said.
+        ws_kwargs["ssl"] = ssl_context
     try:
         ws = await asyncio.wait_for(session.ws_connect(url, **ws_kwargs), timeout=timeout)
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as exc:
