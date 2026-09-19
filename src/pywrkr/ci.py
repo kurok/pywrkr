@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from pywrkr.compare import (
     ComparisonReport,
@@ -289,7 +289,7 @@ def upsert_pr_comment(
     token: str,
     api_url: str = "https://api.github.com",
     marker: str = COMMENT_MARKER,
-    request: Any = None,
+    request: Callable[..., Any] | None = None,
 ) -> str:
     """Edit this action's previous comment, or post the first one.
 
@@ -297,7 +297,10 @@ def upsert_pr_comment(
     a bot that appends a fresh comment on every push is the usual reason a
     performance action gets uninstalled.
     """
-    call = request if request is not None else _github_request
+    # Typed rather than Any: with Any, nothing can tell that what gets called
+    # below is callable, including CodeQL, which reported py/call-to-non-callable
+    # on all three call sites once the GET moved into a loop.
+    call: Callable[..., Any] = _github_request if request is None else request
     base = f"{api_url.rstrip('/')}/repos/{repo}/issues/{issue_number}/comments"
     if marker not in body:
         body = f"{marker}\n{body}"
