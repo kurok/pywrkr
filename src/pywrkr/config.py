@@ -1128,8 +1128,27 @@ def load_scenario(path: str) -> Scenario:
 # ---------------------------------------------------------------------------
 
 
-def _setup_signal_handlers(stop_event: asyncio.Event) -> None:
-    """Register SIGINT/SIGTERM handlers that set the stop event."""
+def _setup_signal_handlers(
+    stop_event: asyncio.Event, force_event: "asyncio.Event | None" = None
+) -> None:
+    """Register SIGINT/SIGTERM handlers that ask the run to stop.
+
+    The first signal sets *stop_event*: workers finish what they are doing and
+    the run reports what it measured. A second signal sets *force_event*, which
+    drops the grace period and cancels whatever is still in flight.
+
+    Without the escalation a second Ctrl-C did nothing at all --
+    ``add_signal_handler`` has replaced Python's default SIGINT handler, so
+    there was no KeyboardInterrupt to fall back on and no way to abort a run
+    stuck on an unresponsive target.
+    """
     loop = asyncio.get_running_loop()
+
+    def _handle() -> None:
+        if stop_event.is_set() and force_event is not None:
+            force_event.set()
+        else:
+            stop_event.set()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_event.set)
+        loop.add_signal_handler(sig, _handle)

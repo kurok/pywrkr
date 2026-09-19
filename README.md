@@ -54,7 +54,7 @@ That's it. Add `--json results.json`, `-w report.html`, `--threshold "p95<300ms"
 - **Multiple output formats:** terminal, CSV (`-e`), JSON (`--json`), HTML (`-w`)
 - **HTTP features:** keep-alive toggle, Basic auth (`-A`), cookies (`-C`), custom headers (`-H`), POST body (`-b`/`-p`), content-length verification (`-l`)
 - **Cache-busting** (`-R`): append a unique random query parameter to each request URL
-- **Graceful shutdown:** handles SIGINT/SIGTERM cleanly
+- **Graceful shutdown:** SIGINT/SIGTERM stops the run and reports what it measured; in-flight requests get a 2-second grace and are then cancelled, and a second Ctrl-C skips the grace
 - **Live progress display** with requests/sec, error count, and active user count
 - **SLO-aware thresholds** (`--threshold`): pass/fail criteria like `p95 < 300ms`, `error_rate < 1%` with non-zero exit code on breach — CI-ready
 - **Regression detection** (`pywrkr compare`, `--baseline`): gate a PR on *relative* change — "fail if p95 got 10% worse than main" — with a markdown delta table for the PR comment
