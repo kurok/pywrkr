@@ -771,6 +771,16 @@ async def run_master(
         except asyncio.TimeoutError:
             logger.warning("Master: auth timeout for %s", writer.get_extra_info("peername"))
             return False
+        except (ConnectionError, OSError) as e:
+            # A peer that closes mid-handshake used to raise out of
+            # handle_worker as an unhandled task exception, leaving the writer
+            # open. Port scanners do this routinely.
+            logger.warning(
+                "Master: connection lost during auth with %s: %s",
+                writer.get_extra_info("peername"),
+                e,
+            )
+            return False
         if msg.get("type") != "auth":
             logger.warning(
                 "Master: unexpected auth message type %r from %s",
@@ -779,12 +789,46 @@ async def run_master(
             )
             return False
         expected = hmac.new(worker_secret.encode(), nonce, digestmod=hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(msg.get("hmac", ""), expected):
+        # compare_digest raises TypeError on a non-str, so a peer sending
+        # {"hmac": 1} would crash the handshake rather than fail it.
+        offered = msg.get("hmac")
+        if not isinstance(offered, str) or not hmac.compare_digest(offered, expected):
             logger.warning(
                 "Master: auth failed for %s (wrong secret)",
                 writer.get_extra_info("peername"),
             )
             return False
+
+        # Prove the secret back, so the worker knows who it is taking orders
+        # from. Only when the worker asked: a worker from an older release
+        # sends no nonce, and refusing it here would break a mixed fleet
+        # without making anything safer -- such a worker never checks the
+        # reply either way.
+        worker_nonce = msg.get("nonce")
+        if isinstance(worker_nonce, str):
+            try:
+                nonce_bytes = bytes.fromhex(worker_nonce)
+            except ValueError:
+                logger.warning(
+                    "Master: worker %s sent a malformed nonce",
+                    writer.get_extra_info("peername"),
+                )
+                return False
+            proof = hmac.new(
+                worker_secret.encode(), nonce_bytes, digestmod=hashlib.sha256
+            ).hexdigest()
+            try:
+                await asyncio.wait_for(
+                    _send_msg(writer, {"type": "auth_ok", "hmac": proof}),
+                    timeout=_WORKER_AUTH_TIMEOUT_SECONDS,
+                )
+            except (asyncio.TimeoutError, ConnectionError, OSError) as e:
+                logger.warning(
+                    "Master: could not send auth proof to %s: %s",
+                    writer.get_extra_info("peername"),
+                    e,
+                )
+                return False
         return True
 
     async def handle_worker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -1098,8 +1142,16 @@ async def run_worker_node(
 ) -> None:
     """Run in worker mode: connect to master, receive config, run benchmark, send results.
 
-    If *worker_secret* is provided, the worker completes the HMAC-SHA256
-    challenge-response expected by a master started with the same secret.
+    If *worker_secret* is provided, the handshake is mutual HMAC-SHA256: the
+    worker answers the master's challenge and the master must sign a nonce of
+    the worker's choosing before the worker will accept a config from it. A
+    master from an older release does not send that proof, and the worker
+    refuses to run against one.
+
+    The secret authenticates both ends; it does not encrypt anything. The
+    channel is plain TCP, so the config -- including any basic_auth and
+    headers -- and the results travel in clear text. Run it on a trusted
+    network or tunnel it.
     """
     logger.info("Worker: connecting to master at %s:%s...", master_host, master_port)
 
@@ -1120,13 +1172,49 @@ async def run_worker_node(
                 return
             nonce = bytes.fromhex(challenge["nonce"])
             response = hmac.new(worker_secret.encode(), nonce, digestmod=hashlib.sha256).hexdigest()
+            # Our own nonce, for the master to sign. Without this the worker
+            # proved the secret to whoever answered on the port and then took
+            # a config from them: any listener could have it run arbitrary
+            # load, with whatever basic_auth and headers it chose, at any URL.
+            worker_nonce = os.urandom(32)
             try:
                 await asyncio.wait_for(
-                    _send_msg(writer, {"type": "auth", "hmac": response}),
+                    _send_msg(
+                        writer,
+                        {
+                            "type": "auth",
+                            "hmac": response,
+                            "nonce": worker_nonce.hex(),
+                        },
+                    ),
                     timeout=_WORKER_AUTH_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
                 logger.error("Worker: timed out sending auth response to master")
+                return
+
+            try:
+                proof = await asyncio.wait_for(
+                    _recv_msg(reader), timeout=_WORKER_AUTH_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                logger.error("Worker: timed out waiting for the master to prove the secret")
+                return
+            except (ConnectionError, OSError) as e:
+                logger.error("Worker: connection lost while authenticating the master: %s", e)
+                return
+            expected_proof = hmac.new(
+                worker_secret.encode(), worker_nonce, digestmod=hashlib.sha256
+            ).hexdigest()
+            offered_proof = proof.get("hmac")
+            if proof.get("type") != "auth_ok" or not isinstance(offered_proof, str):
+                logger.error(
+                    "Worker: master did not prove the shared secret (got %r); refusing to run",
+                    proof.get("type"),
+                )
+                return
+            if not hmac.compare_digest(offered_proof, expected_proof):
+                logger.error("Worker: master failed the shared-secret check; refusing to run")
                 return
 
         try:
