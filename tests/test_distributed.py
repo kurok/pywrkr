@@ -4,9 +4,12 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import json
 import os
 import socket
 import unittest
+from io import StringIO
+from unittest.mock import patch
 
 from pywrkr.config import (
     BenchmarkConfig,
@@ -366,6 +369,72 @@ class TestMergeWorkerStats(unittest.TestCase):
 
         merged = merge_worker_stats([ws1, ws2])
         self.assertEqual(len(merged.breakdowns), 3)
+
+
+class TestWorkerExitCode(unittest.IsolatedAsyncioTestCase):
+    """Every give-up path must be distinguishable from a completed run.
+
+    run_worker_node returned None on auth timeout, wrong message type, config
+    timeout, HTTP/2 refusal and a closed master alike, and the CLI did
+    `asyncio.run(...); sys.exit(0)` -- so systemd, a k8s Job or a Jenkins agent
+    saw a five-minute give-up and a finished benchmark as the same success.
+    """
+
+    async def _serve_once(self, handler):
+        server = await asyncio.start_server(handler, "127.0.0.1", 0)
+        self.addAsyncCleanup(self._close, server)
+        return server.sockets[0].getsockname()[1]
+
+    @staticmethod
+    async def _close(server):
+        server.close()
+        with contextlib.suppress(Exception):
+            await server.wait_closed()
+
+    async def test_worker_cli_exits_nonzero_when_master_sends_wrong_message(self):
+        async def _wrong_type(reader, writer):
+            payload = json.dumps({"type": "nope"}).encode()
+            writer.write(len(payload).to_bytes(4, "big") + payload)
+            await writer.drain()
+            writer.close()
+
+        port = await self._serve_once(_wrong_type)
+        self.assertEqual(await run_worker_node("127.0.0.1", port), 1)
+
+    async def test_worker_exits_nonzero_when_the_master_is_not_listening(self):
+        # Pre-fix ConnectionRefusedError escaped as a raw traceback.
+        self.assertEqual(await run_worker_node("127.0.0.1", 1), 1)
+
+    async def test_worker_exits_nonzero_when_the_master_hangs_up(self):
+        async def _hangup(reader, writer):
+            writer.close()
+
+        port = await self._serve_once(_hangup)
+        self.assertEqual(await run_worker_node("127.0.0.1", port), 1)
+
+    async def test_worker_exits_zero_after_a_completed_run(self):
+        """The success path still says success."""
+        config = BenchmarkConfig(url="http://127.0.0.1:1/", num_requests=1, timeout_sec=0.2)
+        results: list = []
+        got_result = asyncio.Event()
+
+        async def _master(reader, writer):
+            payload = json.dumps({"type": "config", "config": _serialize_config(config)}).encode()
+            writer.write(len(payload).to_bytes(4, "big") + payload)
+            await writer.drain()
+            length = int.from_bytes(await reader.readexactly(4), "big")
+            results.append(json.loads(await reader.readexactly(length)))
+            got_result.set()
+            writer.close()
+
+        port = await self._serve_once(_master)
+        with patch("sys.stdout", new_callable=StringIO):
+            self.assertEqual(await run_worker_node("127.0.0.1", port), 0)
+        # The handler runs as its own task, so wait for it rather than racing it.
+        await asyncio.wait_for(got_result.wait(), timeout=5)
+        # The run happened -- against a dead port, so every request errors, but
+        # the worker completed it and reported.
+        self.assertEqual(results[0]["type"], "result")
 
 
 class TestProtocol(unittest.TestCase):

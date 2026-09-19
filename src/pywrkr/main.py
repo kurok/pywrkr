@@ -1257,8 +1257,16 @@ def _validate_url_and_mode(
         except ValueError:
             parser.error(f"Invalid port in --worker: {port_str}")
         worker_secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
-        asyncio.run(run_worker_node(host, w_port, worker_secret=worker_secret))
-        sys.exit(0)
+        try:
+            # Every give-up path returns 1: an orchestrator cannot otherwise
+            # tell a completed benchmark from a five-minute wait for a master
+            # that never appeared.
+            sys.exit(asyncio.run(run_worker_node(host, w_port, worker_secret=worker_secret)))
+        except KeyboardInterrupt:
+            # 130 is the shell's convention for SIGINT, and beats printing a
+            # KeyboardInterrupt traceback at whoever pressed Ctrl-C.
+            print("\nWorker: interrupted.", file=sys.stderr)
+            sys.exit(130)
 
     _validate_mode_conflicts(parser, args)
 
