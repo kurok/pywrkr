@@ -328,3 +328,66 @@ def test_har_time_and_started_datetime_coerced(tmp_path):
     # The whole point: this used to raise rather than produce a scenario.
     scenario = har_to_scenario(entries, HarImportConfig())
     assert len(scenario["steps"]) == 3
+
+
+def test_har_preserve_headers_warns_on_credentials(tmp_path, caplog):
+    """A recorded session's Authorization header and ?access_token= survive
+    into the generated file, which usually gets committed next to the scenario.
+    They are deliberately not stripped -- scenarios get replayed against the
+    same environment -- so the only protection is saying so out loud.
+    """
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "http://h/api?access_token=SECRETQ&page=2",
+                        "method": "GET",
+                        "headers": [
+                            {"name": "Authorization", "value": "Bearer SECRET1"},
+                            {"name": "X-API-Key", "value": "SECRET2"},
+                            {"name": "Accept", "value": "application/json"},
+                        ],
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(str(path), config=HarImportConfig(preserve_headers=True))
+
+    warning = "\n".join(r.getMessage() for r in caplog.records)
+    assert "Authorization" in warning
+    assert "X-API-Key" in warning
+    assert "access_token" in warning
+    assert "${token}" in warning
+    # Not everything is a secret.
+    assert "Accept" not in warning
+    assert "page" not in warning
+
+
+def test_har_without_credentials_does_not_warn(tmp_path, caplog):
+    """The warning has to stay rare enough to be worth reading."""
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "http://h/api?page=2",
+                        "method": "GET",
+                        "headers": [{"name": "Accept", "value": "application/json"}],
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(str(path), config=HarImportConfig(preserve_headers=True))
+
+    assert not [r for r in caplog.records if "credentials" in r.message]

@@ -14,7 +14,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -550,6 +550,79 @@ def har_to_url_file(
     return "\n".join(lines) + "\n"
 
 
+# Header names and query parameters that usually carry a live credential.
+#
+# The default skip list drops "cookie" but keeps these, and the query string is
+# copied into the step path unconditionally, so a HAR recorded from a
+# logged-in session puts a working bearer token in a file that tends to be
+# committed next to the scenario. They are not stripped, because scenarios are
+# often replayed against the same environment and an existing test asserts
+# Authorization survives -- so the user is told instead.
+_CREDENTIAL_HEADER_NAMES = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "x-auth-token",
+        "x-csrf-token",
+    }
+)
+_CREDENTIAL_SUBSTRINGS = ("token", "secret", "key", "password")
+_CREDENTIAL_QUERY_RE = re.compile(r"token|key|secret|password|sig", re.IGNORECASE)
+
+
+def _credential_headers(headers: dict[str, str]) -> list[str]:
+    """Header names that look like they carry a credential."""
+    found = [
+        name
+        for name in headers
+        if name.lower() in _CREDENTIAL_HEADER_NAMES
+        or any(part in name.lower() for part in _CREDENTIAL_SUBSTRINGS)
+    ]
+    return sorted(found, key=str.lower)
+
+
+def _credential_query_params(url: str) -> list[str]:
+    """Query parameter names that look like they carry a credential."""
+    query = urlparse(url).query
+    if not query:
+        return []
+    names = {name for name, _ in parse_qsl(query, keep_blank_values=True)}
+    return sorted((n for n in names if _CREDENTIAL_QUERY_RE.search(n)), key=str.lower)
+
+
+def _warn_on_credentials(entries: list[HarEntry], config: HarImportConfig) -> None:
+    """Warn when the output will contain something that looks like a secret.
+
+    Silence here would be the dangerous part: nothing else in the pipeline
+    tells the user that the file they are about to commit has a live token in
+    it.
+    """
+    header_names: set[str] = set()
+    query_names: set[str] = set()
+
+    for entry in entries:
+        if config.preserve_headers:
+            header_names.update(_credential_headers(_build_step_headers(entry, config)))
+        query_names.update(_credential_query_params(entry.url))
+
+    if not header_names and not query_names:
+        return
+
+    parts = []
+    if header_names:
+        parts.append("headers " + ", ".join(sorted(header_names, key=str.lower)))
+    if query_names:
+        parts.append("query parameters " + ", ".join(sorted(query_names, key=str.lower)))
+
+    logger.warning(
+        "The generated output contains %s, which may hold live credentials "
+        "from the recorded session. Replace the values with a template such "
+        "as ${token} and supply them at run time before committing this file.",
+        " and ".join(parts),
+    )
+
+
 def convert_har(
     har_path: str,
     output_path: str | None = None,
@@ -585,6 +658,8 @@ def convert_har(
             f"No requests remained after filtering {len(entries)} HAR entries. "
             f"Try --include-static or adjusting --domain / --exclude filters."
         )
+
+    _warn_on_credentials(filtered, config)
 
     scenario_name = name or os.path.splitext(os.path.basename(har_path))[0]
 
