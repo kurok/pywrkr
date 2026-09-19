@@ -6335,7 +6335,13 @@ class TestRunMasterUnexpectedMsg(unittest.TestCase):
             port_holder = [0]
 
             async def _fake_worker():
-                await asyncio.sleep(0.1)
+                # Wait for the bind rather than guessing: connecting to port 0
+                # leaves run_master waiting for a peer that never arrives.
+                deadline = time.monotonic() + 10.0
+                while not port_holder[0]:
+                    if time.monotonic() > deadline:
+                        raise AssertionError("master did not bind a port within 10s")
+                    await asyncio.sleep(0.01)
                 reader, writer = await asyncio.open_connection("127.0.0.1", port_holder[0])
                 # Send an unexpected message type instead of result
                 payload = json.dumps({"type": "bogus"}).encode()

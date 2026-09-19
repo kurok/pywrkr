@@ -38,6 +38,43 @@ def _frame(obj: dict) -> bytes:
     return len(payload).to_bytes(4, "big") + payload
 
 
+async def _bound_port(port_holder: list, timeout: float = 10.0) -> int:
+    """Wait until the patched ``start_server`` has recorded the master's port.
+
+    A fixed ``sleep(0.1)`` raced the bind. On a loaded runner the master was
+    not listening yet, the fake worker connected to port 0, ``run_master``
+    then waited for a peer that never arrived, and the test failed twenty
+    seconds later as a bare ``asyncio.TimeoutError`` with nothing pointing at
+    the cause.
+    """
+    deadline = time.monotonic() + timeout
+    while not port_holder[0]:
+        if time.monotonic() > deadline:
+            raise AssertionError(f"master did not bind a port within {timeout}s")
+        await asyncio.sleep(0.01)
+    return port_holder[0]
+
+
+class TestBoundPortHelper(unittest.IsolatedAsyncioTestCase):
+    """The helper the fake workers use to avoid racing the master's bind."""
+
+    async def test_waits_for_a_late_bind(self):
+        port_holder = [0]
+
+        async def _bind_later():
+            await asyncio.sleep(0.2)
+            port_holder[0] = 4242
+
+        binder = asyncio.create_task(_bind_later())
+        self.assertEqual(await _bound_port(port_holder), 4242)
+        await binder
+
+    async def test_times_out_with_a_message_naming_the_cause(self):
+        with self.assertRaises(AssertionError) as ctx:
+            await _bound_port([0], timeout=0.05)
+        self.assertIn("did not bind a port", str(ctx.exception))
+
+
 # ---------------------------------------------------------------------------
 # dist-8: explicit empty body must survive the config round-trip
 # ---------------------------------------------------------------------------
@@ -93,8 +130,9 @@ class TestDist4MalformedBody(unittest.IsolatedAsyncioTestCase):
         port_holder = [0]
 
         async def _bad_worker():
-            await asyncio.sleep(0.1)
-            reader, writer = await asyncio.open_connection("127.0.0.1", port_holder[0])
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", await _bound_port(port_holder)
+            )
             ln = int.from_bytes(await reader.readexactly(4), "big")
             await reader.readexactly(ln)  # drain the config payload
             # Well-framed but non-UTF8/non-JSON body.
@@ -104,8 +142,9 @@ class TestDist4MalformedBody(unittest.IsolatedAsyncioTestCase):
             await writer.wait_closed()
 
         async def _good_worker():
-            await asyncio.sleep(0.1)
-            reader, writer = await asyncio.open_connection("127.0.0.1", port_holder[0])
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", await _bound_port(port_holder)
+            )
             ln = int.from_bytes(await reader.readexactly(4), "big")
             await reader.readexactly(ln)
             stats = pywrkr.WorkerStats()
@@ -239,8 +278,9 @@ class TestDist1MeasuredDuration(unittest.IsolatedAsyncioTestCase):
         port_holder = [0]
 
         async def _fake_worker():
-            await asyncio.sleep(0.1)
-            reader, writer = await asyncio.open_connection("127.0.0.1", port_holder[0])
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", await _bound_port(port_holder)
+            )
             ln = int.from_bytes(await reader.readexactly(4), "big")
             await reader.readexactly(ln)
             stats = pywrkr.WorkerStats()
@@ -290,9 +330,9 @@ class TestDist2ExtraWorker(unittest.IsolatedAsyncioTestCase):
         config_received = asyncio.Event()
 
         async def _good_worker():
-            while port_holder[0] == 0:
-                await asyncio.sleep(0.01)
-            reader, writer = await asyncio.open_connection("127.0.0.1", port_holder[0])
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", await _bound_port(port_holder)
+            )
             ln = int.from_bytes(await reader.readexactly(4), "big")
             await reader.readexactly(ln)
             config_received.set()
@@ -361,9 +401,7 @@ class TestDist2ExtraWorker(unittest.IsolatedAsyncioTestCase):
         surplus_handled = asyncio.Event()
 
         async def _connect():
-            while port_holder[0] == 0:
-                await asyncio.sleep(0.01)
-            return await asyncio.open_connection("127.0.0.1", port_holder[0])
+            return await asyncio.open_connection("127.0.0.1", await _bound_port(port_holder))
 
         async def _legit_worker(n: int):
             reader, writer = await _connect()
@@ -444,8 +482,9 @@ class TestDist6ConcurrentCollection(unittest.IsolatedAsyncioTestCase):
         connect_order: list = []
 
         async def _worker(send_delay: float, n: int):
-            await asyncio.sleep(0.1)
-            reader, writer = await asyncio.open_connection("127.0.0.1", port_holder[0])
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", await _bound_port(port_holder)
+            )
             connect_order.append(writer)
             ln = int.from_bytes(await reader.readexactly(4), "big")
             await reader.readexactly(ln)
