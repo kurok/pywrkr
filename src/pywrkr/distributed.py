@@ -187,6 +187,53 @@ def _deserialize_scenario(data: dict | None) -> Scenario | None:
     )
 
 
+def _shard_config_load(config_data: dict, index: int, count: int) -> dict:
+    """Give node *index* its share of ``-n`` and ``--rate``.
+
+    The README promises the master splits the workload evenly across workers,
+    but num_requests, rate and rate_ramp went to every node unchanged: three
+    workers ran ``-n 1000`` three times over and ``--rate 100`` drove 300 rps,
+    so a capacity or SLO gate applied three times the load it was asked for.
+
+    ``connections`` is deliberately left alone -- it describes one node's own
+    pool, not a share of the cluster's work -- as is ``duration``, since every
+    node runs for the whole window.
+    """
+    if count <= 1:
+        return config_data
+    sharded = dict(config_data)
+    total = config_data.get("num_requests")
+    if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+        # The remainder goes to the low-numbered nodes so the shards sum to
+        # exactly -n rather than however the rounding happens to land.
+        sharded["num_requests"] = total // count + (1 if index < total % count else 0)
+    for key in ("rate", "rate_ramp"):
+        value = config_data.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            sharded[key] = value / count
+    return sharded
+
+
+def _describe_sharded_load(config: BenchmarkConfig, count: int) -> "str | None":
+    """One line naming the cluster total and each node's share, or None."""
+    if count <= 1:
+        return None
+    parts = []
+    if config.num_requests:
+        per_node = [
+            config.num_requests // count + (1 if i < config.num_requests % count else 0)
+            for i in range(count)
+        ]
+        parts.append(f"-n {config.num_requests:,} -> {'/'.join(str(n) for n in per_node)}")
+    if config.rate:
+        parts.append(f"--rate {config.rate:,.6g} -> {config.rate / count:,.6g} rps each")
+    if config.rate_ramp:
+        parts.append(
+            f"--rate-ramp {config.rate_ramp:,.6g} -> {config.rate_ramp / count:,.6g} rps each"
+        )
+    return ", ".join(parts) or None
+
+
 def _shard_config_feeders(config_data: dict, index: int, count: int) -> dict:
     """Return *config_data* with this node's slice of the consuming data sets.
 
@@ -981,10 +1028,19 @@ async def run_master(
         logger.info("Master: all %s workers connected. Distributing config...", expect_workers)
         config_data = _serialize_config(config)
         progress_interval = progress_interval_for(config)
+        shard_summary = _describe_sharded_load(config, len(selected))
+        if shard_summary:
+            logger.info(
+                "Master: splitting the load across %s workers: %s", len(selected), shard_summary
+            )
         for shard_index, (_, writer) in enumerate(selected):
             message: dict = {
                 "type": "config",
-                "config": _shard_config_feeders(config_data, shard_index, expect_workers),
+                "config": _shard_config_load(
+                    _shard_config_feeders(config_data, shard_index, len(selected)),
+                    shard_index,
+                    len(selected),
+                ),
             }
             if progress_interval:
                 message[PROGRESS_INTERVAL_KEY] = progress_interval

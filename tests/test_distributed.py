@@ -138,6 +138,63 @@ class TestConfigSerialization(unittest.TestCase):
         self.assertTrue(restored.live_dashboard)
 
 
+class TestLoadSharding(unittest.TestCase):
+    """The arithmetic behind splitting -n and --rate across nodes."""
+
+    def _base(self):
+        return {
+            "num_requests": 1000,
+            "rate": 100.0,
+            "rate_ramp": 200.0,
+            "connections": 10,
+            "duration": 30,
+        }
+
+    def test_num_requests_shards_sum_to_the_cluster_total(self):
+        from pywrkr.distributed import _shard_config_load
+
+        for count in (2, 3, 4, 7):
+            with self.subTest(workers=count):
+                shards = [_shard_config_load(self._base(), i, count) for i in range(count)]
+                self.assertEqual(sum(s["num_requests"] for s in shards), 1000)
+                # No node does more than one request more than any other.
+                counts = [s["num_requests"] for s in shards]
+                self.assertLessEqual(max(counts) - min(counts), 1)
+
+    def test_rate_is_divided_so_the_cluster_hits_the_target(self):
+        from pywrkr.distributed import _shard_config_load
+
+        shards = [_shard_config_load(self._base(), i, 4) for i in range(4)]
+        self.assertAlmostEqual(sum(s["rate"] for s in shards), 100.0, places=6)
+        self.assertAlmostEqual(sum(s["rate_ramp"] for s in shards), 200.0, places=6)
+
+    def test_connections_and_duration_are_per_node(self):
+        from pywrkr.distributed import _shard_config_load
+
+        shard = _shard_config_load(self._base(), 0, 4)
+        self.assertEqual(shard["connections"], 10)
+        self.assertEqual(shard["duration"], 30)
+
+    def test_more_workers_than_requests_gives_the_surplus_nothing(self):
+        from pywrkr.distributed import _shard_config_load
+
+        shards = [_shard_config_load({"num_requests": 2}, i, 3)["num_requests"] for i in range(3)]
+        self.assertEqual(sorted(shards), [0, 1, 1])
+
+    def test_a_single_worker_is_left_alone(self):
+        from pywrkr.distributed import _shard_config_load
+
+        base = self._base()
+        self.assertIs(_shard_config_load(base, 0, 1), base)
+
+    def test_a_duration_run_has_nothing_to_shard(self):
+        from pywrkr.distributed import _shard_config_load
+
+        shard = _shard_config_load({"duration": 30, "num_requests": None, "rate": None}, 0, 3)
+        self.assertIsNone(shard["num_requests"])
+        self.assertIsNone(shard["rate"])
+
+
 class TestMalformedStats(unittest.TestCase):
     """Every rejection names the field, because it is logged per worker."""
 

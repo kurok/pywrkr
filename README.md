@@ -1761,7 +1761,17 @@ pywrkr --worker master-host:9220
 | `--bind` | Master bind address (default: `0.0.0.0`) |
 | `--port` | Master listen port (default: `9220`) |
 
-The master splits the workload evenly across workers, collects results, and produces a single aggregated report.
+The master splits the workload evenly across workers, collects results, and produces a single
+aggregated report. `-n`, `--rate` and `--rate-ramp` describe the **cluster total**: `--expect-workers
+3 -n 1000` runs 1,000 requests in total (334/333/333), and `--rate 100` drives 100 rps across the
+cluster, not per node. The split is logged when the config goes out:
+
+```
+Master: splitting the load across 3 workers: -n 1,000 -> 334/333/333, --rate 100 -> 33.3333 rps each
+```
+
+`-c/--connections` is deliberately **per node** — it sizes that node's own pool rather than a share
+of the work — and `-d` is the window every node runs for.
 
 **Set `--worker-secret` on any run that leaves localhost.** Without it the control channel is
 unauthenticated: anything that can reach the master's port can register as a worker and feed it

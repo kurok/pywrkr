@@ -131,6 +131,59 @@ class TestMasterSurvivesBadWorker(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class TestMasterShardsLoad(unittest.IsolatedAsyncioTestCase):
+    """The README promises the master splits the workload; it must actually do it."""
+
+    async def test_master_shards_num_requests_and_rate_across_workers(self):
+        config = pywrkr.BenchmarkConfig(
+            url="http://example.com", num_requests=10, rate=6.0, connections=4, _quiet=True
+        )
+        port_holder = [0]
+        received: list = []
+
+        async def _peer():
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", await _bound_port(port_holder)
+            )
+            ln = int.from_bytes(await reader.readexactly(4), "big")
+            payload = await reader.readexactly(ln)
+            received.append(json.loads(payload)["config"])
+            stats = pywrkr.WorkerStats()
+            stats.total_requests = 5
+            stats.latencies.extend([0.01] * 5)
+            writer.write(
+                _frame({"type": "result", "stats": _serialize_stats(stats), "duration": 1.0})
+            )
+            await writer.drain()
+            writer.close()
+            with contextlib.suppress(OSError, ConnectionError):
+                await writer.wait_closed()
+
+        orig_start = asyncio.start_server
+
+        async def _patched_start(cb, host, port):
+            server = await orig_start(cb, host, 0)
+            port_holder[0] = server.sockets[0].getsockname()[1]
+            return server
+
+        with patch("pywrkr.distributed.asyncio.start_server", side_effect=_patched_start):
+            with patch("sys.stdout", new_callable=StringIO):
+                peers = [asyncio.create_task(_peer()) for _ in range(2)]
+                await asyncio.wait_for(
+                    run_master(config, "127.0.0.1", 0, expect_workers=2), timeout=20
+                )
+                await asyncio.gather(*peers)
+
+        self.assertEqual(len(received), 2)
+        # Pre-fix each worker was told -n 10 and --rate 6.0, so the cluster ran
+        # 20 requests at 12 rps -- double what was asked for.
+        self.assertEqual(sum(c["num_requests"] for c in received), 10)
+        for shard in received:
+            self.assertAlmostEqual(shard["rate"], 3.0, places=6)
+            # A node's pool is its own; it is not a share of the cluster's work.
+            self.assertEqual(shard["connections"], 4)
+
+
 class TestBoundPortHelper(unittest.IsolatedAsyncioTestCase):
     """The helper the fake workers use to avoid racing the master's bind."""
 
