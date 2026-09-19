@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from pywrkr.compare import (
     ComparisonReport,
@@ -289,7 +289,7 @@ def upsert_pr_comment(
     token: str,
     api_url: str = "https://api.github.com",
     marker: str = COMMENT_MARKER,
-    request: Any = None,
+    request: Callable[..., Any] = _github_request,
 ) -> str:
     """Edit this action's previous comment, or post the first one.
 
@@ -297,13 +297,39 @@ def upsert_pr_comment(
     a bot that appends a fresh comment on every push is the usual reason a
     performance action gets uninstalled.
     """
-    call = request if request is not None else _github_request
+    # The injection point defaults to the real function rather than to None.
+    #
+    # It used to be `request: Any = None` with a `None`-check here, which meant
+    # a None was genuinely reachable at every call site as far as any analysis
+    # could tell -- CodeQL reported py/call-to-non-callable on all three once
+    # the GET moved into a loop. Defaulting to the function removes the None
+    # instead of explaining it away, and no caller ever passed one.
+    call = request
     base = f"{api_url.rstrip('/')}/repos/{repo}/issues/{issue_number}/comments"
     if marker not in body:
         body = f"{marker}\n{body}"
 
-    existing = call("GET", f"{base}?per_page=100", token, None)
-    comment_id = find_marker_comment(existing if isinstance(existing, list) else [], marker)
+    # Every page, not just the first.
+    #
+    # GitHub caps per_page at 100 and returns comments oldest-first, so on a PR
+    # with more than 100 comments the action's own comment -- posted early and
+    # edited since -- sits on a later page and was never found. Every push then
+    # posted a fresh one, which is precisely the comment spam this function
+    # exists to avoid, and it only started once a PR got busy enough for anyone
+    # to mind.
+    existing: list = []
+    # Bounded: an API that keeps returning a full page would otherwise spin
+    # here forever, and this runs inside CI where that is a hung job rather
+    # than a visible error. 100 pages is 10,000 comments.
+    for page in range(1, 101):
+        batch = call("GET", f"{base}?per_page=100&page={page}", token, None)
+        if not isinstance(batch, list) or not batch:
+            break
+        existing.extend(batch)
+        if len(batch) < 100:
+            break
+
+    comment_id = find_marker_comment(existing, marker)
     if comment_id is not None:
         call(
             "PATCH",
