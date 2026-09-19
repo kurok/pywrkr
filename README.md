@@ -1506,6 +1506,17 @@ pywrkr --autofind -R --think-time 0.5 https://example.com/
 | `--max-users` | Maximum users to try (default: 10000) |
 | `--step-multiplier` | Multiply users by this each step (default: 2.0) |
 
+**Each step sizes its connection pool to that step's user count**, so the ramp measures the server
+rather than the load generator. A pool smaller than the offered load makes virtual users wait for a
+free connection, and that wait is inside the recorded latency — a 100 ms handler driven by 50 users
+through a 10-connection pool reports a p95 of ~2.4 s and ends the ramp at a ceiling pywrkr itself
+created. `-c` still applies when it asks for a *larger* pool than the step needs; it is never
+allowed to shrink the pool below the user count.
+
+The same trap exists outside autofind: `-u 50` with the default `-c 10` and no think time queues on
+the client, and pywrkr now warns when that happens. Think time is what lets users share a smaller
+pool — without it, size `-c` to `-u`.
+
 ### SLO-Aware Thresholds
 
 Define pass/fail criteria for your benchmarks. If any threshold is breached, pywrkr exits with code 2 — making it usable in CI/CD pipelines.

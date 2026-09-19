@@ -22,6 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
+from pywrkr.reporting import _nearest_rank_idx
 
 # Reached via attribute access rather than a second `from pywrkr... import`
 # statement, since CodeQL flags a module imported both ways (py/import-and-import-from).
@@ -6738,6 +6739,185 @@ class TestScenarioThinkTimeFallback(AioHTTPTestCase):
             self.assertLess(stats.total_requests, 40)
         finally:
             os.unlink(f.name)
+
+
+class TestAutofindPoolSizing(unittest.TestCase):
+    """Autofind must not measure its own connection pool as server latency."""
+
+    @staticmethod
+    def _capture_step_configs(config):
+        captured = []
+
+        async def _sim(cfg):
+            captured.append(cfg)
+            stats = pywrkr.WorkerStats()
+            stats.total_requests = 100
+            stats.latencies.extend([0.01] * 100)
+            return stats, 0
+
+        async def _run():
+            with patch("pywrkr.workers.run_user_simulation", side_effect=_sim):
+                with patch("sys.stdout", new_callable=StringIO):
+                    await pywrkr.workers.run_autofind(config)
+
+        asyncio.run(_run())
+        return captured
+
+    def test_autofind_step_pool_matches_users(self):
+        # Every step used to inherit the default 10-connection pool, so past
+        # ~10 users the ramp measured client queueing and stopped at a ceiling
+        # the load generator invented.
+        from pywrkr.config import AutofindConfig
+
+        captured = self._capture_step_configs(
+            AutofindConfig(
+                url="http://example.com",
+                step_duration=1,
+                start_users=10,
+                max_users=40,
+                step_multiplier=2.0,
+                json_output=None,
+            )
+        )
+
+        self.assertTrue(captured)
+        self.assertIn(40, [cfg.users for cfg in captured])
+        undersized = [
+            (cfg.users, cfg.connections) for cfg in captured if cfg.connections < cfg.users
+        ]
+        self.assertEqual(
+            undersized, [], f"steps ran a pool smaller than their user count: {undersized}"
+        )
+
+    def test_explicit_larger_pool_is_honoured(self):
+        from pywrkr.config import AutofindConfig
+
+        captured = self._capture_step_configs(
+            AutofindConfig(
+                url="http://example.com",
+                step_duration=1,
+                start_users=2,
+                max_users=2,
+                connections=500,
+                json_output=None,
+            )
+        )
+
+        self.assertEqual([cfg.connections for cfg in captured], [500])
+
+
+class TestPoolBoundWarning(AioHTTPTestCase):
+    """A -u run whose pool is smaller than its user count must say so."""
+
+    async def get_application(self):
+        app = web.Application()
+        app.router.add_get("/", self.handle_get)
+        return app
+
+    async def handle_get(self, request):
+        return web.Response(text="ok")
+
+    def _config(self, **overrides):
+        params = {
+            "url": f"http://localhost:{self.server.port}/",
+            "users": 50,
+            "connections": 10,
+            "duration": 0.2,
+            "think_time": 0.0,
+            "_quiet": True,
+        }
+        params.update(overrides)
+        return pywrkr.BenchmarkConfig(**params)
+
+    async def test_warns_when_users_exceed_pool_without_think_time(self):
+        with patch("sys.stdout", new_callable=StringIO):
+            with self.assertLogs("pywrkr", level="WARNING") as logs:
+                await pywrkr.run_user_simulation(self._config(), install_signal_handlers=False)
+        output = "\n".join(logs.output)
+        self.assertIn("50 virtual users share a pool of 10 connections", output)
+        self.assertIn("-c 50", output)
+
+    async def test_no_warning_when_think_time_lets_users_share_the_pool(self):
+        with patch("sys.stdout", new_callable=StringIO):
+            with patch.object(workers.logger, "warning") as warn:
+                await pywrkr.run_user_simulation(
+                    self._config(think_time=1.0), install_signal_handlers=False
+                )
+        messages = [call.args[0] for call in warn.call_args_list]
+        self.assertFalse(
+            [m for m in messages if "share a pool of" in m],
+            f"unexpected pool warning with think time: {messages}",
+        )
+
+
+class TestAutofindPoolCeiling(AioHTTPTestCase):
+    """The ramp must not stop on latency the client pool created."""
+
+    async def get_application(self):
+        app = web.Application()
+        app.router.add_get("/", self.handle_slow)
+        return app
+
+    async def handle_slow(self, request):
+        await asyncio.sleep(0.1)
+        return web.Response(text="ok")
+
+    @staticmethod
+    def _p95(latencies):
+        ordered = sorted(latencies)
+        return ordered[_nearest_rank_idx(95, len(ordered))]
+
+    async def test_autofind_p95_beats_a_pool_starved_run(self):
+        # Absolute latency bounds are worthless here: a loaded CI runner is
+        # several times slower than a laptop, and picking a number that holds
+        # on both leaves no gap to detect the bug in. So measure both regimes
+        # in this test -- the starved pool is the control -- and compare.
+        url = f"http://localhost:{self.server.port}/"
+        # Deliberately gentle: at 50 users a shared CI runner becomes the
+        # bottleneck itself and squeezes the two regimes together. 20 users
+        # through 4 connections is the same 5-deep queue at a fifth of the
+        # client-side cost.
+        users, starved_pool, seconds = 20, 4, 2.0
+
+        starved, _ = await pywrkr.run_user_simulation(
+            pywrkr.BenchmarkConfig(
+                url=url,
+                users=users,
+                connections=starved_pool,
+                duration=seconds,
+                think_time=0.0,
+                _quiet=True,
+            ),
+            install_signal_handlers=False,
+        )
+
+        config = pywrkr.AutofindConfig(
+            url=url,
+            max_error_rate=1.0,
+            max_p95=30.0,
+            step_duration=seconds,
+            start_users=users,
+            max_users=users,
+            step_multiplier=2.0,
+            think_time=0.0,
+            think_time_jitter=0.0,
+            timeout_sec=10,
+        )
+        with patch("sys.stdout", new_callable=StringIO):
+            steps = await pywrkr.run_autofind(config)
+
+        self.assertEqual([step.users for step in steps], [users])
+        starved_p95 = self._p95(starved.latencies)
+        # The queue is 5 deep, so the starved p95 runs several times the
+        # handler's 100 ms while autofind's sized pool tracks it. Require only
+        # 1.5x: the measured effect is ~5x, and the bug made the two identical
+        # (2.398s vs 2.391s), so even a heavily loaded runner has room.
+        self.assertGreater(
+            starved_p95,
+            steps[0].p95 * 1.5,
+            f"autofind p95 {steps[0].p95:.3f}s is not meaningfully below the "
+            f"pool-starved {starved_p95:.3f}s -- the step is queueing too",
+        )
 
 
 if __name__ == "__main__":

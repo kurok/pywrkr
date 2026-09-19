@@ -637,6 +637,12 @@ class AutofindConfig:
     keepalive: bool = True
     ssl_config: SSLConfig = field(default_factory=SSLConfig)
     json_output: str | None = None
+    #: Connection-pool size offered to each step. The pool a step actually gets
+    #: is ``max(step_users, connections)``: a pool smaller than the offered load
+    #: makes virtual users queue on the client, and that wait lands in the
+    #: recorded latency, so the p95 that ends the ramp describes the load
+    #: generator rather than the server autofind is supposed to be sizing.
+    connections: int = DEFAULT_CONNECTIONS
     # Observability settings, carried through to each step's benchmark config.
     # Without these an autofind session exported nothing at all, which is the
     # run you most want to watch live.
