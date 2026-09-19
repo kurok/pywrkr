@@ -428,6 +428,61 @@ class TestMergeWorkerStats(unittest.TestCase):
         self.assertEqual(len(merged.breakdowns), 3)
 
 
+class TestBreakdownAvailableRoundTrip(unittest.TestCase):
+    """The master must know which phases a worker actually measured.
+
+    `available` was not serialized, so the master rebuilt every LatencyBreakdown
+    with the default full phase set. aggregate_breakdowns intersects `available`
+    to omit unmeasured phases -- so a --http2 --latency-breakdown distributed
+    run reported DNS/TCP/TLS as 0ms *as if measured*, which reads as an
+    impossibly fast connection rather than an unknown one.
+    """
+
+    def test_breakdown_available_round_trips(self):
+        stats = WorkerStats()
+        stats.breakdowns.append(
+            LatencyBreakdown(ttfb=0.1, transfer=0.05, available=("ttfb", "transfer", "total"))
+        )
+        restored = _deserialize_stats(_serialize_stats(stats))
+        self.assertEqual(restored.breakdowns[0].available, ("ttfb", "transfer", "total"))
+
+    def test_an_httpx_worker_does_not_contribute_phantom_connection_phases(self):
+        """The behaviour the round-trip exists for."""
+        from pywrkr.reporting import aggregate_breakdowns
+
+        stats = WorkerStats()
+        for _ in range(5):
+            stats.breakdowns.append(
+                LatencyBreakdown(ttfb=0.1, transfer=0.05, available=("ttfb", "transfer", "total"))
+            )
+        restored = _deserialize_stats(_serialize_stats(stats))
+        aggregate = aggregate_breakdowns(list(restored.breakdowns))
+        # Pre-fix dns/connect/tls came back as measured 0.0ms averages.
+        for phase in ("dns", "connect", "tls"):
+            self.assertNotIn(phase, aggregate, aggregate)
+        self.assertIn("ttfb", aggregate)
+        self.assertIn("transfer", aggregate)
+
+    def test_a_worker_that_does_not_send_available_means_the_full_set(self):
+        """An older worker predates the field; the full set is what it meant."""
+        from pywrkr.config import LATENCY_PHASES
+
+        stats = WorkerStats()
+        stats.breakdowns.append(LatencyBreakdown(dns=0.01, ttfb=0.1))
+        data = _serialize_stats(stats)
+        del data["breakdowns"][0]["available"]
+        self.assertEqual(_deserialize_stats(data).breakdowns[0].available, LATENCY_PHASES)
+
+    def test_a_malformed_available_is_named(self):
+        stats = WorkerStats()
+        stats.breakdowns.append(LatencyBreakdown(ttfb=0.1))
+        data = _serialize_stats(stats)
+        data["breakdowns"][0]["available"] = "ttfb"
+        with self.assertRaises(ValueError) as ctx:
+            _deserialize_stats(data)
+        self.assertIn("breakdowns.available must be an array", str(ctx.exception))
+
+
 class TestWorkerExitCode(unittest.IsolatedAsyncioTestCase):
     """Every give-up path must be distinguishable from a completed run.
 

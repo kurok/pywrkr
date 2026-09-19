@@ -20,6 +20,7 @@ from pywrkr.config import (
     DEFAULT_THINK_TIME_JITTER,
     DEFAULT_THREADS,
     DEFAULT_TIMEOUT,
+    LATENCY_PHASES,
     BenchmarkConfig,
     LatencyBreakdown,
     Scenario,
@@ -440,6 +441,11 @@ def _serialize_stats(stats: WorkerStats) -> dict:
                 "ttfb": b.ttfb,
                 "transfer": b.transfer,
                 "is_reused": b.is_reused,
+                # Which phases this sample actually measured. Without it the
+                # master rebuilt every breakdown with the full default set, so
+                # a --http2 worker's unmeasured DNS/TCP/TLS zeros were averaged
+                # in and reported as an impossibly fast connection phase.
+                "available": list(b.available),
             }
             for b in stats.breakdowns
         ],
@@ -520,6 +526,11 @@ def _deserialize_stats(data: dict) -> WorkerStats:
     for b in _field_sequence(data, "breakdowns"):
         if not isinstance(b, dict):
             raise ValueError(f"breakdowns entry must be an object, got {type(b).__name__}")
+        available = b.get("available")
+        if available is not None and not isinstance(available, (list, tuple)):
+            raise ValueError(
+                f"breakdowns.available must be an array, got {type(available).__name__}"
+            )
         bd_items.append(
             LatencyBreakdown(
                 dns=b.get("dns", 0.0),
@@ -528,6 +539,9 @@ def _deserialize_stats(data: dict) -> WorkerStats:
                 ttfb=b.get("ttfb", 0.0),
                 transfer=b.get("transfer", 0.0),
                 is_reused=b.get("is_reused", False),
+                # An older worker does not send it; the full set is what it
+                # would have meant.
+                available=tuple(available) if available is not None else LATENCY_PHASES,
             )
         )
     bd_seen = int(_field_number(data, "breakdowns_total_seen", len(bd_items)))
