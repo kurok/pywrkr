@@ -285,3 +285,46 @@ def test_scheme_mismatch_same_host_rejected():
     ]
     with pytest.raises(ValueError, match="multiple hosts"):
         har_to_scenario(entries, HarImportConfig())
+
+
+def test_har_time_and_started_datetime_coerced(tmp_path):
+    """Exporters emit these fields as strings, nulls and numbers.
+
+    Stored raw they reached the think-time computation and the ISO parser,
+    which died on the unexpected type -- and neither AttributeError nor
+    TypeError is caught by the CLI, so the user saw a traceback rather than an
+    error message.
+    """
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "http://h/a", "method": "GET"},
+                    "response": {"status": 200},
+                    "time": "12.5",
+                    "startedDateTime": 5,
+                },
+                {
+                    "request": {"url": "http://h/b", "method": "GET"},
+                    "response": {"status": 200},
+                    "time": None,
+                    "startedDateTime": "2024-01-01T00:00:01Z",
+                },
+                {
+                    "request": {"url": "http://h/c", "method": "GET"},
+                    "response": {"status": 200},
+                    "time": {"not": "a number"},
+                    "startedDateTime": None,
+                },
+            ]
+        },
+    )
+
+    entries = parse_har(path)
+    assert [e.time_ms for e in entries] == [12.5, 0.0, 0.0]
+    assert [e.started_datetime for e in entries] == ["", "2024-01-01T00:00:01Z", ""]
+
+    # The whole point: this used to raise rather than produce a scenario.
+    scenario = har_to_scenario(entries, HarImportConfig())
+    assert len(scenario["steps"]) == 3

@@ -1825,7 +1825,9 @@ def _run_har_import(args: argparse.Namespace) -> None:
             config=config,
             name=args.name,
         )
-    except (FileNotFoundError, ValueError) as e:
+    # TypeError as well: a HAR whose fields are the wrong type should be
+    # reported the same way as one that is malformed, not as a traceback.
+    except (FileNotFoundError, TypeError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 

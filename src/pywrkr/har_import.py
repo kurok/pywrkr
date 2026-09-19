@@ -242,10 +242,23 @@ def parse_har(path: str) -> list[HarEntry]:
         except (TypeError, ValueError):
             status = 0
 
-        # Timing
-        time_ms = entry.get("time", 0.0)
+        # Timing.
+        #
+        # Coerced for the same reason response.status is coerced just above:
+        # exporters emit these as strings, as null, and occasionally as
+        # numbers. Stored raw they reached _compute_think_times and
+        # _parse_iso_datetime, which died on a type they never expected --
+        # AttributeError on an int startedDateTime, TypeError on a null time --
+        # and neither is caught by the CLI's error path, so the user got a
+        # traceback rather than a message.
+        raw_time = entry.get("time", 0.0)
+        try:
+            time_ms = float(raw_time)
+        except (TypeError, ValueError):
+            time_ms = 0.0
 
-        started_datetime = entry.get("startedDateTime", "")
+        raw_started = entry.get("startedDateTime", "")
+        started_datetime = raw_started if isinstance(raw_started, str) else ""
 
         entries.append(
             HarEntry(
