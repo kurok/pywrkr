@@ -138,6 +138,38 @@ class TestConfigSerialization(unittest.TestCase):
         self.assertTrue(restored.live_dashboard)
 
 
+class TestMalformedStats(unittest.TestCase):
+    """Every rejection names the field, because it is logged per worker."""
+
+    def test_each_malformed_shape_is_a_named_value_error(self):
+        cases = {
+            "status_codes key": {"status_codes": {"abc": 1}},
+            "status_codes must be an object": {"status_codes": [1, 2]},
+            "latencies must be an array": {"latencies": "nope"},
+            "total_requests must be a number": {"total_requests": "lots"},
+            "rps_timeline entry must be an array": {"rps_timeline": [5]},
+            "breakdowns entry must be an object": {"breakdowns": ["x"]},
+            "expected an object": ["not", "a", "dict"],
+        }
+        for expected, payload in cases.items():
+            with self.subTest(expected=expected):
+                with self.assertRaises(ValueError) as ctx:
+                    _deserialize_stats(payload)
+                self.assertIn(expected, str(ctx.exception))
+
+    def test_a_valid_payload_still_round_trips(self):
+        stats = WorkerStats()
+        stats.total_requests = 42
+        stats.status_codes[200] = 42
+        stats.latencies.extend([0.01, 0.02])
+        stats.rps_timeline = [(0.0, 20), (1.0, 22)]
+        restored = _deserialize_stats(_serialize_stats(stats))
+        self.assertEqual(restored.total_requests, 42)
+        self.assertEqual(restored.status_codes[200], 42)
+        self.assertEqual(list(restored.latencies), [0.01, 0.02])
+        self.assertEqual(restored.rps_timeline, [(0.0, 20), (1.0, 22)])
+
+
 class TestTrafficProfileSerialization(unittest.TestCase):
     """A shaped run must stay shaped on the workers.
 
