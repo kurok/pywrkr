@@ -615,3 +615,68 @@ class TestLatencyBreakdownPhases(AioHTTPTestCase):
         # Claiming 0.0 would drag the aggregate down with a phase that never ran.
         self.assertEqual(bd.transfer, 0.0)
         self.assertNotIn("transfer", bd.available)
+
+
+# ---------------------------------------------------------------------------
+# wk-229: the aiohttp backend followed redirects silently (aiohttp's default
+# is up to 10 hops) while the httpx backend did not, so --http2 and a default
+# run measured different things against the same URL.
+# ---------------------------------------------------------------------------
+
+
+class TestRedirectHandling(AioHTTPTestCase):
+    async def get_application(self):
+        self.seen: list[tuple[str, str]] = []
+        app = web.Application()
+        app.router.add_get("/r", self.handle_redirect)
+        app.router.add_get("/target", self.handle_target)
+        return app
+
+    async def handle_redirect(self, request):
+        self.seen.append((request.path, request.headers.get("Authorization", "")))
+        raise web.HTTPFound("/target")
+
+    async def handle_target(self, request):
+        self.seen.append((request.path, request.headers.get("Authorization", "")))
+        return web.Response(text="arrived")
+
+    async def _send(self, **config_overrides):
+        from pywrkr.backends import create_backend
+
+        url = f"http://localhost:{self.server.port}/r"
+        config = pywrkr.BenchmarkConfig(url=url, connections=1, **config_overrides)
+        stats = pywrkr.WorkerStats()
+        backend = create_backend(config, 1)
+        try:
+            async with backend.create_session(stats) as session:
+                result = await workers._execute_request(
+                    session,
+                    "GET",
+                    url,
+                    {"Authorization": "Basic dTpw"},
+                    None,
+                    False,
+                    5.0,
+                    stats,
+                    config,
+                    None,
+                    [None],
+                    transport_errors=backend.transport_errors,
+                )
+        finally:
+            await backend.aclose()
+        return result, stats
+
+    async def test_aiohttp_backend_does_not_follow_redirects(self):
+        result, stats = await self._send()
+        # Pre-fix the worker saw 200, status_codes held {200: 1}, and the
+        # server had served both /r and /target -- forwarding the Basic auth
+        # header on the same-origin hop.
+        self.assertEqual(result.status, 302)
+        self.assertEqual(stats.status_codes[302], 1)
+        self.assertEqual([path for path, _ in self.seen], ["/r"])
+
+    async def test_follow_redirects_opt_in_still_works(self):
+        result, stats = await self._send(follow_redirects=True)
+        self.assertEqual(result.status, 200)
+        self.assertEqual([path for path, _ in self.seen], ["/r", "/target"])

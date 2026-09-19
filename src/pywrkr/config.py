@@ -530,6 +530,10 @@ class BenchmarkConfig:
     session_cookies: bool = True
     # Use the HTTP/2-capable backend (optional `pywrkr[http2]` extra).
     http2: bool = False
+    # Follow 3xx responses instead of measuring them. Off by default, as in
+    # wrk and ab: a redirect chain measured as one request hides both the hop
+    # count and where the bytes actually came from.
+    follow_redirects: bool = False
     verify_content_length: bool = False
     verbosity: int = 0
     csv_output: str | None = None  # file path for CSV percentile output

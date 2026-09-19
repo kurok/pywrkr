@@ -305,7 +305,8 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
               [--no-keepalive] [-l] [-v VERBOSITY] [--timeout TIMEOUT]
               [--ssl-verify] [--ca-bundle FILE] [-R] [-e FILE] [-w]
               [--json FILE] [--html-report FILE] [--live]
-              [--latency-breakdown] [--tag TAGS] [--otel-endpoint URL]
+              [--latency-breakdown] [--follow-redirects] [--tag TAGS]
+              [--otel-endpoint URL]
               [--prom-remote-write URL] [--threshold THRESHOLDS]
               [-u USERS] [--ramp-up RAMP_UP] [--think-time THINK_TIME]
               [--think-jitter THINK_JITTER] [--rate RATE]
@@ -360,6 +361,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--live` | Live TUI dashboard during benchmark (requires `pywrkr[tui]`) |
 | | `--scenario` | Path to JSON/YAML scenario file for scripted multi-step requests (supports `extract` + `${var}` correlation) |
 | | `--latency-breakdown` | Show detailed per-phase latency breakdown (DNS, TCP, TLS, TTFB, transfer) |
+| | `--follow-redirects` | Follow 3xx responses instead of measuring them (default: off, as in wrk/ab) |
 | | `--threshold` / `--th` | SLO threshold (repeatable), e.g. `--threshold "p95 < 300ms"`. Exit code 2 on breach |
 | | `--tag` | Metadata tag as `key=value` (repeatable), e.g. `--tag environment=staging` |
 | | `--otel-endpoint` | Export metrics to OpenTelemetry collector (OTLP/HTTP) |
@@ -1439,6 +1441,11 @@ Output includes averages with min/max/p50/p95 for each phase:
 A request whose body is never read -- a step that only checks the status code, for instance --
 reports no transfer phase at all rather than `0.00ms`, so the aggregate is not diluted by a phase
 that never ran.
+
+**Redirects are measured, not followed.** A `301` or `302` is reported as the status it is, the
+latency covers that one hop, and the bytes come from the host you named. `--follow-redirects` opts
+in to following them on either backend — at which point the 3xx disappears from the status
+distribution, the latency spans the whole chain, and the server decides which host is under test.
 
 **Connection reuse:** When keep-alive is enabled (the default), most requests reuse existing connections. For reused connections, DNS/Connect/TLS phases will be zero. The breakdown reports how many connections were new vs. reused.
 
