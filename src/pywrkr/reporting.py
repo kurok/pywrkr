@@ -526,6 +526,26 @@ def _bucket_timeline(timeline: list[tuple[float, int]], bucket_size: int) -> dic
     return buckets
 
 
+def _bucket_span(index: int, bucket_size: float, duration: float) -> float:
+    """Real time covered by one timeline bucket.
+
+    The final bucket is usually partial, so dividing by the whole bucket_size
+    would understate its throughput. But workers flush their last interval
+    after the stop signal, so that bucket's timestamp routinely lands at or
+    past duration and the remaining span comes out zero or negative. Falling
+    back to the full bucket is the only sane reading of it -- the samples did
+    happen, and one bucket's width is the closest thing to a real span.
+
+    Clamping to a tiny epsilon instead, which the HTML report used to do, turns
+    the same bucket into count/1e-9: a five-billion-req/s bar that rescales the
+    y-axis and flattens the entire timeline into the baseline.
+    """
+    span = bucket_size
+    if duration > 0:
+        span = min(bucket_size, duration - index * bucket_size)
+    return span if span > 0 else bucket_size
+
+
 def print_rps_timeline(
     timeline: list[tuple[float, int]], start: float, duration: float, file: TextIO = sys.stdout
 ) -> None:
@@ -540,19 +560,14 @@ def print_rps_timeline(
     # A non-empty timeline always yields at least one bucket (origin -> 0).
     buckets = _bucket_timeline(timeline, bucket_size)
 
-    def _bucket_span(i: int) -> float:
-        # The final partial bucket spans only the remaining real time, so
-        # dividing by the full bucket_size would understate its throughput.
-        span = bucket_size
-        if duration > 0:
-            span = min(bucket_size, duration - i * bucket_size)
-        return span if span > 0 else bucket_size
+    def _span(i: int) -> float:
+        return _bucket_span(i, bucket_size, duration)
 
-    max_rps = max(count / _bucket_span(i) for i, count in buckets.items())
+    max_rps = max(count / _span(i) for i, count in buckets.items())
     bar_max = 40
     print(f"  Requests/sec Timeline ({bucket_size}s buckets):", file=file)
     for i in range(max(buckets.keys()) + 1):
-        rps = buckets.get(i, 0) / _bucket_span(i)
+        rps = buckets.get(i, 0) / _span(i)
         bar_len = int(rps / max_rps * bar_max) if max_rps else 0
         bar = "#" * bar_len
         t_start = i * bucket_size
@@ -861,13 +876,11 @@ def generate_gatling_html_report(
         bucket_size = max(1, int(duration / 40))
         time_buckets = _bucket_timeline(stats.rps_timeline, bucket_size)
         for b in sorted(time_buckets.keys()):
-            # Divide the final partial bucket by its real span, not the full
-            # bucket_size, so the last bar reflects the true rate.
-            span = bucket_size
-            if duration > 0:
-                span = min(bucket_size, duration - b * bucket_size)
+            # Same span rule as the console timeline, from the same helper,
+            # so the two cannot disagree about the final bucket again.
+            span = _bucket_span(b, bucket_size, duration)
             rps_labels.append(f"{b * bucket_size}s")
-            rps_values.append(round(time_buckets[b] / max(span, 1e-9), 1))
+            rps_values.append(round(time_buckets[b] / span, 1))
 
     # -- Status code pie --
     sc_labels = [str(c) for c in sorted(status_codes.keys())]

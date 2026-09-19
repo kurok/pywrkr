@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 
@@ -392,6 +393,39 @@ class TestGatlingHtmlReport(unittest.TestCase):
         self.assertIn("<!DOCTYPE html>", html)
         self.assertIn("</html>", html)
         self.assertIn("pywrkr", html)
+
+    def test_rps_timeline_bucket_at_duration_not_spike(self):
+        """The last bucket routinely lands at or past duration.
+
+        Workers flush their final interval after the stop signal, so
+        `duration - b * bucket_size` comes out zero or negative for it. The
+        console timeline falls back to a full bucket; the HTML path clamped to
+        1e-9 instead, so that bucket became count/1e-9 -- a five-billion-req/s
+        bar that rescaled the y-axis and flattened the real timeline into the
+        baseline.
+        """
+        stats = WorkerStats()
+        stats.total_requests = 1005
+        stats.latencies.extend([0.05] * 100)
+        # Ten full seconds at 100/s, then the post-stop flush landing exactly
+        # on the duration boundary.
+        stats.rps_timeline = [(1000.0 + i, 100) for i in range(10)]
+        stats.rps_timeline.append((1010.0, 5))
+
+        config = BenchmarkConfig(url="http://localhost:8080/", method="GET")
+        html = generate_gatling_html_report(stats, 10.0, 4, config, start_time=1000.0)
+
+        # Anchored on the series label, not on "data:" -- the chart's outer
+        # data object comes first, so a looser pattern matches the wrong array
+        # and the assertion passes against the spike it is meant to catch.
+        match = re.search(r"label: 'Req/s',\s*data:\s*(\[[^\]]*\])", html)
+        self.assertIsNotNone(match, "the RPS chart must carry its data series")
+        values = json.loads(match.group(1))
+        self.assertTrue(values, "timeline must not be empty")
+        self.assertTrue(
+            all(v <= 200 for v in values),
+            f"a bucket at t == duration produced an impossible rate: {values}",
+        )
 
     def test_contains_chart_data(self):
         stats = self._make_stats()
