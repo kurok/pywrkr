@@ -576,12 +576,19 @@ class TestLatencyBreakdownPhases(AioHTTPTestCase):
         app.router.add_get("/slow-body", self.handle_slow_body)
         return app
 
+    #: The gap between headers and body. 0.4s rather than the 0.2s this test
+    #: started with: a loaded macos runner measured 0.1437s of it and failed a
+    #: `>= 0.15` bound, because the client does not parse the headers the
+    #: instant the server sends them and that slack comes out of the gap.
+    BODY_DELAY = 0.4
+
     async def handle_slow_body(self, request):
-        # Headers go out immediately; the body follows 200 ms later. Anything
-        # that calls that gap "time to first byte" is measuring the headers.
+        # Headers go out immediately; the body follows BODY_DELAY later.
+        # Anything that calls that gap "time to first byte" is measuring the
+        # headers.
         resp = web.StreamResponse()
         await resp.prepare(request)
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(self.BODY_DELAY)
         await resp.write(b"x" * 1000)
         await resp.write_eof()
         return resp
@@ -604,9 +611,13 @@ class TestLatencyBreakdownPhases(AioHTTPTestCase):
         breakdowns = await self._one_request()
         self.assertEqual(len(breakdowns), 1)
         bd = breakdowns[0]
-        # The 200 ms belongs to transfer, not to ttfb and not to nowhere.
-        self.assertGreaterEqual(bd.transfer, 0.15)
-        self.assertLess(bd.ttfb, 0.1)
+        # The delay belongs to transfer, not to ttfb and not to nowhere.
+        # Relational first: pre-fix transfer was exactly 0.0 while ttfb held
+        # the headers time, so this is the assertion that catches the bug
+        # whatever the runner's timing looks like.
+        self.assertGreater(bd.transfer, bd.ttfb)
+        self.assertGreaterEqual(bd.transfer, self.BODY_DELAY / 2)
+        self.assertLess(bd.ttfb, bd.transfer / 2)
         self.assertIn("transfer", bd.available)
 
     async def test_skipped_body_read_reports_no_transfer_phase(self):
