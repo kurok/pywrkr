@@ -988,3 +988,80 @@ def _one_get(parameter: dict) -> dict:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# url-file rendering
+# ---------------------------------------------------------------------------
+
+_PARAM_SPEC = {
+    "openapi": "3.0.0",
+    "info": {"title": "t", "version": "1"},
+    "paths": {
+        "/users/{id}": {
+            "get": {
+                "operationId": "getUser",
+                "parameters": [
+                    {"name": "id", "in": "path", "required": True, "example": "a b&c"},
+                    {"name": "q", "in": "query", "example": "x&y=z"},
+                ],
+            }
+        }
+    },
+}
+
+
+class TestUrlFileRendering(unittest.TestCase):
+    def test_url_file_without_servers_requires_base_url(self):
+        """A url-file has nowhere to put a base URL.
+
+        Without one the file used to contain bare paths like `/users/1`.
+        load_url_file accepts those, and the run then failed with an opaque
+        connection error -- long after the import appeared to have worked.
+        """
+        with self.assertRaises(SpecError) as ctx:
+            openapi_to_url_file(_PARAM_SPEC)
+        self.assertIn("absolute host", str(ctx.exception))
+
+    def test_parameter_values_are_url_encoded(self):
+        """Examples and defaults were interpolated raw.
+
+        load_url_file splits a url-file line on whitespace, so a value
+        containing a space silently truncated the URL: `/users/a b&c?q=x&y=z`
+        was read back as `/users/a`, benchmarking a different request than the
+        spec describes.
+        """
+        spec = dict(_PARAM_SPEC, servers=[{"url": "http://api.example.com"}])
+        line = openapi_to_url_file(spec).scenario["_url_file"].strip()
+
+        self.assertEqual(line, "http://api.example.com/users/a%20b%26c?q=x%26y%3Dz")
+        self.assertNotIn(" ", line)
+
+    def test_placeholders_are_not_encoded(self):
+        """A ${name} marks something the user must supply; it is not a value.
+
+        Percent-encoding the braces would leave a URL nothing substitutes into.
+        """
+        spec = {
+            "openapi": "3.0.0",
+            "info": {"title": "t", "version": "1"},
+            "servers": [{"url": "http://api.example.com"}],
+            "paths": {
+                "/users/{id}": {
+                    "get": {
+                        "operationId": "getUser",
+                        "parameters": [
+                            {
+                                "name": "id",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                    }
+                }
+            },
+        }
+        line = openapi_to_url_file(spec).scenario["_url_file"].strip()
+        self.assertIn("${id}", line)
+        self.assertNotIn("%7B", line)
