@@ -567,7 +567,11 @@ class HttpxSession(BackendSession):
         return self
 
     async def __aexit__(self, *exc_info) -> None:
-        await self._client.__aexit__(*exc_info)
+        # Deliberately not AsyncClient.__aexit__: that closes the transport,
+        # and the transport is shared by every virtual user in the run. One
+        # user finishing would drop the pool's idle connections out from under
+        # the others. The backend owns the transport and closes it in aclose().
+        return None
 
     async def send(
         self,
@@ -659,6 +663,20 @@ class HttpxBackend(Backend):
             max_connections=max(1, pool_limit),
             max_keepalive_connections=0 if not config.keepalive else max(1, pool_limit),
         )
+        # One transport for the whole run, so every virtual user multiplexes
+        # over the same h2 connections. Limits is a value object: an AsyncClient
+        # built with limits= gets its *own* pool of that size, so a per-user
+        # client meant -u 200 -c 10 opened up to 2000 connections and 200 TLS
+        # handshakes -- the opposite of what h2 mode is for.
+        self._transport = self._httpx.AsyncHTTPTransport(
+            http2=True,
+            # Cleartext h2 has no ALPN handshake, so HTTP/1.1 has to be off for
+            # the client to use HTTP/2 prior knowledge. Over TLS both stay on so
+            # ALPN can legitimately fall back to h1.
+            http1=not self._cleartext,
+            limits=self._limits,
+            verify=self._verify(),
+        )
 
     def _verify(self):
         if self._cleartext:
@@ -668,14 +686,10 @@ class HttpxBackend(Backend):
         return self._config.ssl_config.ca_bundle or True
 
     def create_session(self, stats: WorkerStats, isolate_cookies: bool = True) -> BackendSession:
+        # Each client keeps its own Cookies, which is what isolates one virtual
+        # user from another; only the transport (and so the pool) is shared.
         client = self._httpx.AsyncClient(
-            http2=True,
-            # Cleartext h2 has no ALPN handshake, so HTTP/1.1 has to be off for
-            # the client to use HTTP/2 prior knowledge. Over TLS both stay on so
-            # ALPN can legitimately fall back to h1.
-            http1=not self._cleartext,
-            limits=self._limits,
-            verify=self._verify(),
+            transport=self._transport,
             follow_redirects=self._config.follow_redirects,
             timeout=self._httpx.Timeout(self._config.timeout_sec),
         )
@@ -688,7 +702,7 @@ class HttpxBackend(Backend):
         )
 
     async def aclose(self) -> None:
-        return None  # each AsyncClient owns and closes its own pool
+        await self._transport.aclose()
 
     @property
     def describe(self) -> str:

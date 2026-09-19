@@ -665,6 +665,11 @@ so HTTP/2 is used with prior knowledge (h2c) — the only way `--http2` can mean
 cleartext target. A cleartext server that does not speak h2c will fail the requests rather than
 silently downgrade.
 
+**One pool for the whole run.** Every virtual user gets its own client — so cookies stay per-user —
+but they all share a single transport, and therefore a single set of h2 connections. `-c` bounds
+that shared pool, which is what lets `-u 200 --http2 -c 10` multiplex 200 users over 10 connections
+instead of opening one pool per user.
+
 **`--latency-breakdown` reports less on this backend.** The HTTP/2 client has no hooks for the DNS,
 TCP and TLS phases, so those are **omitted** rather than reported as zero — a zero would read as an
 impossibly fast connection phase. TTFB, transfer and total are still measured. Connection-reuse
