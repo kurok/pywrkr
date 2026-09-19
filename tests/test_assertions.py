@@ -16,6 +16,7 @@ from pywrkr.assertions import (
     ANY_VALUE,
     AssertionFailure,
     StepAssertions,
+    _json_matches,
     evaluate_assertions,
     parse_duration,
     parse_step_assertions,
@@ -158,12 +159,48 @@ class TestParseStepAssertions(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class TestJsonMatches(unittest.TestCase):
+    """The docstring promises a JSON-spelling fallback: "42" matches 42.
+
+    The bool guard ran before it, so a quoted "true" -- which is what YAML
+    users write to stop the value becoming something else -- could never match
+    a boolean payload. The rule then failed on every request with
+    `AssertJson: $.ok != 'true' (was True)`, which reads as if the payload were
+    wrong rather than the comparison.
+    """
+
+    def test_quoted_bool_matches_boolean_payload(self):
+        self.assertTrue(_json_matches(True, "true"))
+        self.assertTrue(_json_matches(False, "false"))
+        self.assertTrue(_json_matches("true", True))
+
+    def test_bool_and_number_still_do_not_match(self):
+        # In Python True == 1; JSON says otherwise, and so does this.
+        self.assertFalse(_json_matches(True, 1))
+        self.assertFalse(_json_matches(1, True))
+        self.assertFalse(_json_matches(False, 0))
+        self.assertFalse(_json_matches(0, False))
+
+    def test_the_wrong_spelling_still_fails(self):
+        self.assertFalse(_json_matches(True, "false"))
+        self.assertFalse(_json_matches(False, "true"))
+
+    def test_the_numeric_fallback_is_unchanged(self):
+        self.assertTrue(_json_matches(42, "42"))
+        self.assertTrue(_json_matches(42, 42.0))
+        self.assertTrue(_json_matches(None, "null"))
+
+
 class TestEvaluateAssertions(unittest.TestCase):
     def _check(self, spec, status=200, body=OK_BODY, headers=None, latency=0.01):
         rules = parse_step_assertions(spec, "Step 0")
         return evaluate_assertions(
             rules, status, body, OK_HEADERS if headers is None else headers, latency
         )
+
+    def test_quoted_bool_in_a_scenario_passes(self):
+        """What a YAML user actually writes: assert_json: {"$.active": "true"}."""
+        self.assertEqual(self._check({"assert_json": {"$.active": "true"}}), [])
 
     def test_everything_passing(self):
         self.assertEqual(
