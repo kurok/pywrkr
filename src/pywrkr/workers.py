@@ -48,6 +48,7 @@ from pywrkr.reporting import (
 )
 from pywrkr.streaming import Snapshot, StreamingExporter
 from pywrkr.templating import (
+    HeaderInjectionError,
     TemplateError,
     TemplateFunctions,
     apply_extractors,
@@ -58,6 +59,11 @@ from pywrkr.traffic_profiles import RateLimiter
 
 # Re-export aggregate_breakdowns for backward compatibility
 __all__ = ["aggregate_breakdowns"]
+
+#: Characters an HTTP client refuses to put in a header. A rendered value
+#: carrying one is rejected before it reaches the transport, where the refusal
+#: would arrive as a bare ValueError.
+_HEADER_CONTROL_CHARS = frozenset("\r\n\0")
 
 
 @dataclass(frozen=True)
@@ -827,14 +833,22 @@ def _render_step(
     Raises:
         TemplateError: A placeholder cannot be expanded and *keep_literal* is
             False.
+        HeaderInjectionError: A rendered header name or value carries a control
+            character.
     """
     path = substitute(step.path, variables, keep_literal, rows, functions)
 
     headers = dict(base_headers)
     for key, value in step.headers.items():
-        headers[substitute(key, variables, keep_literal, rows, functions)] = substitute(
-            value, variables, keep_literal, rows, functions
-        )
+        name = substitute(key, variables, keep_literal, rows, functions)
+        rendered = substitute(value, variables, keep_literal, rows, functions)
+        # A header built from a ${var} carries whatever the server put in the
+        # response body. A CR or LF in there is a header-injection attempt as
+        # far as the HTTP client is concerned, and it says so by raising --
+        # which used to kill the whole virtual user.
+        if _HEADER_CONTROL_CHARS.intersection(name) or _HEADER_CONTROL_CHARS.intersection(rendered):
+            raise HeaderInjectionError(name)
+        headers[name] = rendered
 
     # substitute() short-circuits on strings without "${", so this stays cheap
     # for the (common) steps that carry no placeholders at all.
@@ -1020,6 +1034,25 @@ async def scenario_worker(
                         logger.warning(
                             "Scenario user %d step '%s' template error: %s", user_id, step_name, exc
                         )
+                        iteration_aborted = True
+                        break
+                    except HeaderInjectionError as exc:
+                        # Abort this iteration like a template error: the
+                        # request is unsendable. The user lives on and its next
+                        # iteration still carries load.
+                        _record_step_error(stats, step_name)
+                        key = f"HeaderInjection: {exc.header}"
+                        stats.error_types[key] += 1
+                        if not iteration_error_counted:
+                            stats.errors += 1
+                            iteration_error_counted = True
+                        if stats.error_types[key] == 1:
+                            # Every iteration hits the same bad header, so log
+                            # the first and let error_types carry the count --
+                            # a soak would otherwise emit thousands of copies.
+                            logger.warning(
+                                "Scenario user %d step '%s': %s", user_id, step_name, exc
+                            )
                         iteration_aborted = True
                         break
 

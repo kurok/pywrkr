@@ -95,6 +95,23 @@ class ExtractError(Exception):
     """Raised when an ``extract`` rule cannot produce a value."""
 
 
+class HeaderInjectionError(Exception):
+    """Raised when a rendered header name or value carries a control character.
+
+    A scenario header is routinely built from a ``${var}`` extracted out of a
+    response body, so a stray CR or LF in what the server returned would
+    otherwise reach the HTTP client -- which rejects it, correctly, as a header
+    injection attempt.
+    """
+
+    def __init__(self, header: str) -> None:
+        super().__init__(
+            f"header {header!r} contains a control character (CR, LF or NUL) after substitution"
+        )
+        #: The offending header name, for error_types bookkeeping.
+        self.header = header
+
+
 def is_valid_var_name(name: object) -> bool:
     """Return True if *name* can be referenced as ``${name}``."""
     return isinstance(name, str) and _VAR_NAME_RE.match(name) is not None

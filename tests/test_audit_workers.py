@@ -680,3 +680,116 @@ class TestRedirectHandling(AioHTTPTestCase):
         result, stats = await self._send(follow_redirects=True)
         self.assertEqual(result.status, 200)
         self.assertEqual([path for path, _ in self.seen], ["/r", "/target"])
+
+
+# ---------------------------------------------------------------------------
+# wk-230: a CR/LF in a header rendered from an extracted value raised a bare
+# ValueError out of aiohttp, which killed the virtual user for the rest of the
+# run instead of counting one failed request.
+# ---------------------------------------------------------------------------
+
+
+class TestCrlfHeaderNotFatal(AioHTTPTestCase):
+    async def get_application(self):
+        app = web.Application()
+        app.router.add_get("/token", self.handle_token)
+        app.router.add_get("/use", self.handle_use)
+        return app
+
+    async def handle_token(self, request):
+        # A server that reflects a stray newline into a field a scenario
+        # extracts. Nothing here is under the load tool's control.
+        return web.json_response({"token": "abc\r\nX-Injected: 1"})
+
+    async def handle_use(self, request):
+        return web.Response(text="ok")
+
+    def _scenario_file(self):
+        import json
+
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump(
+                {
+                    "name": "crlf",
+                    "steps": [
+                        {
+                            "method": "GET",
+                            "path": "/token",
+                            "name": "get-token",
+                            "extract": {"token": {"json": "token"}},
+                        },
+                        {
+                            "method": "GET",
+                            "path": "/use",
+                            "name": "use-token",
+                            "headers": {"X-Token": "${token}"},
+                        },
+                    ],
+                },
+                f,
+            )
+        return path
+
+    async def test_crlf_in_extracted_header_is_counted_not_fatal(self):
+        path = self._scenario_file()
+        try:
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
+                url=f"http://localhost:{self.server.port}/",
+                connections=1,
+                threads=1,
+                duration=1.0,
+                timeout_sec=5,
+                think_time=0.0,
+                scenario=scenario,
+            )
+            with patch("sys.stdout", new_callable=StringIO):
+                stats, _ = await pywrkr.run_benchmark(config)
+        finally:
+            os.unlink(path)
+
+        # Pre-fix the ValueError escaped _execute_request, killed the worker
+        # task on its first iteration and surfaced only as "Worker N crashed".
+        self.assertGreaterEqual(stats.errors, 1)
+        injection_keys = [k for k in stats.error_types if k.startswith("HeaderInjection:")]
+        self.assertEqual(injection_keys, ["HeaderInjection: X-Token"])
+        # The user survived: step 1 kept running for the whole second, so it
+        # made many more requests than the single iteration a crash allowed.
+        self.assertGreater(len(stats.step_latencies["get-token"]), 5)
+        # And the same header failed every iteration without flooding the log.
+        self.assertGreater(stats.error_types["HeaderInjection: X-Token"], 5)
+
+    async def test_bad_header_is_one_error_not_a_dead_worker(self):
+        # The safety net behind the _render_step check: whatever route an
+        # unsendable header takes, aiohttp's ValueError is now a transport
+        # error like any other, so _execute_request counts it and returns.
+        from pywrkr.backends import create_backend
+
+        url = f"http://localhost:{self.server.port}/use"
+        config = pywrkr.BenchmarkConfig(url=url, connections=1)
+        stats = pywrkr.WorkerStats()
+        backend = create_backend(config, 1)
+        try:
+            async with backend.create_session(stats) as session:
+                result = await workers._execute_request(
+                    session,
+                    "GET",
+                    url,
+                    {"X-Token": "abc\r\nX-Injected: 1"},
+                    None,
+                    False,
+                    5.0,
+                    stats,
+                    config,
+                    None,
+                    [None],
+                    transport_errors=backend.transport_errors,
+                )
+        finally:
+            await backend.aclose()
+
+        # Counted as a failed request rather than escaping the coroutine.
+        self.assertEqual(result.error_name, "ValueError")
+        self.assertEqual(stats.errors, 1)
+        self.assertEqual(stats.error_types["ValueError"], 1)
