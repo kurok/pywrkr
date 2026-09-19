@@ -638,8 +638,18 @@ class TestDistributedStreamingEndToEnd(unittest.IsolatedAsyncioTestCase):
         # Percentiles come from pooled raw samples, so they are present and real.
         self.assertTrue([e for e in intervals if e["p95"]], master_exports)
 
-        # Both workers were counted every interval.
-        self.assertTrue(all(e["workers"] == "2" for e in intervals), master_exports)
+        # Both workers end up counted, and the master never invents a third.
+        #
+        # Not "every interval": the first snapshot can legitimately land before
+        # a worker has sent its first progress message, and a worker that has
+        # not reported yet is not reporting. macos-latest 3.13 produced exactly
+        # that -- workers 1, then 2, 2, 2 -- and the old assertion called it a
+        # failure. What matters is that the cluster view converges on both and
+        # the final snapshot is complete.
+        counts = [int(e["workers"]) for e in intervals]
+        self.assertLessEqual(max(counts), 2, master_exports)
+        self.assertEqual(counts[-1], 2, master_exports)
+        self.assertEqual(int(master_exports[-1]["workers"]), 2, master_exports)
 
     async def test_a_plain_distributed_run_sends_no_progress_traffic(self):
         """Without an export endpoint the wire is byte-for-byte what it was."""
