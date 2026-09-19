@@ -233,3 +233,56 @@ class TestAutofindGate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBothPathsAgreeOnStepThresholds(unittest.TestCase):
+    """`step:<name>` used to fail closed in the results-file gate.
+
+    `evaluate_from_results` ignored `threshold.step` and read the aggregate, so
+    every per-step threshold came back actual=None, passed=False -- while the
+    same expression evaluated correctly during the run. A gate that disagrees
+    with itself depending on which path you reach it by is worse than one that
+    is merely wrong.
+    """
+
+    def _stats(self) -> WorkerStats:
+        stats = WorkerStats(total_requests=30, errors=0)
+        for value in [0.05] * 20:
+            stats.latencies.append(value)
+        stats.step_latencies["checkout"] = [0.5] * 10
+        stats.step_latencies["login"] = [0.01] * 10
+        stats.step_errors["checkout"] = 0
+        return stats
+
+    def check(self, expr: str):
+        stats = self._stats()
+        duration = 10.0
+        config = BenchmarkConfig(url="http://x/")
+        live = evaluate_thresholds([parse_threshold(expr)], stats, duration)[0]
+        from_file = evaluate_from_results(
+            build_results_dict(stats, duration, 1, config), [parse_threshold(expr)]
+        )[0]
+        return live, from_file
+
+    def test_the_two_paths_agree_on_step_metrics(self):
+        for expr in (
+            "step:checkout p95 < 100ms",
+            "step:checkout p95 < 900ms",
+            "step:login p95 < 100ms",
+            "step:checkout avg_latency < 900ms",
+            "step:checkout max_latency < 900ms",
+            "step:checkout min_latency < 900ms",
+            "step:checkout error_rate < 1%",
+            "step:checkout rps > 0.5",
+        ):
+            with self.subTest(expr=expr):
+                live, from_file = self.check(expr)
+                self.assertEqual(live[1], from_file.actual, f"{expr}: actual differs")
+                self.assertEqual(live[2], from_file.passed, f"{expr}: verdict differs")
+
+    def test_a_step_that_never_ran_fails_in_both(self):
+        live, from_file = self.check("step:nosuch p95 < 100ms")
+        self.assertIsNone(live[1])
+        self.assertIsNone(from_file.actual)
+        self.assertFalse(live[2])
+        self.assertFalse(from_file.passed)
