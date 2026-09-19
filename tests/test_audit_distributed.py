@@ -67,7 +67,9 @@ class TestBoundPortHelper(unittest.IsolatedAsyncioTestCase):
 
         binder = asyncio.create_task(_bind_later())
         self.assertEqual(await _bound_port(port_holder), 4242)
-        await binder
+        # Bound to _ so CodeQL does not read the bare await as a statement
+        # with no effect (py/ineffectual-statement), as elsewhere in the repo.
+        _ = await binder
 
     async def test_times_out_with_a_message_naming_the_cause(self):
         with self.assertRaises(AssertionError) as ctx:
