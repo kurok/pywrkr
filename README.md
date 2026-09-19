@@ -680,7 +680,9 @@ instead of opening one pool per user.
 TCP and TLS phases, so those are **omitted** rather than reported as zero — a zero would read as an
 impossibly fast connection phase. TTFB, transfer and total are still measured. Connection-reuse
 counts are omitted for the same reason: under h2, "200 new connections" would be one connection
-carrying 200 streams.
+carrying 200 streams. Which phases a sample measured travels with it over the distributed wire, so
+a cluster of `--http2` workers omits them too rather than averaging their zeros into the master's
+report.
 
 Everything else — virtual users, rate limiting, traffic profiles, scenarios with correlation and
 feeders, thresholds, and baseline comparison — works identically on both backends. Distributed
