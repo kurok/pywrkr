@@ -8,14 +8,18 @@ terraform {
     }
   }
 
-  # Uncomment and configure for remote state
-  # backend "s3" {
-  #   bucket         = "my-terraform-state"
-  #   key            = "pywrkr/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   dynamodb_table = "terraform-locks"
-  #   encrypt        = true
-  # }
+  # Remote, locked state.
+  #
+  # State used to live in the Jenkins workspace. Any workspace wipe or agent
+  # change orphaned a VPC, NAT gateway, ECS services and a Cloud Map namespace
+  # that kept billing and that the next run could not destroy, because the run
+  # no longer had the state describing them.
+  #
+  # Deliberately empty: the bucket, table and region are supplied at init with
+  # -backend-config, so this file carries no account-specific names and a
+  # missing configuration fails the init rather than silently writing state to
+  # disk. See infra/jenkins/Jenkinsfile.
+  backend "s3" {}
 }
 
 provider "aws" {
