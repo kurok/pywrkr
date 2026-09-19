@@ -1293,7 +1293,7 @@ class _ProgressReporter:
 
 async def run_worker_node(
     master_host: str, master_port: int, worker_secret: str | None = None
-) -> None:
+) -> int:
     """Run in worker mode: connect to master, receive config, run benchmark, send results.
 
     If *worker_secret* is provided, the handshake is mutual HMAC-SHA256: the
@@ -1306,10 +1306,22 @@ async def run_worker_node(
     channel is plain TCP, so the config -- including any basic_auth and
     headers -- and the results travel in clear text. Run it on a trusted
     network or tunnel it.
+
+    Returns:
+        0 when a benchmark ran and its results reached the master, 1 on every
+        give-up path. An orchestrator -- systemd, a k8s Job, a Jenkins agent --
+        has no other way to tell a completed run from a five-minute wait for a
+        master that never appeared.
     """
     logger.info("Worker: connecting to master at %s:%s...", master_host, master_port)
 
-    reader, writer = await asyncio.open_connection(master_host, master_port)
+    try:
+        reader, writer = await asyncio.open_connection(master_host, master_port)
+    except (OSError, ConnectionError) as e:
+        # ConnectionRefusedError used to escape as a raw traceback, which is a
+        # poor way to tell an orchestrator the master is not up yet.
+        logger.error("Worker: cannot reach master at %s:%s: %s", master_host, master_port, e)
+        return 1
     logger.info("Worker: connected to master, waiting for config...")
 
     try:
@@ -1320,10 +1332,10 @@ async def run_worker_node(
                 )
             except asyncio.TimeoutError:
                 logger.error("Worker: timed out waiting for auth challenge from master")
-                return
+                return 1
             if challenge.get("type") != "challenge":
                 logger.error("Worker: expected auth challenge, got %r", challenge.get("type"))
-                return
+                return 1
             nonce = bytes.fromhex(challenge["nonce"])
             response = hmac.new(worker_secret.encode(), nonce, digestmod=hashlib.sha256).hexdigest()
             # Our own nonce, for the master to sign. Without this the worker
@@ -1345,18 +1357,17 @@ async def run_worker_node(
                 )
             except asyncio.TimeoutError:
                 logger.error("Worker: timed out sending auth response to master")
-                return
-
+                return 1
             try:
                 proof = await asyncio.wait_for(
                     _recv_msg(reader), timeout=_WORKER_AUTH_TIMEOUT_SECONDS
                 )
             except asyncio.TimeoutError:
                 logger.error("Worker: timed out waiting for the master to prove the secret")
-                return
+                return 1
             except (ConnectionError, OSError) as e:
                 logger.error("Worker: connection lost while authenticating the master: %s", e)
-                return
+                return 1
             expected_proof = hmac.new(
                 worker_secret.encode(), worker_nonce, digestmod=hashlib.sha256
             ).hexdigest()
@@ -1366,11 +1377,10 @@ async def run_worker_node(
                     "Worker: master did not prove the shared secret (got %r); refusing to run",
                     proof.get("type"),
                 )
-                return
+                return 1
             if not hmac.compare_digest(offered_proof, expected_proof):
                 logger.error("Worker: master failed the shared-secret check; refusing to run")
-                return
-
+                return 1
         try:
             msg = await asyncio.wait_for(_recv_msg(reader), timeout=_WORKER_RECV_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
@@ -1378,14 +1388,13 @@ async def run_worker_node(
                 "Worker: timed out after %ss waiting for config from master",
                 _WORKER_RECV_TIMEOUT_SECONDS,
             )
-            return
+            return 1
         except (ConnectionError, OSError) as e:
             logger.error("Worker: failed to receive config from master: %s", e)
-            return
+            return 1
         if msg.get("type") != "config":
             logger.error("Worker: unexpected message type: %s", msg.get("type"))
-            return
-
+            return 1
         config = _deserialize_config(msg["config"])
         logger.info("Worker: received config. Target: %s", config.url)
 
@@ -1406,8 +1415,7 @@ async def run_worker_node(
                         "error": f"worker lacks the HTTP/2 backend ({HTTP2_INSTALL_HINT})",
                     },
                 )
-            return
-
+            return 1
         logger.info("Worker: starting benchmark...")
 
         # The master asks for progress by putting an interval in the config
@@ -1453,6 +1461,7 @@ async def run_worker_node(
             {"type": "result", "stats": _serialize_stats(stats), "duration": run_duration},
         )
         logger.info("Worker: results sent to master. Done.")
+        return 0
     finally:
         writer.close()
         await writer.wait_closed()

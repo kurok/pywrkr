@@ -1785,6 +1785,12 @@ pywrkr http://target:8080/ --master --expect-workers 3 -c 300 -d 60
 pywrkr --worker master-host:9220
 ```
 
+**A worker's exit code means something.** `0` only when a benchmark ran and its results reached the
+master. Every give-up path — the master unreachable, authentication refused, a config that never
+arrived, a missing HTTP/2 backend — exits `1`, and Ctrl-C exits `130`. Without that, systemd, a
+Kubernetes Job or a Jenkins agent could not tell a completed run from a five-minute wait for a
+master that never appeared.
+
 ### TLS / SSL Verification
 
 By default, SSL certificate verification is **disabled** to allow benchmarking dev/staging servers with self-signed certs. Enable it for production targets and supply a custom CA bundle when needed:
