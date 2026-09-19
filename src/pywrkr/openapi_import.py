@@ -32,7 +32,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -623,6 +623,21 @@ def _build_step(
     return step
 
 
+_PLACEHOLDER_RE = re.compile(r"^\$\{[^{}]+\}$")
+
+
+def _encode_value(rendered: str, safe: str = "") -> str:
+    """Percent-encode a parameter value, unless it is a placeholder.
+
+    ``${name}`` is a marker for something the user has to supply, not a value.
+    Encoding it would turn the braces into %7B/%7D and the substitution would
+    never match.
+    """
+    if _PLACEHOLDER_RE.match(rendered):
+        return rendered
+    return quote(rendered, safe=safe)
+
+
 def _render_parameters(
     operation: Operation, spec: dict, placeholders: list[Placeholder]
 ) -> tuple[str, str, dict[str, str]]:
@@ -663,11 +678,19 @@ def _render_parameters(
         else:
             rendered = _stringify(value)
 
+        # Encoded before it goes into a URL. An example or default containing a
+        # space or an & used to be interpolated raw, and load_url_file splits a
+        # url-file line on whitespace -- so `/users/a b&c?q=x&y=z` was read back
+        # as `/users/a`, silently benchmarking a different request.
+        #
+        # A ${placeholder} is left alone: it is not a value yet, and percent-
+        # encoding the braces would stop the substitution finding it.
         if location == "path":
-            path = path.replace(f"{{{name}}}", rendered)
+            path = path.replace(f"{{{name}}}", _encode_value(rendered, safe=""))
         elif location == "query":
-            query_parts.append(f"{name}={rendered}")
+            query_parts.append(f"{quote(name, safe='')}={_encode_value(rendered, safe='')}")
         elif location == "header":
+            # Headers are not URL-encoded; they are not part of the URL.
             headers[name] = rendered
 
     # A path template the spec never declared a parameter for still has to go
@@ -722,9 +745,17 @@ def openapi_to_url_file(spec: dict, config: "OpenApiImportConfig | None" = None)
     """Render the selection as a url-file instead of a scenario."""
     report = openapi_to_scenario(spec, config)
     base = report.scenario.get("base_url", "")
+    # A url-file has nowhere to put a base URL, so a relative line is not a
+    # smaller version of the right answer -- it is a file that load_url_file
+    # accepts and the run then fails on with an opaque connection error, well
+    # after the import looked like it had worked.
+    if not base:
+        raise SpecError(
+            "url-file needs an absolute host: the spec has no usable servers[].url; pass --base-url"
+        )
     lines = []
     for step in report.scenario["steps"]:
-        url = f"{base.rstrip('/')}{step['path']}" if base else step["path"]
+        url = f"{base.rstrip('/')}{step['path']}"
         lines.append(f"{step['method']} {url}" if step["method"] != "GET" else url)
     report.scenario = {"_url_file": "\n".join(lines) + ("\n" if lines else "")}
     return report
