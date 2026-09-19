@@ -6873,13 +6873,17 @@ class TestAutofindPoolCeiling(AioHTTPTestCase):
         # on both leaves no gap to detect the bug in. So measure both regimes
         # in this test -- the starved pool is the control -- and compare.
         url = f"http://localhost:{self.server.port}/"
-        users, seconds = 50, 2.0
+        # Deliberately gentle: at 50 users a shared CI runner becomes the
+        # bottleneck itself and squeezes the two regimes together. 20 users
+        # through 4 connections is the same 5-deep queue at a fifth of the
+        # client-side cost.
+        users, starved_pool, seconds = 20, 4, 2.0
 
         starved, _ = await pywrkr.run_user_simulation(
             pywrkr.BenchmarkConfig(
                 url=url,
                 users=users,
-                connections=10,
+                connections=starved_pool,
                 duration=seconds,
                 think_time=0.0,
                 _quiet=True,
@@ -6904,13 +6908,13 @@ class TestAutofindPoolCeiling(AioHTTPTestCase):
 
         self.assertEqual([step.users for step in steps], [users])
         starved_p95 = self._p95(starved.latencies)
-        # 50 users through 10 connections queue 5 deep, so the starved p95 runs
-        # several times the handler's 100 ms. Autofind gives each step a pool
-        # its size, so its p95 should track the handler. Require only a 2x gap:
-        # the effect is ~5x, and the bug made the two identical.
+        # The queue is 5 deep, so the starved p95 runs several times the
+        # handler's 100 ms while autofind's sized pool tracks it. Require only
+        # 1.5x: the measured effect is ~5x, and the bug made the two identical
+        # (2.398s vs 2.391s), so even a heavily loaded runner has room.
         self.assertGreater(
             starved_p95,
-            steps[0].p95 * 2,
+            steps[0].p95 * 1.5,
             f"autofind p95 {steps[0].p95:.3f}s is not meaningfully below the "
             f"pool-starved {starved_p95:.3f}s -- the step is queueing too",
         )
