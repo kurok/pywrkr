@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import os
 import socket
 import unittest
 
@@ -433,6 +434,134 @@ class TestWorkerAuth(unittest.IsolatedAsyncioTestCase):
             # No challenge should be sent; master should wait for a worker connection
             # We connect raw and then just close — master should not crash.
             await asyncio.sleep(0.1)
+        finally:
+            writer.close()
+            master_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                _ = await master_task
+
+    async def _fake_master(self, on_auth):
+        """A listener that plays master far enough to exercise the worker side."""
+
+        async def handle(reader, writer):
+            nonce = os.urandom(32)
+            await _send_msg(writer, {"type": "challenge", "nonce": nonce.hex()})
+            auth = await _recv_msg(reader)
+            await on_auth(auth, writer)
+            with contextlib.suppress(Exception):
+                writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        return server, server.sockets[0].getsockname()[1]
+
+    async def test_worker_rejects_master_that_cannot_prove_secret(self):
+        """Only the worker used to prove anything.
+
+        Whatever answered on the master's host:port could collect the worker's
+        HMAC and then hand it a config, so any listener could make the worker
+        generate load against any URL with any credentials it chose.
+        """
+        secret = "shared-secret"
+
+        async def answer_with_the_wrong_secret(auth, writer):
+            # A master that does not know the secret can only guess.
+            forged = hmac.new(
+                b"not-the-secret",
+                bytes.fromhex(auth["nonce"]),
+                digestmod=hashlib.sha256,
+            ).hexdigest()
+            await _send_msg(writer, {"type": "auth_ok", "hmac": forged})
+
+        server, port = await self._fake_master(answer_with_the_wrong_secret)
+        try:
+            with self.assertLogs("pywrkr.distributed", level="ERROR") as logs:
+                await asyncio.wait_for(
+                    run_worker_node("127.0.0.1", port, worker_secret=secret), timeout=15
+                )
+            self.assertIn("shared-secret check", "\n".join(logs.output))
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_worker_rejects_master_that_skips_the_proof(self):
+        """A master that never proves the secret is refused, not merely slow."""
+        secret = "shared-secret"
+
+        async def go_straight_to_config(auth, writer):
+            await _send_msg(writer, {"type": "config", "config": {}})
+
+        server, port = await self._fake_master(go_straight_to_config)
+        try:
+            with self.assertLogs("pywrkr.distributed", level="ERROR") as logs:
+                await asyncio.wait_for(
+                    run_worker_node("127.0.0.1", port, worker_secret=secret), timeout=15
+                )
+            self.assertIn("did not prove the shared secret", "\n".join(logs.output))
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_master_survives_disconnect_during_auth(self):
+        """A peer closing mid-handshake used to escape handle_worker.
+
+        _authenticate_worker caught only TimeoutError, so the ConnectionError
+        raised by _recv_msg on EOF became an unhandled task exception and left
+        the writer open. Port scanners do this routinely.
+        """
+        master_task, port = await self._start_master(secret="needs-auth")
+        try:
+            reader, writer = await self._open_raw_connection(port)
+            challenge = await asyncio.wait_for(_recv_msg(reader), timeout=3)
+            self.assertEqual(challenge["type"], "challenge")
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+            await asyncio.sleep(0.2)
+            self.assertFalse(master_task.done(), "master should still be serving")
+
+            # And a genuine worker is still admitted afterwards.
+            reader2, writer2 = await self._open_raw_connection(port)
+            try:
+                challenge2 = await asyncio.wait_for(_recv_msg(reader2), timeout=3)
+                self.assertEqual(challenge2["type"], "challenge")
+                good = self._compute_hmac("needs-auth", challenge2["nonce"])
+                worker_nonce = os.urandom(32)
+                await _send_msg(
+                    writer2,
+                    {"type": "auth", "hmac": good, "nonce": worker_nonce.hex()},
+                )
+                proof = await asyncio.wait_for(_recv_msg(reader2), timeout=3)
+                self.assertEqual(proof["type"], "auth_ok")
+                self.assertEqual(
+                    proof["hmac"],
+                    hmac.new(b"needs-auth", worker_nonce, digestmod=hashlib.sha256).hexdigest(),
+                    "the master must prove the secret back to the worker",
+                )
+            finally:
+                writer2.close()
+        finally:
+            master_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                _ = await master_task
+
+    async def test_master_rejects_non_string_hmac(self):
+        """compare_digest raises TypeError on a non-str, crashing the handshake."""
+        master_task, port = await self._start_master(secret="needs-auth")
+        try:
+            reader, writer = await self._open_raw_connection(port)
+            challenge = await asyncio.wait_for(_recv_msg(reader), timeout=3)
+            self.assertEqual(challenge["type"], "challenge")
+            # The log matters as much as the close: without the isinstance
+            # guard the connection also ends, but because compare_digest threw
+            # TypeError, not because the master rejected anything. Asserting
+            # only on the closed socket would pass either way.
+            with self.assertLogs("pywrkr.distributed", level="WARNING") as logs:
+                await _send_msg(writer, {"type": "auth", "hmac": 1})
+                data = await asyncio.wait_for(reader.read(1), timeout=5)
+            self.assertEqual(data, b"", "master should close on a malformed hmac")
+            self.assertIn("auth failed", "\n".join(logs.output))
+            self.assertFalse(master_task.done(), "and stay up")
         finally:
             writer.close()
             master_task.cancel()
