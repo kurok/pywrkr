@@ -144,6 +144,64 @@ class TestCreateBackend(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ALPN", tls.describe)
         self.assertIn("prior knowledge", clear.describe)
 
+    @requires_http2
+    async def test_httpx_sessions_share_one_transport(self):
+        # Every user used to get its own AsyncClient built with limits=, and
+        # Limits is a value object -- so each client owned a pool of that size.
+        # -u 200 --http2 -c 10 meant up to 2000 connections and 200 TLS
+        # handshakes rather than 10 h2 connections multiplexed across users.
+        backend = create_backend(pywrkr.BenchmarkConfig(url="https://example.com/", http2=True), 4)
+        self.addAsyncCleanup(backend.aclose)
+        sessions = [backend.create_session(pywrkr.WorkerStats()) for _ in range(3)]
+        transports = {id(s._client._transport) for s in sessions}
+        self.assertEqual(len(transports), 1, "each session built its own transport")
+        pool = sessions[0]._client._transport._pool
+        self.assertEqual(pool._max_connections, 4)
+
+    @requires_http2
+    async def test_one_session_finishing_does_not_close_the_shared_pool(self):
+        # A virtual user leaving its `async with` must not take the pool with
+        # it: AsyncClient.__aexit__ closes its transport, and that transport
+        # belongs to the run, not to the user.
+        from aiohttp import web
+
+        async def handle(request):
+            return web.Response(text="ok")
+
+        app = web.Application()
+        app.router.add_get("/", handle)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        self.addAsyncCleanup(runner.cleanup)
+        url = f"http://127.0.0.1:{runner.addresses[0][1]}/"
+
+        # An https:// config so the transport keeps HTTP/1.1 enabled (ALPN
+        # mode). A cleartext config would send an h2c preface, which the
+        # HTTP/1.1 test server cannot answer -- that is correct --http2
+        # behaviour and not what this test is about.
+        backend = create_backend(pywrkr.BenchmarkConfig(url="https://example.com/", http2=True), 4)
+        self.addAsyncCleanup(backend.aclose)
+        first = backend.create_session(pywrkr.WorkerStats())
+        second = backend.create_session(pywrkr.WorkerStats())
+        pool = first._client._transport._pool
+
+        async with first:
+            resp = await first.send("GET", url, {}, None, 5.0)
+            self.assertEqual(resp.status, 200)
+        # The pool still holds the keep-alive connection. Calling
+        # AsyncClient.__aexit__ here would have closed the shared transport and
+        # left this at 0, so the next user pays for a fresh handshake.
+        self.assertEqual(
+            len(pool.connections), 1, "a finishing user dropped the run's keep-alive connections"
+        )
+
+        async with second:
+            resp = await second.send("GET", url, {}, None, 5.0)
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(len(pool.connections), 1)
+
     async def test_missing_extra_names_the_pip_command(self):
         import sys
 
