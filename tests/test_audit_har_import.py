@@ -285,3 +285,109 @@ def test_scheme_mismatch_same_host_rejected():
     ]
     with pytest.raises(ValueError, match="multiple hosts"):
         har_to_scenario(entries, HarImportConfig())
+
+
+def test_har_time_and_started_datetime_coerced(tmp_path):
+    """Exporters emit these fields as strings, nulls and numbers.
+
+    Stored raw they reached the think-time computation and the ISO parser,
+    which died on the unexpected type -- and neither AttributeError nor
+    TypeError is caught by the CLI, so the user saw a traceback rather than an
+    error message.
+    """
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "http://h/a", "method": "GET"},
+                    "response": {"status": 200},
+                    "time": "12.5",
+                    "startedDateTime": 5,
+                },
+                {
+                    "request": {"url": "http://h/b", "method": "GET"},
+                    "response": {"status": 200},
+                    "time": None,
+                    "startedDateTime": "2024-01-01T00:00:01Z",
+                },
+                {
+                    "request": {"url": "http://h/c", "method": "GET"},
+                    "response": {"status": 200},
+                    "time": {"not": "a number"},
+                    "startedDateTime": None,
+                },
+            ]
+        },
+    )
+
+    entries = parse_har(path)
+    assert [e.time_ms for e in entries] == [12.5, 0.0, 0.0]
+    assert [e.started_datetime for e in entries] == ["", "2024-01-01T00:00:01Z", ""]
+
+    # The whole point: this used to raise rather than produce a scenario.
+    scenario = har_to_scenario(entries, HarImportConfig())
+    assert len(scenario["steps"]) == 3
+
+
+def test_har_preserve_headers_warns_on_credentials(tmp_path, caplog):
+    """A recorded session's Authorization header and ?access_token= survive
+    into the generated file, which usually gets committed next to the scenario.
+    They are deliberately not stripped -- scenarios get replayed against the
+    same environment -- so the only protection is saying so out loud.
+    """
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "http://h/api?access_token=SECRETQ&page=2",
+                        "method": "GET",
+                        "headers": [
+                            {"name": "Authorization", "value": "Bearer SECRET1"},
+                            {"name": "X-API-Key", "value": "SECRET2"},
+                            {"name": "Accept", "value": "application/json"},
+                        ],
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(str(path), config=HarImportConfig(preserve_headers=True))
+
+    warning = "\n".join(r.getMessage() for r in caplog.records)
+    assert "Authorization" in warning
+    assert "X-API-Key" in warning
+    assert "access_token" in warning
+    assert "${token}" in warning
+    # Not everything is a secret.
+    assert "Accept" not in warning
+    assert "page" not in warning
+
+
+def test_har_without_credentials_does_not_warn(tmp_path, caplog):
+    """The warning has to stay rare enough to be worth reading."""
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "http://h/api?page=2",
+                        "method": "GET",
+                        "headers": [{"name": "Accept", "value": "application/json"}],
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(str(path), config=HarImportConfig(preserve_headers=True))
+
+    assert not [r for r in caplog.records if "credentials" in r.message]
