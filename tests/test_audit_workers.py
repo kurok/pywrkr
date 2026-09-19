@@ -557,3 +557,61 @@ class TestMergeAllStatsAudit(unittest.TestCase):
         # (>= 1000) survives; entries land on a shared [0, duration) axis.
         self.assertTrue(all(ts < 2.0 for ts, _ in merged.rps_timeline))
         self.assertEqual({c for _, c in merged.rps_timeline}, {5, 7, 3, 9})
+
+
+# ---------------------------------------------------------------------------
+# wk-228: --latency-breakdown reported transfer=0 for every request, and
+# ttfb was really time-to-headers, because the breakdown was finalized in
+# aiohttp's on_request_end -- which fires before the body is read.
+# ---------------------------------------------------------------------------
+
+
+class TestLatencyBreakdownPhases(AioHTTPTestCase):
+    """The transfer phase must cover reading the body."""
+
+    async def get_application(self):
+        app = web.Application()
+        app.router.add_get("/slow-body", self.handle_slow_body)
+        return app
+
+    async def handle_slow_body(self, request):
+        # Headers go out immediately; the body follows 200 ms later. Anything
+        # that calls that gap "time to first byte" is measuring the headers.
+        resp = web.StreamResponse()
+        await resp.prepare(request)
+        await asyncio.sleep(0.2)
+        await resp.write(b"x" * 1000)
+        await resp.write_eof()
+        return resp
+
+    async def _one_request(self, read_body=True):
+        from pywrkr.backends import create_backend
+
+        url = f"http://localhost:{self.server.port}/slow-body"
+        config = pywrkr.BenchmarkConfig(url=url, latency_breakdown=True, connections=1)
+        stats = pywrkr.WorkerStats()
+        backend = create_backend(config, 1)
+        try:
+            async with backend.create_session(stats) as session:
+                await session.send("GET", url, {}, None, 5.0, trace_ctx={}, read_body=read_body)
+        finally:
+            await backend.aclose()
+        return stats.breakdowns
+
+    async def test_breakdown_transfer_covers_body_read(self):
+        breakdowns = await self._one_request()
+        self.assertEqual(len(breakdowns), 1)
+        bd = breakdowns[0]
+        # The 200 ms belongs to transfer, not to ttfb and not to nowhere.
+        self.assertGreaterEqual(bd.transfer, 0.15)
+        self.assertLess(bd.ttfb, 0.1)
+        self.assertIn("transfer", bd.available)
+
+    async def test_skipped_body_read_reports_no_transfer_phase(self):
+        breakdowns = await self._one_request(read_body=False)
+        self.assertEqual(len(breakdowns), 1)
+        bd = breakdowns[0]
+        # Nothing read the body, so there is no transfer measurement to report.
+        # Claiming 0.0 would drag the aggregate down with a phase that never ran.
+        self.assertEqual(bd.transfer, 0.0)
+        self.assertNotIn("transfer", bd.available)
