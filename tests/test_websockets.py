@@ -65,6 +65,7 @@ class WsTestServer:
         app.router.add_get("/deny", self._deny)
         app.router.add_get("/hangup", self._hangup)
         app.router.add_get("/slowclose", self._slowclose)
+        app.router.add_get("/laggy", self._laggy)
         app.router.add_post("/login", self._login)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
@@ -101,6 +102,33 @@ class WsTestServer:
             if msg.type is WSMsgType.TEXT:
                 self.received.append(msg.data)
                 await ws.send_str(f"reply:{msg.data}")
+        self.closes.append(ws.close_code)
+        return ws
+
+    async def _laggy(self, request: web.Request) -> web.WebSocketResponse:
+        """Answers the first message very late, then settles into ~100ms.
+
+        This is the shape that desynchronised the RTT timing: one reply misses
+        its window, and from then on every reply is in flight when the next
+        message goes out.
+        """
+        ws = await self._prepare(request)
+        replies: list[asyncio.Task] = []
+        count = 0
+
+        async def _reply(delay: float) -> None:
+            await asyncio.sleep(delay)
+            with contextlib.suppress(Exception):
+                await ws.send_str("pong")
+
+        async for msg in ws:
+            if msg.type is not WSMsgType.TEXT:
+                break
+            self.received.append(msg.data)
+            count += 1
+            replies.append(asyncio.create_task(_reply(0.6 if count == 1 else 0.1)))
+        for task in replies:
+            task.cancel()
         self.closes.append(ws.close_code)
         return ws
 
@@ -665,6 +693,43 @@ class TestWebSocketBenchmark(WsServerCase):
         self.assertIn("WEBSOCKET STATISTICS", text)
         self.assertIn("message round-trip time", text)
         self.assertNotIn("Keep-Alive", text)
+
+
+class TestRttResync(WsServerCase):
+    """One slow reply must not skew every RTT that follows it."""
+
+    async def test_rtt_resyncs_after_reply_timeout(self):
+        from pywrkr.config import WebSocketConfig, WsStats
+        from pywrkr.websockets import _send_loop
+
+        ws_config = WebSocketConfig(
+            messages=["ping"],
+            message_interval=0.2,
+            expect_reply=True,
+            reply_timeout=0.3,
+        )
+        stats = WorkerStats()
+        ws_stats = WsStats()
+        stop = asyncio.Event()
+
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(self.ws_url("/laggy")) as ws:
+                sender = asyncio.create_task(_send_loop(ws, ws_config, stats, ws_stats, stop))
+                await asyncio.sleep(1.8)
+                stop.set()
+                await asyncio.wait_for(sender, timeout=5)
+
+        self.assertEqual(ws_stats.reply_timeouts, 1)
+        self.assertGreater(len(ws_stats.rtt_latencies), 1)
+        # Pre-fix this read [97.9, 0.1, 0.1, 0.1, 0.1, 0.1]: after the timeout
+        # every message was timed against the previous message's reply.
+        self.assertTrue(
+            all(rtt >= 0.01 for rtt in ws_stats.rtt_latencies),
+            f"near-zero RTT after the timeout: "
+            f"{[round(r * 1000, 1) for r in ws_stats.rtt_latencies]}",
+        )
+        # The replies that arrived too late to time are counted, not dropped.
+        self.assertGreaterEqual(ws_stats.unexpected_replies, 1)
 
 
 class TestTlsOptions(unittest.TestCase):

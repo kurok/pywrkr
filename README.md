@@ -949,6 +949,13 @@ a `websocket` block:
 `close.unacknowledged` counts sockets whose close frame the server never answered — a server that
 does not read its sockets shows up here instead of as a silent zero.
 
+`reply_timeouts` counts messages whose reply missed `--ws-reply-timeout`. After one of those the
+socket is out of step — the next frame to arrive belongs to the message that timed out, not to the
+one just sent — so pywrkr stops timing until it has drained the backlog, and counts what it drains
+as `unexpected_replies`. Those replies are real, they just cannot be attributed to a message, so
+they are counted rather than timed. Without that, a single slow response left every later RTT
+measured against the previous reply and dragged p50/p95 toward zero for the rest of the connection.
+
 **Clean shutdown.** Every socket is closed with a close frame, on normal completion and on
 `Ctrl-C` alike, so a benchmark does not leave the server holding thousands of half-open connections
 that poison whatever you measure next. That teardown is deliberately excluded from the reported
