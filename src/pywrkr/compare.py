@@ -132,12 +132,56 @@ _ALIASES = {
 _STEP_PREFIX = "step:"
 _STEP_FIELDS = {
     "count": _COUNT,
+    "errors": _COUNT,
+    "requests_per_sec": _COUNT,
     "min": _SECONDS,
     "max": _SECONDS,
     "mean": _SECONDS,
     "median": _SECONDS,
     "stdev": _SECONDS,
+    "p50": _SECONDS,
+    "p95": _SECONDS,
+    "p99": _SECONDS,
 }
+
+# Threshold metric name -> the field a step_stats block stores it under.
+#
+# Defined once so the two gates cannot drift: reporting evaluates thresholds
+# against live WorkerStats during a run, ci.evaluate_from_results evaluates the
+# same expressions against a written results file afterwards, and they are
+# required to agree (TestBothPathsAgree).
+_STEP_METRIC_FIELDS = {
+    "p50": "p50",
+    "p95": "p95",
+    "p99": "p99",
+    "avg_latency": "mean",
+    "max_latency": "max",
+    "min_latency": "min",
+    "rps": "requests_per_sec",
+}
+
+
+def step_metric_value(results: dict, step: str, metric: str) -> "float | None":
+    """One step's metric from a written results file, or None.
+
+    None rather than 0.0 throughout, for the reason the aggregate path gives:
+    a threshold on a step that never ran, or whose name is a typo, must not
+    read as satisfied.
+    """
+    block = (results.get("step_stats") or {}).get(step)
+    if not isinstance(block, dict):
+        return None
+
+    if metric == "error_rate":
+        errors = block.get("errors") or 0
+        attempts = (block.get("count") or 0) + errors
+        return (errors / attempts * 100) if attempts else None
+
+    field = _STEP_METRIC_FIELDS.get(metric)
+    if field is None:
+        return None
+    value = block.get(field)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def _split_step_metric(metric: str) -> "tuple[str, str] | None":

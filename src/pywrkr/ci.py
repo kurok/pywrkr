@@ -16,7 +16,13 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
-from pywrkr.compare import ComparisonReport, format_value, metric_unit, metric_value
+from pywrkr.compare import (
+    ComparisonReport,
+    format_value,
+    metric_unit,
+    metric_value,
+    step_metric_value,
+)
 from pywrkr.config import Threshold
 from pywrkr.reporting import compare_threshold
 
@@ -77,7 +83,13 @@ def evaluate_from_results(
     """
     outcomes: list[ThresholdOutcome] = []
     for threshold in thresholds or ():
-        actual = metric_value(results, threshold.metric)
+        # A step threshold has to read that step's block. Reading the aggregate
+        # instead produced actual=None for every one of them, so per-step
+        # gating failed closed in the summary path while passing in-run.
+        if threshold.step is not None:
+            actual = step_metric_value(results, threshold.step, threshold.metric)
+        else:
+            actual = metric_value(results, threshold.metric)
         passed = actual is not None and compare_threshold(
             actual, threshold.operator, threshold.value
         )

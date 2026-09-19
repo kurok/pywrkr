@@ -527,3 +527,67 @@ class TestActionDefinition(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStepThresholds(unittest.TestCase):
+    """`step:<name>` thresholds must read that step's block.
+
+    evaluate_from_results ignored threshold.step and called metric_value on the
+    aggregate, which does not resolve step metrics -- so every per-step
+    threshold came back actual=None, passed=False. Per-step gating was
+    unusable from `pywrkr summary` and the PR comment showed no value.
+    """
+
+    RESULTS = {
+        "p95": 0.05,
+        "step_stats": {
+            "checkout": {
+                "count": 10,
+                "errors": 0,
+                "requests_per_sec": 5.0,
+                "min": 0.3,
+                "max": 0.6,
+                "mean": 0.4,
+                "median": 0.5,
+                "p50": 0.5,
+                "p95": 0.5,
+                "p99": 0.6,
+            }
+        },
+    }
+
+    def outcome(self, expr: str, results: dict | None = None):
+        return ci.evaluate_from_results(results or self.RESULTS, [parse_threshold(expr)])[0]
+
+    def test_step_threshold_reads_step_block(self):
+        # The aggregate is well under the bound; the step is well over it.
+        out = self.outcome("step:checkout p95 < 100ms")
+        self.assertEqual(out.actual, 0.5)
+        self.assertFalse(out.passed)
+
+    def test_step_threshold_can_pass(self):
+        out = self.outcome("step:checkout p95 < 900ms")
+        self.assertEqual(out.actual, 0.5)
+        self.assertTrue(out.passed)
+
+    def test_absent_step_is_unmeasured_not_zero(self):
+        # A typo in the step name must not read as a satisfied threshold.
+        out = self.outcome("step:nosuch p95 < 100ms")
+        self.assertIsNone(out.actual)
+        self.assertFalse(out.passed)
+
+    def test_metric_the_block_does_not_carry(self):
+        # A step with a single sample has no p99 in its block. Absent is not
+        # zero, and a threshold on it must not read as satisfied.
+        results = {"step_stats": {"checkout": {"count": 1, "errors": 0, "p50": 0.1}}}
+        out = self.outcome("step:checkout p99 < 1s", results)
+        self.assertIsNone(out.actual)
+        self.assertFalse(out.passed)
+
+    def test_step_error_rate_is_derived(self):
+        results = {
+            "step_stats": {"checkout": {"count": 8, "errors": 2, "p95": 0.1}},
+        }
+        out = self.outcome("step:checkout error_rate < 5%", results)
+        self.assertAlmostEqual(out.actual, 20.0)
+        self.assertFalse(out.passed)
