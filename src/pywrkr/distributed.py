@@ -324,6 +324,8 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
         "session_cookies": config.session_cookies,
         "http2": config.http2,
         "follow_redirects": config.follow_redirects,
+        # Master-side only, but carried so the round-trip stays complete.
+        "allow_partial": config.allow_partial,
         "verify_content_length": config.verify_content_length,
         "verbosity": config.verbosity,
         "random_param": config.random_param,
@@ -380,6 +382,7 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
         session_cookies=data.get("session_cookies", True),
         http2=data.get("http2", False),
         follow_redirects=data.get("follow_redirects", False),
+        allow_partial=data.get("allow_partial", False),
         verify_content_length=data.get("verify_content_length", False),
         verbosity=data.get("verbosity", 0),
         random_param=data.get("random_param", False),
@@ -1155,7 +1158,14 @@ async def run_master(
         json_output=config.json_output,
         html_output=config.html_output,
         html_report=config.html_report,
-        tags=config.tags,
+        # How many nodes actually reported rides along with the numbers, so a
+        # partial run stays identifiable in JSON output and in whatever the
+        # metrics landed in -- not only in the exit code.
+        tags={
+            **config.tags,
+            "workers_reported": str(len(all_stats)),
+            "workers_expected": str(expect_workers),
+        },
         otel_endpoint=config.otel_endpoint,
         prom_remote_write=config.prom_remote_write,
         thresholds=config.thresholds,
@@ -1180,8 +1190,31 @@ async def run_master(
         report_config,
     )
 
-    # Evaluate SLO thresholds
     exit_code = 0
+
+    # A worker that refused the run, timed out, or sent something unusable was
+    # only ever logged. As long as one node reported, the master merged the
+    # partial set and exited 0 -- so a 4-node CI gate where 3 nodes failed
+    # passed on a quarter of the intended load.
+    reported = len(all_stats)
+    if reported < expect_workers:
+        if config.allow_partial:
+            logger.warning(
+                "Master: %s of %s workers returned results; "
+                "reporting the partial run because --allow-partial was given",
+                reported,
+                expect_workers,
+            )
+        else:
+            logger.error(
+                "Master: only %s of %s workers returned results -- the run carried "
+                "less load than asked for. Pass --allow-partial to accept this.",
+                reported,
+                expect_workers,
+            )
+            exit_code = 1
+
+    # Evaluate SLO thresholds
     if config.thresholds:
         th_results = evaluate_thresholds(config.thresholds, merged, actual_duration)
         print_threshold_results(th_results, file=sys.stdout)

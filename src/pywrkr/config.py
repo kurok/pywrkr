@@ -534,6 +534,10 @@ class BenchmarkConfig:
     # wrk and ab: a redirect chain measured as one request hides both the hop
     # count and where the bytes actually came from.
     follow_redirects: bool = False
+    # Master-side gate: report a run in which some workers never returned
+    # results as a success. Off by default -- a 4-node run where 3 nodes failed
+    # is a quarter of the intended load, not a pass.
+    allow_partial: bool = False
     verify_content_length: bool = False
     verbosity: int = 0
     csv_output: str | None = None  # file path for CSV percentile output

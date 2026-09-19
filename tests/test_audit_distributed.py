@@ -184,6 +184,86 @@ class TestMasterShardsLoad(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(shard["connections"], 4)
 
 
+class TestPartialClusterExitCode(unittest.IsolatedAsyncioTestCase):
+    """A run missing nodes carried less load than asked for; it is not a pass."""
+
+    def _peer_factory(self, port_holder):
+        async def _peer(payload):
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", await _bound_port(port_holder)
+            )
+            ln = int.from_bytes(await reader.readexactly(4), "big")
+            await reader.readexactly(ln)
+            writer.write(_frame(payload))
+            await writer.drain()
+            writer.close()
+            with contextlib.suppress(OSError, ConnectionError):
+                await writer.wait_closed()
+
+        return _peer
+
+    async def _run(self, allow_partial: bool):
+        config = pywrkr.BenchmarkConfig(url="http://example.com", duration=1, _quiet=True)
+        # Set rather than passed, so the default path still constructs on a
+        # tree without the field and this test fails on the exit code it is
+        # about rather than on a TypeError.
+        if allow_partial:
+            config.allow_partial = True
+        port_holder = [0]
+        peer = self._peer_factory(port_holder)
+
+        good = pywrkr.WorkerStats()
+        good.total_requests = 100
+        good.latencies.extend([0.01] * 100)
+
+        orig_start = asyncio.start_server
+
+        async def _patched_start(cb, host, port):
+            server = await orig_start(cb, host, 0)
+            port_holder[0] = server.sockets[0].getsockname()[1]
+            return server
+
+        with patch("pywrkr.distributed.asyncio.start_server", side_effect=_patched_start):
+            with patch("sys.stdout", new_callable=StringIO):
+                peers = [
+                    asyncio.create_task(
+                        peer(
+                            {
+                                "type": "result",
+                                "stats": _serialize_stats(good),
+                                "duration": 1.0,
+                            }
+                        )
+                    ),
+                    # A worker that refused the run outright, e.g. missing the
+                    # HTTP/2 backend. Logged, and previously nothing more.
+                    asyncio.create_task(peer({"type": "error", "error": "no h2 backend"})),
+                ]
+                result = await asyncio.wait_for(
+                    run_master(config, "127.0.0.1", 0, expect_workers=2), timeout=20
+                )
+                await asyncio.gather(*peers)
+        return result
+
+    async def test_partial_worker_results_give_nonzero_exit(self):
+        result = self._run(allow_partial=False)
+        with self.assertLogs("pywrkr", level="ERROR") as logs:
+            merged, exit_code = await result
+        # Pre-fix this was 0: one node reported, so the partial set was merged
+        # and the gate passed on half the intended load.
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(merged.total_requests, 100)
+        self.assertTrue(
+            any("only 1 of 2 workers returned results" in line for line in logs.output),
+            f"the shortfall was not reported: {logs.output}",
+        )
+
+    async def test_allow_partial_accepts_the_shortfall(self):
+        merged, exit_code = await self._run(allow_partial=True)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(merged.total_requests, 100)
+
+
 class TestBoundPortHelper(unittest.IsolatedAsyncioTestCase):
     """The helper the fake workers use to avoid racing the master's bind."""
 

@@ -159,6 +159,14 @@ def _add_core_options(parser: argparse.ArgumentParser) -> None:
         "static -C cookies (e.g. when benchmarking a cache or CDN layer).",
     )
     parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        default=False,
+        help="Distributed master: report a run as a success even when some "
+        "workers never returned results. Off by default -- a run missing nodes "
+        "carried less load than asked for and exits 1",
+    )
+    parser.add_argument(
         "--follow-redirects",
         action="store_true",
         default=False,
@@ -1240,6 +1248,10 @@ def _validate_mode_conflicts(
         parser.error("--master cannot be combined with --url-file")
     if args.url_file is not None and args.autofind:
         parser.error("--url-file cannot be combined with --autofind")
+    # --allow-partial relaxes a master-side gate, so it means nothing anywhere
+    # else. Say so rather than accepting a flag that cannot do anything.
+    if args.allow_partial and not args.master:
+        parser.error("--allow-partial only applies to a distributed master (--master)")
 
 
 def _validate_url_and_mode(
@@ -1681,6 +1693,7 @@ def _parse_and_validate_args(
         session_cookies=args.session_cookies,
         http2=args.http2,
         follow_redirects=args.follow_redirects,
+        allow_partial=args.allow_partial,
         verify_content_length=args.verify_length,
         verbosity=args.verbosity,
         csv_output=args.csv,

@@ -1760,6 +1760,7 @@ pywrkr --worker master-host:9220
 | `--expect-workers` | Number of workers the master should wait for before starting |
 | `--bind` | Master bind address (default: `0.0.0.0`) |
 | `--port` | Master listen port (default: `9220`) |
+| `--allow-partial` | Accept a run in which some workers never reported (default: off — see below) |
 
 The master splits the workload evenly across workers, collects results, and produces a single
 aggregated report. `-n`, `--rate` and `--rate-ramp` describe the **cluster total**: `--expect-workers
@@ -1772,6 +1773,13 @@ Master: splitting the load across 3 workers: -n 1,000 -> 334/333/333, --rate 100
 
 `-c/--connections` is deliberately **per node** — it sizes that node's own pool rather than a share
 of the work — and `-d` is the window every node runs for.
+
+**A run missing workers exits 1.** A node that refuses the run, times out, or sends something
+unusable is counted, not just logged: if fewer nodes report than `--expect-workers` asked for, the
+run carried less load than you specified, so the master exits `1` rather than passing a gate on a
+fraction of the intended traffic. `--allow-partial` accepts it instead. Either way the report
+carries `workers_reported` and `workers_expected` tags, so a partial run stays identifiable in JSON
+output and in whatever the metrics landed in — not only in the exit code.
 
 **Set `--worker-secret` on any run that leaves localhost.** Without it the control channel is
 unauthenticated: anything that can reach the master's port can register as a worker and feed it
