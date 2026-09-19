@@ -473,7 +473,10 @@ class AiohttpBackend(Backend):
 
     name = BACKEND_AIOHTTP
     phases = ALL_PHASES
-    transport_errors = (aiohttp.ClientError, asyncio.TimeoutError, OSError)
+    # ValueError is aiohttp's answer to an unsendable request -- a control
+    # character in a header, most often. It belongs here so one bad request is
+    # one counted error rather than a dead virtual user.
+    transport_errors = (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError)
 
     def __init__(self, config: "BenchmarkConfig", pool_limit: int) -> None:
         self._config = config

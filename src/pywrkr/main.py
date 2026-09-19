@@ -78,7 +78,15 @@ def parse_header(s: str) -> tuple[str, str]:
     if ":" not in s:
         raise argparse.ArgumentTypeError(f"Invalid header format: {s} (expected 'Name: Value')")
     name, value = s.split(":", 1)
-    return name.strip(), value.strip()
+    name, value = name.strip(), value.strip()
+    # An embedded CR/LF survives .strip() and is a header-injection attempt as
+    # far as the HTTP client is concerned. Refusing it here, with the offending
+    # header named, beats failing every request once the run is underway.
+    if any(c in name or c in value for c in "\r\n\0"):
+        raise argparse.ArgumentTypeError(
+            f"Invalid header {name!r}: names and values may not contain CR, LF or NUL"
+        )
+    return name, value
 
 
 def _add_core_options(parser: argparse.ArgumentParser) -> None:

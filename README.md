@@ -624,6 +624,12 @@ distribution as distinct `ExtractFailure: ...` / `TemplateError: ...` keys namin
 the reason. Bad regexes, unsupported JSONPaths, and invalid option values are rejected when the
 scenario file loads — not mid-run.
 
+A header rendered from an extracted value is checked for CR, LF and NUL before the request is
+built. The server controls what goes into that variable, so a stray newline in a response body
+would otherwise reach the HTTP client as a header-injection attempt: the iteration aborts with a
+`HeaderInjection: <header>` key in the error distribution, and the virtual user carries on. `-H`
+values are checked the same way, at parse time.
+
 Those dedicated counters record every occurrence, but the headline `Total Errors` (and therefore
 `error_rate` thresholds) charges an iteration at most once: a 401, the extraction that failed on
 its body, and the `${var}` that could not resolve as a result are one broken flow, not three.
