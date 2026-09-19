@@ -237,10 +237,19 @@ def _json_matches(actual: Any, expected: Any) -> bool:
     matches a numeric ``42`` in the payload rather than failing on a type the
     user could not see.
     """
-    # Before anything else: in Python ``True == 1``, so a boolean payload value
-    # would silently satisfy an expected 1 (and vice versa). JSON treats them as
-    # different types and so should the assertion.
-    if isinstance(actual, bool) != isinstance(expected, bool):
+    # In Python ``True == 1``, so a boolean payload value would silently
+    # satisfy an expected 1 (and vice versa). JSON treats them as different
+    # types and so should the assertion.
+    #
+    # Not when either side is a string, though. The spelling fallback below is
+    # the documented way to write a value YAML would otherwise mangle -- users
+    # quote "true" precisely to stop it becoming something else -- and this
+    # guard ran first, so a quoted "true" could never match a boolean payload.
+    # The rule then failed on every single request with
+    # `AssertJson: $.ok != 'true' (was True)`, which reads like the payload is
+    # wrong rather than the comparison.
+    either_is_str = isinstance(actual, str) or isinstance(expected, str)
+    if isinstance(actual, bool) != isinstance(expected, bool) and not either_is_str:
         return False
     if actual == expected:
         return True
