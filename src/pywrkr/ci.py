@@ -302,8 +302,27 @@ def upsert_pr_comment(
     if marker not in body:
         body = f"{marker}\n{body}"
 
-    existing = call("GET", f"{base}?per_page=100", token, None)
-    comment_id = find_marker_comment(existing if isinstance(existing, list) else [], marker)
+    # Every page, not just the first.
+    #
+    # GitHub caps per_page at 100 and returns comments oldest-first, so on a PR
+    # with more than 100 comments the action's own comment -- posted early and
+    # edited since -- sits on a later page and was never found. Every push then
+    # posted a fresh one, which is precisely the comment spam this function
+    # exists to avoid, and it only started once a PR got busy enough for anyone
+    # to mind.
+    existing: list = []
+    # Bounded: an API that keeps returning a full page would otherwise spin
+    # here forever, and this runs inside CI where that is a hung job rather
+    # than a visible error. 100 pages is 10,000 comments.
+    for page in range(1, 101):
+        batch = call("GET", f"{base}?per_page=100&page={page}", token, None)
+        if not isinstance(batch, list) or not batch:
+            break
+        existing.extend(batch)
+        if len(batch) < 100:
+            break
+
+    comment_id = find_marker_comment(existing, marker)
     if comment_id is not None:
         call(
             "PATCH",

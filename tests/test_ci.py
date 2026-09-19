@@ -277,7 +277,70 @@ class FakeGitHub:
         return {"id": 42}
 
 
+class PaginatedGitHub:
+    """A GitHub that pages, which is the only kind that exists.
+
+    The simple double returns the same list for every GET, so it cannot
+    distinguish "read the first page" from "read all of them".
+    """
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def __call__(self, method, url, token, payload=None):
+        self.calls.append((method, url, payload))
+        if method != "GET":
+            return {"id": 42}
+        page = 1
+        if "page=" in url:
+            page = int(url.rsplit("page=", 1)[1].split("&")[0])
+        return self.pages[page - 1] if page <= len(self.pages) else []
+
+
 class TestUpsertPrComment(unittest.TestCase):
+    def test_marker_found_beyond_first_page(self):
+        """GitHub caps per_page at 100 and returns oldest-first.
+
+        On a PR with more than 100 comments the action's own comment -- posted
+        early, edited since -- is not on page one, so the single-page search
+        never found it and every push posted another. That is the comment spam
+        the marker exists to prevent, and it only began once a PR got busy
+        enough for anyone to mind.
+        """
+        page1 = [{"id": i, "body": f"review note {i}"} for i in range(100)]
+        page2 = [{"id": 555, "body": ci.COMMENT_MARKER + "\nold numbers"}]
+        api = PaginatedGitHub([page1, page2])
+
+        action = ci.upsert_pr_comment("o/r", 5, "## new numbers", token="t", request=api)
+
+        self.assertEqual(action, "updated")
+        self.assertEqual([c[0] for c in api.calls], ["GET", "GET", "PATCH"])
+        self.assertIn("issues/comments/555", api.calls[-1][1])
+
+    def test_pagination_stops_on_a_short_page(self):
+        """A short page means the end; asking for another is a wasted call."""
+        api = PaginatedGitHub([[{"id": 1, "body": "unrelated"}]])
+        self.assertEqual(ci.upsert_pr_comment("o/r", 5, "x", token="t", request=api), "created")
+        self.assertEqual([c[0] for c in api.calls], ["GET", "POST"])
+
+    def test_pagination_is_bounded(self):
+        """An API that always returns a full page must not hang the job."""
+
+        class NeverEnds:
+            def __init__(self):
+                self.gets = 0
+
+            def __call__(self, method, url, token, payload=None):
+                if method == "GET":
+                    self.gets += 1
+                    return [{"id": i, "body": "x"} for i in range(100)]
+                return {"id": 42}
+
+        api = NeverEnds()
+        self.assertEqual(ci.upsert_pr_comment("o/r", 5, "x", token="t", request=api), "created")
+        self.assertLessEqual(api.gets, 100)
+
     def test_the_first_run_creates_a_comment(self):
         api = FakeGitHub()
         action = ci.upsert_pr_comment("o/r", 5, "## report", token="t", request=api)
