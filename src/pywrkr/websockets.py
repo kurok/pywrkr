@@ -537,7 +537,12 @@ async def run_websocket_benchmark(
     if merged_ws.connections_opened == 0 and merged_ws.connections_failed > 0:
         exit_code = max(exit_code, 1)
 
-    if not run_observability_exports(merged, duration, count, config, None):
+    # Same reason as workers._finalize_run: synchronous HTTP with a 10s
+    # timeout must not run on the loop thread.
+    exports_ok = await asyncio.to_thread(
+        run_observability_exports, merged, duration, count, config, None
+    )
+    if not exports_ok:
         exit_code = max(exit_code, 1)
 
     return merged, exit_code

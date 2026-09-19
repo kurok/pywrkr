@@ -1333,7 +1333,11 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
             method="POST",
             headers={"Content-Type": "text/plain; version=0.0.4"},
         )
-        urllib.request.urlopen(req, timeout=10)
+        # Context-managed: the response was discarded, so the connection was
+        # only released whenever the object happened to be collected, and the
+        # run emitted a ResourceWarning on the way out.
+        with urllib.request.urlopen(req, timeout=10):  # nosec B310
+            pass
         return True
     except Exception as e:
         _logger.error("Prometheus export failed (endpoint=%s): %s", endpoint, e)
