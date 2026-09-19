@@ -1433,8 +1433,12 @@ Output includes averages with min/max/p50/p95 for each phase:
 - **DNS Lookup** -- Time to resolve the hostname via DNS
 - **TCP Connect** -- Time to establish the TCP connection
 - **TLS Handshake** -- Time for TLS negotiation (HTTPS only)
-- **TTFB** -- Time to first byte, from sending the request to receiving the first response byte
-- **Transfer** -- Time to read the full response body
+- **TTFB** -- From the request headers being sent to the response headers arriving
+- **Transfer** -- From the response headers arriving to the body being fully read
+
+A request whose body is never read -- a step that only checks the status code, for instance --
+reports no transfer phase at all rather than `0.00ms`, so the aggregate is not diluted by a phase
+that never ran.
 
 **Connection reuse:** When keep-alive is enabled (the default), most requests reuse existing connections. For reused connections, DNS/Connect/TLS phases will be zero. The breakdown reports how many connections were new vs. reused.
 

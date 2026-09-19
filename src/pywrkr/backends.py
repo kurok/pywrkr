@@ -255,7 +255,7 @@ def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
         ctx["conn_start"] = None
         ctx["conn_end"] = None
         ctx["headers_sent"] = None
-        ctx["first_byte"] = None
+        ctx["headers_end"] = None
         ctx["is_reused"] = True  # assume reused; set to False if we see connection creation
 
     async def on_dns_resolvehost_start(session, trace_ctx, params):
@@ -280,62 +280,13 @@ def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
         ctx = trace_ctx.trace_request_ctx
         ctx["headers_sent"] = time.monotonic()
 
-    async def on_response_chunk_received(session, trace_ctx, params):
-        ctx = trace_ctx.trace_request_ctx
-        if ctx.get("first_byte") is None:
-            ctx["first_byte"] = time.monotonic()
-
     async def on_request_end(session, trace_ctx, params):
-        ctx = trace_ctx.trace_request_ctx
-        end = time.monotonic()
-
-        # Defensive: if on_request_start never fired, skip breakdown
-        if ctx.get("request_start") is None:
-            _logger.debug("Trace context missing 'request_start'; skipping breakdown")
-            return
-
-        # DNS time
-        dns = 0.0
-        if ctx.get("dns_start") is not None and ctx.get("dns_end") is not None:
-            dns = ctx["dns_end"] - ctx["dns_start"]
-
-        # TCP connect time (includes TLS if HTTPS)
-        connect_total = 0.0
-        if ctx.get("conn_start") is not None and ctx.get("conn_end") is not None:
-            connect_total = ctx["conn_end"] - ctx["conn_start"]
-
-        # NOTE: TLS time is an *estimate*.  aiohttp's connection_create
-        # callback spans TCP+TLS combined and does not provide a separate
-        # TLS-only signal.  The value reported here (currently 0.0) is a
-        # best-effort approximation; treat the ``tls`` field in
-        # LatencyBreakdown as ``tls_estimated`` in any analysis or reports.
-        tls = 0.0
-        tcp_connect = connect_total  # default: entire connect time is TCP
-
-        # TTFB: from headers_sent to first byte received
-        ttfb = 0.0
-        headers_sent = ctx.get("headers_sent")
-        first_byte = ctx.get("first_byte")
-        if headers_sent is not None and first_byte is not None:
-            ttfb = first_byte - headers_sent
-        elif headers_sent is not None:
-            # No chunks received (empty body) -- use end time
-            ttfb = end - headers_sent
-
-        # Transfer time: from first byte to end
-        transfer = 0.0
-        if first_byte is not None:
-            transfer = end - first_byte
-
-        bd = LatencyBreakdown(
-            dns=max(dns, 0.0),
-            connect=max(tcp_connect, 0.0),
-            tls=max(tls, 0.0),
-            ttfb=max(ttfb, 0.0),
-            transfer=max(transfer, 0.0),
-            is_reused=ctx.get("is_reused", True),
-        )
-        stats.breakdowns.append(bd)
+        # aiohttp fires this inside ClientSession._request, immediately after
+        # the response headers are parsed and long before the body is read, so
+        # it marks the end of TTFB -- not the end of the request. The breakdown
+        # is finalized in AiohttpSession.send once the body has actually been
+        # read; see finalize_breakdown.
+        trace_ctx.trace_request_ctx["headers_end"] = time.monotonic()
 
     trace_config.on_request_start.append(on_request_start)
     trace_config.on_dns_resolvehost_start.append(on_dns_resolvehost_start)
@@ -343,21 +294,93 @@ def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
     trace_config.on_connection_create_start.append(on_connection_create_start)
     trace_config.on_connection_create_end.append(on_connection_create_end)
     trace_config.on_request_headers_sent.append(on_request_headers_sent)
-    trace_config.on_response_chunk_received.append(on_response_chunk_received)
     trace_config.on_request_end.append(on_request_end)
 
     return trace_config
 
 
+def finalize_breakdown(stats: WorkerStats, ctx: dict, read_body: bool) -> None:
+    """Append the completed LatencyBreakdown for one request.
+
+    Called after the response body has been read (or deliberately skipped),
+    which is the only moment at which ``transfer`` is knowable. aiohttp has no
+    trace hook there: ``on_request_end`` fires when the headers arrive, and
+    ``on_response_chunk_received`` fires from inside ``ClientResponse.read()``
+    -- after ``on_request_end`` has already run.
+    """
+    end = time.monotonic()
+
+    # Defensive: if on_request_start never fired, skip breakdown
+    if ctx.get("request_start") is None:
+        _logger.debug("Trace context missing 'request_start'; skipping breakdown")
+        return
+
+    # DNS time
+    dns = 0.0
+    if ctx.get("dns_start") is not None and ctx.get("dns_end") is not None:
+        dns = ctx["dns_end"] - ctx["dns_start"]
+
+    # TCP connect time (includes TLS if HTTPS)
+    connect_total = 0.0
+    if ctx.get("conn_start") is not None and ctx.get("conn_end") is not None:
+        connect_total = ctx["conn_end"] - ctx["conn_start"]
+
+    # NOTE: TLS time is an *estimate*.  aiohttp's connection_create
+    # callback spans TCP+TLS combined and does not provide a separate
+    # TLS-only signal.  The value reported here (currently 0.0) is a
+    # best-effort approximation; treat the ``tls`` field in
+    # LatencyBreakdown as ``tls_estimated`` in any analysis or reports.
+    tls = 0.0
+    tcp_connect = connect_total  # default: entire connect time is TCP
+
+    # TTFB: request headers sent -> response headers received.
+    headers_sent = ctx.get("headers_sent")
+    headers_end = ctx.get("headers_end")
+    if headers_end is None:
+        # The response never started; nothing to report a breakdown about.
+        _logger.debug("Trace context missing 'headers_end'; skipping breakdown")
+        return
+    ttfb = headers_end - headers_sent if headers_sent is not None else 0.0
+
+    # Transfer: response headers received -> body fully read. With read_body
+    # False the body is released rather than read, so there is no transfer
+    # phase to report -- saying 0.0 would drag the fleet average down with a
+    # measurement that never happened.
+    transfer = end - headers_end if read_body else 0.0
+    available = ALL_PHASES if read_body else tuple(p for p in ALL_PHASES if p != "transfer")
+
+    stats.breakdowns.append(
+        LatencyBreakdown(
+            dns=max(dns, 0.0),
+            connect=max(tcp_connect, 0.0),
+            tls=max(tls, 0.0),
+            ttfb=max(ttfb, 0.0),
+            transfer=max(transfer, 0.0),
+            is_reused=ctx.get("is_reused", True),
+            available=available,
+        )
+    )
+
+
 class AiohttpSession(BackendSession):
     """aiohttp ClientSession wrapper."""
 
-    __slots__ = ("_session", "_ssl", "_jar", "_timeout_sec", "_timeout")
+    __slots__ = ("_session", "_ssl", "_jar", "_timeout_sec", "_timeout", "_stats")
 
-    def __init__(self, session: aiohttp.ClientSession, ssl_verify: bool, jar) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        ssl_verify: bool,
+        jar,
+        stats: "WorkerStats | None" = None,
+    ) -> None:
         self._session = session
         self._ssl = ssl_verify
         self._jar = jar
+        # Only set when the run asked for a latency breakdown: finalizing one
+        # needs the body-read to be over, which is here rather than in a trace
+        # hook.
+        self._stats = stats
         # ClientTimeout is immutable and rebuilt on every request otherwise; the
         # value only changes as a duration run winds down, so cache it.
         self._timeout_sec: float = -1.0
@@ -407,6 +430,8 @@ class AiohttpSession(BackendSession):
                 # next response either way, so the bytes still cross the wire.
                 resp.release()
                 data = b""
+            if trace_ctx is not None and self._stats is not None:
+                finalize_breakdown(self._stats, trace_ctx, read_body)
             version = resp.version
             return BackendResponse(
                 status=resp.status,
@@ -461,7 +486,12 @@ class AiohttpBackend(Backend):
             kwargs["trace_configs"] = [create_trace_config(stats)]
         if jar is not None:
             kwargs["cookie_jar"] = jar
-        return AiohttpSession(aiohttp.ClientSession(**kwargs), self._ssl_verify, jar)
+        return AiohttpSession(
+            aiohttp.ClientSession(**kwargs),
+            self._ssl_verify,
+            jar,
+            stats if self._config.latency_breakdown else None,
+        )
 
     async def aclose(self) -> None:
         await self._connector.close()
