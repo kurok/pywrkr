@@ -400,34 +400,79 @@ def _serialize_stats(stats: WorkerStats) -> dict:
     }
 
 
+def _field_mapping(data: dict, key: str) -> dict:
+    """The dict at *key*, or a clear ValueError naming the field."""
+    value = data.get(key, {})
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be an object, got {type(value).__name__}")
+    return value
+
+
+def _field_sequence(data: dict, key: str) -> list:
+    """The list at *key*, or a clear ValueError naming the field."""
+    value = data.get(key, [])
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{key} must be an array, got {type(value).__name__}")
+    return list(value)
+
+
+def _field_number(data: dict, key: str, default: float = 0) -> float:
+    """The number at *key*, or a clear ValueError naming the field."""
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a number, got {type(value).__name__}")
+    return value
+
+
 def _deserialize_stats(data: dict) -> WorkerStats:
-    """Deserialize a dict back into WorkerStats."""
+    """Deserialize a dict back into WorkerStats.
+
+    Raises:
+        ValueError: The payload does not conform. Every check names the field
+            it rejected, because the caller logs this against one worker and
+            keeps the rest of the cluster's results -- a bad payload from one
+            node (the control plane is unauthenticated unless --worker-secret
+            is set) must not become the whole run's traceback.
+    """
     from pywrkr.config import ReservoirSampler
 
+    if not isinstance(data, dict):
+        raise ValueError(f"expected an object, got {type(data).__name__}")
+
     ws = WorkerStats()
-    ws.total_requests = data.get("total_requests", 0)
-    ws.total_bytes = data.get("total_bytes", 0)
-    ws.errors = data.get("errors", 0)
-    ws.content_length_errors = data.get("content_length_errors", 0)
-    ws.extract_failures = data.get("extract_failures", 0)
-    ws.template_errors = data.get("template_errors", 0)
-    lat_items = data.get("latencies", [])
-    lat_seen = data.get("latencies_total_seen", len(lat_items))
+    ws.total_requests = int(_field_number(data, "total_requests"))
+    ws.total_bytes = int(_field_number(data, "total_bytes"))
+    ws.errors = int(_field_number(data, "errors"))
+    ws.content_length_errors = int(_field_number(data, "content_length_errors"))
+    ws.extract_failures = int(_field_number(data, "extract_failures"))
+    ws.template_errors = int(_field_number(data, "template_errors"))
+    lat_items = _field_sequence(data, "latencies")
+    lat_seen = int(_field_number(data, "latencies_total_seen", len(lat_items)))
     ws.latencies = ReservoirSampler.from_list(lat_items, total_seen=lat_seen)
-    for k, v in data.get("error_types", {}).items():
+    for k, v in _field_mapping(data, "error_types").items():
         ws.error_types[k] = v
-    for k, v in data.get("status_codes", {}).items():
-        ws.status_codes[int(k)] = v
-    for k, v in data.get("http_versions", {}).items():
+    for k, v in _field_mapping(data, "status_codes").items():
+        try:
+            ws.status_codes[int(k)] = v
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"status_codes key {k!r} is not a status code: {exc}") from exc
+    for k, v in _field_mapping(data, "http_versions").items():
         ws.http_versions[k] = v
-    ws.rps_timeline = [tuple(x) for x in data.get("rps_timeline", [])]
+    timeline = []
+    for entry in _field_sequence(data, "rps_timeline"):
+        if not isinstance(entry, (list, tuple)):
+            raise ValueError(f"rps_timeline entry must be an array, got {type(entry).__name__}")
+        timeline.append(tuple(entry))
+    ws.rps_timeline = timeline
     # Previously missing:
-    for k, v in data.get("step_latencies", {}).items():
+    for k, v in _field_mapping(data, "step_latencies").items():
         ws.step_latencies[k] = v
-    for k, v in data.get("step_errors", {}).items():
+    for k, v in _field_mapping(data, "step_errors").items():
         ws.step_errors[k] = v
     bd_items = []
-    for b in data.get("breakdowns", []):
+    for b in _field_sequence(data, "breakdowns"):
+        if not isinstance(b, dict):
+            raise ValueError(f"breakdowns entry must be an object, got {type(b).__name__}")
         bd_items.append(
             LatencyBreakdown(
                 dns=b.get("dns", 0.0),
@@ -438,7 +483,7 @@ def _deserialize_stats(data: dict) -> WorkerStats:
                 is_reused=b.get("is_reused", False),
             )
         )
-    bd_seen = data.get("breakdowns_total_seen", len(bd_items))
+    bd_seen = int(_field_number(data, "breakdowns_total_seen", len(bd_items)))
     ws.breakdowns = ReservoirSampler.from_list(bd_items, total_seen=bd_seen)
     return ws
 
@@ -977,19 +1022,26 @@ async def run_master(
                     # quietly had fewer nodes than asked for.
                     logger.error("  Worker %s refused the run: %s", idx, msg.get("error"))
                 elif msg.get("type") == "result":
-                    ws = _deserialize_stats(msg["stats"])
-                    all_stats.append(ws)
-                    reported = msg.get("duration")
-                    if isinstance(reported, (int, float)) and reported > 0:
-                        worker_durations.append(float(reported))
-                    addr = writer.get_extra_info("peername")
-                    logger.info(
-                        "  Worker %s:%s finished: %s requests, %s errors",
-                        addr[0],
-                        addr[1],
-                        f"{ws.total_requests:,}",
-                        ws.errors,
-                    )
+                    try:
+                        ws = _deserialize_stats(msg["stats"])
+                    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+                        # One node's bad payload must not take the cluster's
+                        # results with it. Charge it to that worker and keep
+                        # the others.
+                        logger.error("  Worker %s: malformed result discarded: %s", idx, exc)
+                    else:
+                        all_stats.append(ws)
+                        reported = msg.get("duration")
+                        if isinstance(reported, (int, float)) and reported > 0:
+                            worker_durations.append(float(reported))
+                        addr = writer.get_extra_info("peername")
+                        logger.info(
+                            "  Worker %s:%s finished: %s requests, %s errors",
+                            addr[0],
+                            addr[1],
+                            f"{ws.total_requests:,}",
+                            ws.errors,
+                        )
                 else:
                     logger.error("  Worker %s: unexpected message type: %s", idx, msg.get("type"))
             except (asyncio.TimeoutError, ConnectionError, OSError) as e:

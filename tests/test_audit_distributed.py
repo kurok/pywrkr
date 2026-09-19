@@ -55,6 +55,82 @@ async def _bound_port(port_holder: list, timeout: float = 10.0) -> int:
     return port_holder[0]
 
 
+class TestMasterSurvivesBadWorker(unittest.IsolatedAsyncioTestCase):
+    """One node's malformed payload must not lose the cluster's results.
+
+    _collect_one caught only TimeoutError/ConnectionError/OSError, but
+    _deserialize_stats raises ValueError on any non-conforming JSON. One buggy
+    -- or, since the control plane is unauthenticated without --worker-secret,
+    hostile -- worker turned the whole run into a traceback.
+    """
+
+    async def test_master_survives_malformed_result_from_one_worker(self):
+        config = pywrkr.BenchmarkConfig(url="http://example.com", duration=1, _quiet=True)
+        port_holder = [0]
+
+        async def _peer(payload: dict):
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", await _bound_port(port_holder)
+            )
+            ln = int.from_bytes(await reader.readexactly(4), "big")
+            await reader.readexactly(ln)
+            writer.write(_frame(payload))
+            await writer.drain()
+            writer.close()
+            with contextlib.suppress(OSError, ConnectionError):
+                await writer.wait_closed()
+
+        good = pywrkr.WorkerStats()
+        good.total_requests = 250
+        good.latencies.extend([0.01] * 250)
+
+        orig_start = asyncio.start_server
+
+        async def _patched_start(cb, host, port):
+            server = await orig_start(cb, host, 0)
+            port_holder[0] = server.sockets[0].getsockname()[1]
+            return server
+
+        with patch("pywrkr.distributed.asyncio.start_server", side_effect=_patched_start):
+            with patch("sys.stdout", new_callable=StringIO):
+                peers = [
+                    asyncio.create_task(
+                        _peer(
+                            {
+                                "type": "result",
+                                "stats": _serialize_stats(good),
+                                "duration": 1.0,
+                            }
+                        )
+                    ),
+                    # Well-framed, valid JSON, and unusable: a status-code key
+                    # that is not a status code.
+                    asyncio.create_task(
+                        _peer(
+                            {
+                                "type": "result",
+                                "stats": {"status_codes": {"abc": 1}},
+                                "duration": 1.0,
+                            }
+                        )
+                    ),
+                ]
+                with self.assertLogs("pywrkr", level="ERROR") as logs:
+                    result = await asyncio.wait_for(
+                        run_master(config, "127.0.0.1", 0, expect_workers=2), timeout=20
+                    )
+                await asyncio.gather(*peers)
+
+        # Pre-fix run_master raised ValueError and there was no result at all.
+        self.assertIsNotNone(result)
+        merged, _ = result
+        self.assertEqual(merged.total_requests, 250)
+        self.assertTrue(
+            any("malformed result discarded" in line for line in logs.output),
+            f"the bad worker was not reported: {logs.output}",
+        )
+
+
 class TestBoundPortHelper(unittest.IsolatedAsyncioTestCase):
     """The helper the fake workers use to avoid racing the master's bind."""
 
