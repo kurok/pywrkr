@@ -951,7 +951,8 @@ duration: waiting on an unresponsive peer is not load, and counting it would def
 derived from it.
 
 `wss://` uses the same TLS settings as `https://` — `--ssl-verify` and `--ca-bundle` behave
-identically.
+identically. That holds for a `wss:` step inside a scenario too: the step's own scheme decides, so
+a `wss://` step under an `http://` base URL still gets those options rather than the base URL's.
 
 #### Mixed HTTP + WebSocket scenarios
 

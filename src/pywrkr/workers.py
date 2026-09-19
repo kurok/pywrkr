@@ -873,7 +873,7 @@ async def _run_ws_step(
     stop_event: asyncio.Event,
 ):
     """Execute one scenario ``ws:`` step against this user's session."""
-    from pywrkr.websockets import WsStats, WsStepOutcome, execute_ws_step
+    from pywrkr.websockets import WsStats, WsStepOutcome, _build_ssl_context, execute_ws_step
 
     client = session.raw_websocket_session()
     if client is None:
@@ -902,6 +902,9 @@ async def _run_ws_step(
         stats=stats,
         ws_stats=stats.ws,
         stop=stop_event,
+        # The step's own scheme decides, not the scenario's base URL: a wss://
+        # step under an http:// base still gets --ssl-verify and --ca-bundle.
+        ssl_context=(_build_ssl_context(config) if urlsplit(ws_url).scheme == "wss" else None),
     )
     if not outcome.ok:
         logger.warning("Scenario user %d step '%s' failed: %s", user_id, step_name, outcome.error)
