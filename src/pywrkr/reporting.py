@@ -789,15 +789,32 @@ def write_json_output(path: str, results: dict) -> None:
 
 
 def generate_html_report(stats: WorkerStats, duration: float, connections: int) -> str:
-    """Generate an ab-style HTML table report."""
+    """Generate an ab-style HTML table report.
+
+    Everything interpolated here is escaped. Plenty of it comes from the far
+    end of the wire rather than from us: error_types keys carry server reason
+    phrases, and scenario data reaches the same table through step names,
+    tags and the host. A target that returns a reason phrase containing markup
+    would otherwise have it rendered when someone opens the report.
+
+    The Gatling report was hardened in #109; this one was left as it was, so
+    the two disagreed about whether report data is trusted.
+    """
     results = build_results_dict(stats, duration, connections)
+
+    def cell(value: object) -> str:
+        # Nested dicts used to render as a Python repr, which is unreadable
+        # and, unescaped, just as injectable.
+        text = json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
+        return _html_escape(text)
+
     rows = []
     for key, val in results.items():
         if isinstance(val, dict):
             for k2, v2 in val.items():
-                rows.append(f"<tr><td>{key}.{k2}</td><td>{v2}</td></tr>")
+                rows.append(f"<tr><td>{cell(key)}.{cell(k2)}</td><td>{cell(v2)}</td></tr>")
         else:
-            rows.append(f"<tr><td>{key}</td><td>{val}</td></tr>")
+            rows.append(f"<tr><td>{cell(key)}</td><td>{cell(val)}</td></tr>")
     return (
         "<html><head><title>pywrkr benchmark results</title></head><body>\n"
         "<h1>pywrkr Benchmark Results</h1>\n"
