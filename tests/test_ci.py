@@ -298,6 +298,24 @@ class PaginatedGitHub:
         return self.pages[page - 1] if page <= len(self.pages) else []
 
 
+class NeverEndingGitHub:
+    """Always returns a full page, to prove the page loop is bounded.
+
+    Defined at module scope like the other doubles. As a class nested inside a
+    test method, CodeQL could not resolve its __call__ and reported
+    py/call-to-non-callable against the production call sites it reaches.
+    """
+
+    def __init__(self):
+        self.gets = 0
+
+    def __call__(self, method, url, token, payload=None):
+        if method == "GET":
+            self.gets += 1
+            return [{"id": i, "body": "x"} for i in range(100)]
+        return {"id": 42}
+
+
 class TestUpsertPrComment(unittest.TestCase):
     def test_marker_found_beyond_first_page(self):
         """GitHub caps per_page at 100 and returns oldest-first.
@@ -326,18 +344,7 @@ class TestUpsertPrComment(unittest.TestCase):
 
     def test_pagination_is_bounded(self):
         """An API that always returns a full page must not hang the job."""
-
-        class NeverEnds:
-            def __init__(self):
-                self.gets = 0
-
-            def __call__(self, method, url, token, payload=None):
-                if method == "GET":
-                    self.gets += 1
-                    return [{"id": i, "body": "x"} for i in range(100)]
-                return {"id": 42}
-
-        api = NeverEnds()
+        api = NeverEndingGitHub()
         self.assertEqual(ci.upsert_pr_comment("o/r", 5, "x", token="t", request=api), "created")
         self.assertLessEqual(api.gets, 100)
 
