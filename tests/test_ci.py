@@ -809,3 +809,50 @@ class TestWorkflowActionPinning(unittest.TestCase):
                 if re.search(r"uses:\s*[^.\s]+@[0-9a-f]{40}", line) and "#" not in line:
                     missing.append(f"{path.name}:{line_no}")
         self.assertEqual(missing, [], "SHA pins without a version comment: " + "; ".join(missing))
+
+
+class TestInfraHardening(unittest.TestCase):
+    """The pipeline that creates and destroys real infrastructure."""
+
+    @property
+    def _root(self) -> pathlib.Path:
+        return pathlib.Path(__file__).resolve().parent.parent
+
+    def test_terraform_state_is_remote(self):
+        """State lived in the Jenkins workspace.
+
+        A workspace wipe or an agent change orphaned a VPC, NAT gateway, ECS
+        services and a Cloud Map namespace that kept billing and that the next
+        run could not destroy, because it no longer had the state describing
+        them.
+        """
+        versions = (self._root / "infra/terraform/versions.tf").read_text()
+        self.assertRegex(versions, r'(?m)^\s*backend\s+"s3"\s*\{', "terraform state is not remote")
+        self.assertNotRegex(
+            versions, r'(?m)^\s*#\s*backend\s+"s3"', "the backend block is still commented out"
+        )
+
+    def test_destroy_requires_confirmation(self):
+        """-auto-approve against state the run did not create destroys
+        whatever that state happens to describe, and there is no undo."""
+        pipeline = (self._root / "infra/jenkins/Jenkinsfile").read_text()
+        destroy = pipeline.index("terraform destroy")
+        # The confirmation has to come before it, in the same branch.
+        preceding = pipeline[:destroy]
+        self.assertTrue("input(" in preceding, "destroy is not gated on a confirmation")
+
+    def test_target_url_check_is_not_regex_on_a_string(self):
+        """The old guard matched patterns against the whole URL, so
+        http://user@10.0.0.1/ passed: the pattern looking for an address saw
+        "http://user"."""
+        pipeline = (self._root / "infra/jenkins/Jenkinsfile").read_text()
+        # assertTrue with a short message: assertIn prints the whole haystack,
+        # and a 400-line Jenkinsfile in a CI failure helps nobody.
+        self.assertTrue(
+            "validate_target_url.py" in pipeline,
+            "the Jenkinsfile does not call the URL validator",
+        )
+        self.assertTrue(
+            (self._root / "infra/jenkins/validate_target_url.py").exists(),
+            "the pipeline calls a validator that is not in the repository",
+        )

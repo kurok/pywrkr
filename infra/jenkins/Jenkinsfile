@@ -87,6 +87,12 @@ pipeline {
     environment {
         TF_DIR             = "${WORKSPACE}/infra/terraform"
         AWS_DEFAULT_REGION = "us-east-1"
+
+        // Remote state. Override per controller; the names are not secret,
+        // but they are account-specific, so they do not belong in versions.tf.
+        TF_STATE_BUCKET    = "pywrkr-terraform-state"
+        TF_STATE_KEY       = "pywrkr/terraform.tfstate"
+        TF_LOCK_TABLE      = "pywrkr-terraform-locks"
     }
 
     options {
@@ -106,27 +112,30 @@ pipeline {
         stage('Validate Parameters') {
             steps {
                 script {
-                    // SSRF protection: block RFC 1918, link-local, loopback, and IMDS endpoints.
-                    // An operator with Jenkins build access could otherwise direct the Fargate task
-                    // to the EC2 instance metadata service (169.254.169.254) or internal VPC hosts.
+                    // SSRF protection: block anything that is not a public
+                    // address. An operator with Jenkins build access could
+                    // otherwise aim the Fargate task at the instance metadata
+                    // service or a host inside the VPC, and the task role is
+                    // what makes that worth doing.
+                    //
+                    // The check lives in infra/jenkins/validate_target_url.py
+                    // because it has unit tests there and none here, and
+                    // because resolving a hostname from Groovy needs script
+                    // approval on a sandboxed controller.
+                    //
+                    // The regexes this replaces matched the whole URL string,
+                    // so http://user@10.0.0.1/ passed: the pattern saw
+                    // "http://user" where it wanted an address. They also
+                    // missed 0.0.0.0, [::1], 2130706433 and any DNS name
+                    // pointing at 169.254.169.254.
                     def url = params.TARGET_URL ?: ''
-                    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                        error "TARGET_URL must start with http:// or https://. Got: '${url}'"
+                    def status = sh(
+                        script: "python3 infra/jenkins/validate_target_url.py '${url}'",
+                        returnStatus: true
+                    )
+                    if (status != 0) {
+                        error "TARGET_URL '${url}' was rejected; see the reason above."
                     }
-                    def blockedRanges = [
-                        ~/https?:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}/,          // RFC 1918 10/8
-                        ~/https?:\/\/172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}/, // RFC 1918 172.16/12
-                        ~/https?:\/\/192\.168\.\d{1,3}\.\d{1,3}/,              // RFC 1918 192.168/16
-                        ~/https?:\/\/127\.\d{1,3}\.\d{1,3}\.\d{1,3}/,         // loopback
-                        ~/https?:\/\/169\.254\.\d{1,3}\.\d{1,3}/,             // link-local / IMDS
-                        ~/https?:\/\/localhost(:\d+)?([\/\?#]|$)/,             // localhost
-                    ]
-                    for (pattern in blockedRanges) {
-                        if (url =~ pattern) {
-                            error "TARGET_URL '${url}' is blocked: host is an RFC 1918, link-local, or loopback address. This check prevents SSRF attacks via the Fargate task role."
-                        }
-                    }
-                    echo "TARGET_URL validated: ${url}"
                 }
             }
         }
@@ -179,7 +188,18 @@ pipeline {
                     string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
                 ]) {
                     dir(env.TF_DIR) {
-                        sh 'terraform init -input=false'
+                        // The backend block in versions.tf is empty, so the
+                        // bucket, lock table and region come from here. With
+                        // -input=false a missing one fails the init instead of
+                        // falling back to state on the agent's disk.
+                        sh '''
+                            terraform init -input=false \
+                              -backend-config="bucket=${TF_STATE_BUCKET}" \
+                              -backend-config="key=${TF_STATE_KEY}" \
+                              -backend-config="region=${AWS_DEFAULT_REGION}" \
+                              -backend-config="dynamodb_table=${TF_LOCK_TABLE}" \
+                              -backend-config="encrypt=true"
+                        '''
                     }
                 }
             }
@@ -362,6 +382,16 @@ print('Extracted results.json (%d bytes)' % len(json.dumps(data)))
                 ]) {
                 script {
                     if (params.DESTROY_INFRA) {
+                        // Confirmed by a human before anything is destroyed.
+                        // -auto-approve against state the run did not create
+                        // destroys whatever that state happens to describe,
+                        // and there is no undo.
+                        timeout(time: 15, unit: 'MINUTES') {
+                            input(
+                                message: "Destroy all Terraform infrastructure in ${env.AWS_DEFAULT_REGION}?",
+                                ok: 'Destroy'
+                            )
+                        }
                         dir(env.TF_DIR) {
                             sh 'terraform destroy -input=false -auto-approve'
                         }
