@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from collections import defaultdict
@@ -3865,6 +3866,42 @@ class TestObservabilityIntegration(AioHTTPTestCase):
         call_args = mock_prom.call_args
         self.assertEqual(call_args[0][1], "http://pushgateway:9091")
         self.assertEqual(call_args[0][2], {"service": "myapp"})
+
+    async def test_exports_do_not_run_on_the_event_loop(self):
+        """run_observability_exports does synchronous HTTP with a 10s timeout
+        per exporter, and it is reached from a coroutine.
+
+        On the loop thread that stalls the streaming exporter and, in
+        distributed mode, the worker connections the same loop is still
+        servicing.
+        """
+        seen = {}
+
+        def capture(*args, **kwargs):
+            seen["thread"] = threading.current_thread()
+            return True
+
+        config = pywrkr.BenchmarkConfig(
+            url=self._url(),
+            connections=1,
+            duration=None,
+            num_requests=3,
+            threads=1,
+            timeout_sec=5,
+            prom_remote_write="http://pushgateway:9091",
+        )
+        with (
+            patch("pywrkr.reporting.export_to_prometheus", side_effect=capture),
+            patch("sys.stdout", new_callable=StringIO),
+        ):
+            await pywrkr.run_benchmark(config)
+
+        self.assertIn("thread", seen, "the exporter should have run")
+        self.assertIsNot(
+            seen["thread"],
+            threading.current_thread(),
+            "the export ran on the loop thread",
+        )
 
     async def test_both_exporters_called_together(self):
         """Both exporters should be called when both endpoints are configured."""

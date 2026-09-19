@@ -1441,7 +1441,14 @@ async def _finalize_run(
     # Observability exports: run after printing so errors don't suppress output.
     # A misconfigured or unreachable endpoint produces exit code 1 (unless a
     # threshold failure already set a higher code).
-    if not run_observability_exports(merged, actual_duration, concurrency, config, rate_limiter):
+    # Off the loop thread: these do synchronous HTTP with a 10s timeout each,
+    # and _finalize_run is a coroutine. Blocking here stalls the streaming
+    # exporter and, in distributed mode, the worker connections that the same
+    # loop is still servicing.
+    exports_ok = await asyncio.to_thread(
+        run_observability_exports, merged, actual_duration, concurrency, config, rate_limiter
+    )
+    if not exports_ok:
         exit_code = max(exit_code, 1)
 
     if on_complete is not None:

@@ -119,6 +119,19 @@ class TestRep5RpsLastPartialBucket(unittest.TestCase):
         self.assertAlmostEqual(rps_val, 30.0, delta=1.0)
 
 
+class TestPrometheusExportResource(unittest.TestCase):
+    """The urlopen response was discarded rather than closed."""
+
+    def test_response_is_closed(self):
+        results = build_results_dict(WorkerStats(), 10.0, 4)
+        response = MagicMock()
+        with patch("urllib.request.urlopen", return_value=response):
+            export_to_prometheus(results, "http://gw:9091", {})
+        # Discarding it left the connection open until the object happened to
+        # be collected, and the run emitted a ResourceWarning on the way out.
+        response.__exit__.assert_called()
+
+
 class TestRep6LatencyAbsentWhenNoRequests(unittest.TestCase):
     """rep-6: no fabricated 0 latency when zero requests collected."""
 
