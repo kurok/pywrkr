@@ -13,6 +13,7 @@ scope.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import os
@@ -186,7 +187,17 @@ def _load_json_rows(text: str, source: str) -> list[dict[str, str]]:
 
 
 def _load_csv_rows(text: str, source: str) -> list[dict[str, str]]:
-    reader = csv.reader(text.splitlines())
+    # StringIO with newline="", not text.splitlines().
+    #
+    # csv.reader handles RFC 4180 quoted fields that span lines, but only if it
+    # sees the line terminators. splitlines() removes them, so an address or a
+    # JSON body exported from a spreadsheet silently arrived as "line1line2" --
+    # no error, just quietly wrong data fed into the run.
+    #
+    # splitlines() also breaks on U+2028, U+2029, \x1c-\x1e and \x85, which are
+    # ordinary characters inside a quoted field. Those produced a "line N has 1
+    # value(s)" error that pointed at nothing a reader could see.
+    reader = csv.reader(io.StringIO(text, newline=""))
     try:
         header = next(reader)
     except StopIteration:
@@ -205,12 +216,15 @@ def _load_csv_rows(text: str, source: str) -> list[dict[str, str]]:
         raise ValueError(f"{source}: duplicate header column(s) {', '.join(duplicates)}")
 
     rows: list[dict[str, str]] = []
-    for line_no, values in enumerate(reader, start=2):
+    for values in reader:
         if not values or all(not v.strip() for v in values):
             continue  # tolerate blank lines, including a trailing newline
         if len(values) != len(header):
+            # reader.line_num, not a counter: a record spanning several lines
+            # advances the file by more than one, and a counter would name the
+            # wrong line in the error.
             raise ValueError(
-                f"{source}: line {line_no} has {len(values)} value(s) but the header "
+                f"{source}: line {reader.line_num} has {len(values)} value(s) but the header "
                 f"declares {len(header)}"
             )
         rows.append(dict(zip(header, values)))
