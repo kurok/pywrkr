@@ -138,6 +138,73 @@ class TestConfigSerialization(unittest.TestCase):
         self.assertTrue(restored.live_dashboard)
 
 
+class TestTrafficProfileSerialization(unittest.TestCase):
+    """A shaped run must stay shaped on the workers.
+
+    _serialize_config had no traffic_profile key at all, so every worker
+    deserialized None and ran a flat --rate while the master's report was
+    labelled as a sine/step/spike run that never happened.
+    """
+
+    def test_traffic_profile_round_trips_to_worker(self):
+        from pywrkr.traffic_profiles import parse_traffic_profile
+
+        for spec in ("sine", "sine:cycles=4,min=0.2", "step:100,500,1000", "spike"):
+            with self.subTest(spec=spec):
+                profile = parse_traffic_profile(spec)
+                config = BenchmarkConfig(
+                    url="http://h/", rate=10, duration=5, traffic_profile=profile
+                )
+                data = _serialize_config(config)
+                self.assertIn("traffic_profile", data)
+                restored = _deserialize_config(data).traffic_profile
+                self.assertIsNotNone(restored)
+                self.assertEqual(restored.describe(), profile.describe())
+                # The shape itself, not just the label.
+                for elapsed in (0.0, 1.0, 2.5, 5.0):
+                    self.assertAlmostEqual(
+                        restored.rate_at(elapsed, 5.0, 10.0),
+                        profile.rate_at(elapsed, 5.0, 10.0),
+                        places=6,
+                    )
+
+    def test_csv_profile_travels_without_the_file(self):
+        """The worker has the master's path but not the master's filesystem."""
+        import os
+        import tempfile
+
+        from pywrkr.traffic_profiles import parse_traffic_profile
+
+        handle = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="")
+        handle.write("time,multiplier\n0,0.5\n10,2.0\n")
+        handle.close()
+        try:
+            profile = parse_traffic_profile(f"csv:{handle.name}")
+            config = BenchmarkConfig(url="http://h/", rate=10, duration=10, traffic_profile=profile)
+            data = _serialize_config(config)
+        finally:
+            os.unlink(handle.name)
+
+        restored = _deserialize_config(data).traffic_profile
+        self.assertIsNotNone(restored)
+        self.assertAlmostEqual(restored.rate_at(5.0, 10.0, 100.0), 125.0, places=6)
+
+    def test_a_profile_with_no_spec_is_refused_rather_than_dropped(self):
+        """A library-built profile cannot be reconstructed; say so on the master."""
+        from pywrkr.traffic_profiles import SineProfile
+
+        config = BenchmarkConfig(
+            url="http://h/", rate=10, duration=5, traffic_profile=SineProfile()
+        )
+        with self.assertRaises(ValueError) as ctx:
+            _serialize_config(config)
+        self.assertIn("built programmatically", str(ctx.exception))
+
+    def test_no_profile_stays_none(self):
+        config = BenchmarkConfig(url="http://h/", rate=10, duration=5)
+        self.assertIsNone(_deserialize_config(_serialize_config(config)).traffic_profile)
+
+
 class TestStatsSerialization(unittest.TestCase):
     """Test WorkerStats serialization roundtrip."""
 
