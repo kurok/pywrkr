@@ -266,6 +266,33 @@ class TestLoadFeeder(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_quoted_field_keeps_embedded_newline(self):
+        """RFC 4180 lets a quoted field span lines.
+
+        csv.reader handles that, but only if it sees the line terminators.
+        The loader fed it text.splitlines(), which removes them, so an address
+        or a JSON body exported from a spreadsheet arrived as "line1line2" --
+        no error, just quietly wrong data fed into the run.
+        """
+        feeder = self._csv('name,addr\nbob,"line1\nline2"\n')
+        self.assertEqual(feeder.rows[0]["addr"], "line1\nline2")
+        self.assertEqual(len(feeder.rows), 1)
+
+    def test_unicode_line_separators_inside_a_quoted_field(self):
+        """splitlines() also breaks on U+2028 and friends, which are ordinary
+        characters inside a quoted field. They produced a "line N has 1
+        value(s)" error pointing at nothing a reader could see."""
+        feeder = self._csv('name,note\nbob,"a\u2028b"\n')
+        self.assertEqual(feeder.rows[0]["note"], "a\u2028b")
+
+    def test_column_count_error_names_the_real_line(self):
+        """A record spanning several lines advances the file by more than one,
+        so a per-row counter named the wrong line."""
+        with self.assertRaises(ValueError) as ctx:
+            self._csv('name,addr\nbob,"line1\nline2"\nbroken\n')
+        # The bad record is the 4th physical line of the file.
+        self.assertIn("line 4", str(ctx.exception))
+
     def test_csv_rows_and_fields(self):
         feeder = self._csv()
         self.assertEqual(feeder.fields, ("username", "password"))
