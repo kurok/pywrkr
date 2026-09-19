@@ -8,7 +8,9 @@ code. Tests only send load to localhost with tiny values.
 import asyncio
 import gzip
 import os
+import signal
 import tempfile
+import time
 import unittest
 from io import StringIO
 from unittest.mock import patch
@@ -793,3 +795,93 @@ class TestCrlfHeaderNotFatal(AioHTTPTestCase):
         self.assertEqual(result.error_name, "ValueError")
         self.assertEqual(stats.errors, 1)
         self.assertEqual(stats.error_types["ValueError"], 1)
+
+
+# ---------------------------------------------------------------------------
+# wk-231: Ctrl-C only set stop_event. Workers check it between requests, so a
+# run against a slow target waited out --timeout on everything in flight, and
+# a second Ctrl-C did nothing at all.
+# ---------------------------------------------------------------------------
+
+
+class TestStopCancelsInflight(AioHTTPTestCase):
+    async def get_application(self):
+        app = web.Application()
+        app.router.add_get("/slow", self.handle_slow)
+        return app
+
+    async def handle_slow(self, request):
+        await asyncio.sleep(8)
+        return web.Response(text="eventually")
+
+    def _config(self):
+        # -n mode on purpose: _calc_effective_timeout only caps the client
+        # timeout in duration mode, so pre-fix this run waited out the full
+        # 30s timeout_sec on every request still on the wire.
+        return pywrkr.BenchmarkConfig(
+            url=f"http://localhost:{self.server.port}/slow",
+            connections=2,
+            threads=1,
+            num_requests=10,
+            timeout_sec=30,
+            _quiet=True,
+        )
+
+    async def _run_and_stop(self, force=False):
+        """Start a run, take the events the signal handler would have, stop it."""
+        captured: dict = {}
+
+        def _capture(stop_event, force_event=None):
+            captured["stop"] = stop_event
+            captured["force"] = force_event
+
+        t0 = time.monotonic()
+        with patch("sys.stdout", new_callable=StringIO):
+            with patch("pywrkr.workers._setup_signal_handlers", _capture):
+                run = asyncio.create_task(pywrkr.run_benchmark(self._config()))
+                while "stop" not in captured:
+                    await asyncio.sleep(0.01)
+                await asyncio.sleep(0.2)
+                captured["stop"].set()
+                if force:
+                    captured["force"].set()
+                await run
+        return time.monotonic() - t0
+
+    async def test_stop_event_cancels_inflight_requests_within_grace(self):
+        elapsed = await self._run_and_stop()
+        self.assertLess(
+            elapsed,
+            5.0,
+            f"stop took {elapsed:.1f}s; workers get a 2s grace and are then cancelled",
+        )
+
+    async def test_second_signal_skips_the_grace(self):
+        elapsed = await self._run_and_stop(force=True)
+        self.assertLess(
+            elapsed, 1.5, f"forced stop took {elapsed:.1f}s; it should not wait out the grace"
+        )
+
+
+class TestSignalEscalation(unittest.IsolatedAsyncioTestCase):
+    """The first signal asks; the second one insists."""
+
+    async def test_first_signal_stops_second_forces(self):
+        from pywrkr.config import _setup_signal_handlers
+
+        stop, force = asyncio.Event(), asyncio.Event()
+        handlers: dict = {}
+
+        class _Loop:
+            def add_signal_handler(self, sig, cb):
+                handlers[sig] = cb
+
+        with patch("pywrkr.config.asyncio.get_running_loop", return_value=_Loop()):
+            _setup_signal_handlers(stop, force)
+
+        handle = handlers[signal.SIGINT]
+        handle()
+        self.assertTrue(stop.is_set())
+        self.assertFalse(force.is_set())
+        handle()
+        self.assertTrue(force.is_set())

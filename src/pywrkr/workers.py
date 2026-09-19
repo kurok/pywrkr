@@ -1369,6 +1369,66 @@ def _create_progress_task(
     )
 
 
+#: How long workers get to finish an in-flight request after a stop is
+#: requested, before they are cancelled. Ctrl-C used to wait out the full
+#: --timeout (30s by default) on every request still on the wire.
+_STOP_GRACE_SECONDS = 2.0
+
+
+def _task_outcome(task: asyncio.Task) -> object:
+    """The task's result or its exception, the way ``gather`` reports them."""
+    if task.cancelled():
+        return asyncio.CancelledError()
+    exc = task.exception()
+    return exc if exc is not None else task.result()
+
+
+async def _await_workers(
+    tasks: list[asyncio.Task],
+    stop_event: asyncio.Event,
+    timeout_sec: float,
+    force_event: "asyncio.Event | None" = None,
+) -> list[object]:
+    """Wait for the workers, cancelling stragglers once a stop is requested.
+
+    Workers only notice *stop_event* between requests, so a run against a slow
+    or hung target used to sit until every in-flight request reached
+    ``timeout_sec``. Once the stop is requested they get a bounded grace period
+    to land what is already on the wire, and are cancelled after that --
+    ``_execute_request`` turns that cancellation into ``result.cancelled``
+    rather than an error, so nothing is miscounted.
+
+    A second signal sets *force_event* and skips the grace entirely.
+    """
+    pending = {t for t in tasks if not t.done()}
+    waiters = [asyncio.ensure_future(stop_event.wait())]
+    if force_event is not None:
+        waiters.append(asyncio.ensure_future(force_event.wait()))
+    try:
+        while pending and not any(w.done() for w in waiters):
+            done, _ = await asyncio.wait(
+                pending.union(waiters), return_when=asyncio.FIRST_COMPLETED
+            )
+            pending -= done
+
+        if pending:
+            forced = force_event is not None and force_event.is_set()
+            grace = 0.0 if forced else max(0.0, min(timeout_sec, _STOP_GRACE_SECONDS))
+            if grace > 0:
+                _, pending = await asyncio.wait(pending, timeout=grace)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await waiter
+
+    return [_task_outcome(task) for task in tasks]
+
+
 async def _finalize_run(
     tasks: list[asyncio.Task],
     stop_event: asyncio.Event,
@@ -1383,6 +1443,7 @@ async def _finalize_run(
     quiet: bool = False,
     on_complete: "Callable[[WorkerStats, float, int], None] | None" = None,
     streaming: "StreamingExporter | None" = None,
+    force_event: "asyncio.Event | None" = None,
 ) -> tuple[WorkerStats, int]:
     """Await workers, merge stats, print results, and evaluate thresholds.
 
@@ -1392,7 +1453,7 @@ async def _finalize_run(
     """
     worker_crashed = False
     try:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await _await_workers(tasks, stop_event, config.timeout_sec, force_event)
         # Sample end_time immediately after the workers finish, BEFORE tearing
         # down the progress task. The progress/dashboard task sleeps in ~1s
         # increments, so awaiting it can block up to ~1s past the real end of
@@ -1558,10 +1619,11 @@ async def run_benchmark(
     logger.info("")
 
     stop_event = asyncio.Event()
+    force_event = asyncio.Event()
     if install_signal_handlers:
         # A library caller must not have the process's SIGINT/SIGTERM handlers
         # replaced out from under it.
-        _setup_signal_handlers(stop_event)
+        _setup_signal_handlers(stop_event, force_event)
 
     rate_limiter = _create_rate_limiter(config, config.duration)
 
@@ -1659,6 +1721,7 @@ async def run_benchmark(
         quiet=quiet,
         on_complete=on_complete,
         streaming=streaming,
+        force_event=force_event,
     )
 
 
@@ -1730,10 +1793,11 @@ async def run_user_simulation(
         logger.info("")
 
     stop_event = asyncio.Event()
+    force_event = asyncio.Event()
     if install_signal_handlers:
         # A library caller must not have the process's SIGINT/SIGTERM handlers
         # replaced out from under it.
-        _setup_signal_handlers(stop_event)
+        _setup_signal_handlers(stop_event, force_event)
 
     rate_limiter = _create_rate_limiter(config, duration)
 
@@ -1854,6 +1918,7 @@ async def run_user_simulation(
             quiet=quiet,
             on_complete=on_complete,
             streaming=streaming,
+            force_event=force_event,
         )
     except BaseException:
         # Cancellation (or any other failure) before/within _finalize_run:
