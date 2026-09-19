@@ -1785,6 +1785,7 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
             random_param=args.random_param,
             timeout_sec=args.timeout,
             keepalive=config.keepalive,
+            connections=config.connections,
             ssl_config=config.ssl_config,
             json_output=args.json,
             tags=config.tags,

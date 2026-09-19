@@ -1714,6 +1714,18 @@ async def run_user_simulation(
         num_users,
         pool_limit,
     )
+    if num_users > pool_limit and (config.think_time <= 0 or config.scenario is not None):
+        # Think time is what lets users share a pool smaller than their number.
+        # Without it they all want a connection at once, so the surplus users
+        # wait in the pool queue -- and that wait is counted as latency.
+        logger.warning(
+            "%d virtual users share a pool of %d connections with no think time; "
+            "users will queue on the client and that wait is measured as latency. "
+            "Pass -c %d (or larger) to size the pool to the offered load.",
+            num_users,
+            pool_limit,
+            num_users,
+        )
 
     all_stats: list[WorkerStats] = []
     tasks = []
@@ -1921,6 +1933,11 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
         bench_config = BenchmarkConfig(
             url=config.url,
             users=num_users,
+            # Floor the pool at the step's user count. Below it the users queue
+            # for a connection, that wait is inside the measured latency, and
+            # the step fails --max-p95 because of the client -- reporting a
+            # capacity ceiling that the load generator invented.
+            connections=max(num_users, config.connections),
             duration=config.step_duration,
             think_time=config.think_time,
             think_time_jitter=config.think_time_jitter,

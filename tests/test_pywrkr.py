@@ -6740,5 +6740,156 @@ class TestScenarioThinkTimeFallback(AioHTTPTestCase):
             os.unlink(f.name)
 
 
+class TestAutofindPoolSizing(unittest.TestCase):
+    """Autofind must not measure its own connection pool as server latency."""
+
+    @staticmethod
+    def _capture_step_configs(config):
+        captured = []
+
+        async def _sim(cfg):
+            captured.append(cfg)
+            stats = pywrkr.WorkerStats()
+            stats.total_requests = 100
+            stats.latencies.extend([0.01] * 100)
+            return stats, 0
+
+        async def _run():
+            with patch("pywrkr.workers.run_user_simulation", side_effect=_sim):
+                with patch("sys.stdout", new_callable=StringIO):
+                    await pywrkr.workers.run_autofind(config)
+
+        asyncio.run(_run())
+        return captured
+
+    def test_autofind_step_pool_matches_users(self):
+        # Every step used to inherit the default 10-connection pool, so past
+        # ~10 users the ramp measured client queueing and stopped at a ceiling
+        # the load generator invented.
+        from pywrkr.config import AutofindConfig
+
+        captured = self._capture_step_configs(
+            AutofindConfig(
+                url="http://example.com",
+                step_duration=1,
+                start_users=10,
+                max_users=40,
+                step_multiplier=2.0,
+                json_output=None,
+            )
+        )
+
+        self.assertTrue(captured)
+        self.assertIn(40, [cfg.users for cfg in captured])
+        undersized = [
+            (cfg.users, cfg.connections) for cfg in captured if cfg.connections < cfg.users
+        ]
+        self.assertEqual(
+            undersized, [], f"steps ran a pool smaller than their user count: {undersized}"
+        )
+
+    def test_explicit_larger_pool_is_honoured(self):
+        from pywrkr.config import AutofindConfig
+
+        captured = self._capture_step_configs(
+            AutofindConfig(
+                url="http://example.com",
+                step_duration=1,
+                start_users=2,
+                max_users=2,
+                connections=500,
+                json_output=None,
+            )
+        )
+
+        self.assertEqual([cfg.connections for cfg in captured], [500])
+
+
+class TestPoolBoundWarning(AioHTTPTestCase):
+    """A -u run whose pool is smaller than its user count must say so."""
+
+    async def get_application(self):
+        app = web.Application()
+        app.router.add_get("/", self.handle_get)
+        return app
+
+    async def handle_get(self, request):
+        return web.Response(text="ok")
+
+    def _config(self, **overrides):
+        params = {
+            "url": f"http://localhost:{self.server.port}/",
+            "users": 50,
+            "connections": 10,
+            "duration": 0.2,
+            "think_time": 0.0,
+            "_quiet": True,
+        }
+        params.update(overrides)
+        return pywrkr.BenchmarkConfig(**params)
+
+    async def test_warns_when_users_exceed_pool_without_think_time(self):
+        with patch("sys.stdout", new_callable=StringIO):
+            with self.assertLogs("pywrkr", level="WARNING") as logs:
+                await pywrkr.run_user_simulation(self._config(), install_signal_handlers=False)
+        output = "\n".join(logs.output)
+        self.assertIn("50 virtual users share a pool of 10 connections", output)
+        self.assertIn("-c 50", output)
+
+    async def test_no_warning_when_think_time_lets_users_share_the_pool(self):
+        with patch("sys.stdout", new_callable=StringIO):
+            with patch.object(workers.logger, "warning") as warn:
+                await pywrkr.run_user_simulation(
+                    self._config(think_time=1.0), install_signal_handlers=False
+                )
+        messages = [call.args[0] for call in warn.call_args_list]
+        self.assertFalse(
+            [m for m in messages if "share a pool of" in m],
+            f"unexpected pool warning with think time: {messages}",
+        )
+
+
+class TestAutofindPoolCeiling(AioHTTPTestCase):
+    """The ramp must not stop on latency the client pool created."""
+
+    async def get_application(self):
+        app = web.Application()
+        app.router.add_get("/", self.handle_slow)
+        return app
+
+    async def handle_slow(self, request):
+        await asyncio.sleep(0.1)
+        return web.Response(text="ok")
+
+    async def test_step_p95_tracks_the_handler_not_the_pool(self):
+        # A 100 ms handler and 50 users need 50 connections to stay at 100 ms.
+        # Through the old default 10-connection pool the same step measured
+        # p95=2.384s and failed --max-p95, inventing a ceiling at ~10 users.
+        # Fixed it measures 0.11s alone and 0.23s under `-n 7`, so 0.6s
+        # separates the two regimes with room for a loaded CI runner.
+        config = pywrkr.AutofindConfig(
+            url=f"http://localhost:{self.server.port}/",
+            max_error_rate=1.0,
+            max_p95=0.6,
+            step_duration=2.0,
+            start_users=50,
+            max_users=50,
+            step_multiplier=2.0,
+            think_time=0.0,
+            think_time_jitter=0.0,
+            timeout_sec=5,
+        )
+        with patch("sys.stdout", new_callable=StringIO):
+            steps = await pywrkr.run_autofind(config)
+
+        self.assertEqual([step.users for step in steps], [50])
+        self.assertLess(
+            steps[0].p95,
+            0.6,
+            f"p95 {steps[0].p95:.3f}s against a 100 ms handler means users queued on the pool",
+        )
+        self.assertTrue(steps[0].passed)
+
+
 if __name__ == "__main__":
     unittest.main()
