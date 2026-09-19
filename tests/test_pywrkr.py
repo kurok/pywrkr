@@ -22,6 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
+from pywrkr.reporting import _nearest_rank_idx
 
 # Reached via attribute access rather than a second `from pywrkr... import`
 # statement, since CodeQL flags a module imported both ways (py/import-and-import-from).
@@ -6861,34 +6862,58 @@ class TestAutofindPoolCeiling(AioHTTPTestCase):
         await asyncio.sleep(0.1)
         return web.Response(text="ok")
 
-    async def test_step_p95_tracks_the_handler_not_the_pool(self):
-        # A 100 ms handler and 50 users need 50 connections to stay at 100 ms.
-        # Through the old default 10-connection pool the same step measured
-        # p95=2.384s and failed --max-p95, inventing a ceiling at ~10 users.
-        # Fixed it measures 0.11s alone and 0.23s under `-n 7`, so 0.6s
-        # separates the two regimes with room for a loaded CI runner.
+    @staticmethod
+    def _p95(latencies):
+        ordered = sorted(latencies)
+        return ordered[_nearest_rank_idx(95, len(ordered))]
+
+    async def test_autofind_p95_beats_a_pool_starved_run(self):
+        # Absolute latency bounds are worthless here: a loaded CI runner is
+        # several times slower than a laptop, and picking a number that holds
+        # on both leaves no gap to detect the bug in. So measure both regimes
+        # in this test -- the starved pool is the control -- and compare.
+        url = f"http://localhost:{self.server.port}/"
+        users, seconds = 50, 2.0
+
+        starved, _ = await pywrkr.run_user_simulation(
+            pywrkr.BenchmarkConfig(
+                url=url,
+                users=users,
+                connections=10,
+                duration=seconds,
+                think_time=0.0,
+                _quiet=True,
+            ),
+            install_signal_handlers=False,
+        )
+
         config = pywrkr.AutofindConfig(
-            url=f"http://localhost:{self.server.port}/",
+            url=url,
             max_error_rate=1.0,
-            max_p95=0.6,
-            step_duration=2.0,
-            start_users=50,
-            max_users=50,
+            max_p95=30.0,
+            step_duration=seconds,
+            start_users=users,
+            max_users=users,
             step_multiplier=2.0,
             think_time=0.0,
             think_time_jitter=0.0,
-            timeout_sec=5,
+            timeout_sec=10,
         )
         with patch("sys.stdout", new_callable=StringIO):
             steps = await pywrkr.run_autofind(config)
 
-        self.assertEqual([step.users for step in steps], [50])
-        self.assertLess(
-            steps[0].p95,
-            0.6,
-            f"p95 {steps[0].p95:.3f}s against a 100 ms handler means users queued on the pool",
+        self.assertEqual([step.users for step in steps], [users])
+        starved_p95 = self._p95(starved.latencies)
+        # 50 users through 10 connections queue 5 deep, so the starved p95 runs
+        # several times the handler's 100 ms. Autofind gives each step a pool
+        # its size, so its p95 should track the handler. Require only a 2x gap:
+        # the effect is ~5x, and the bug made the two identical.
+        self.assertGreater(
+            starved_p95,
+            steps[0].p95 * 2,
+            f"autofind p95 {steps[0].p95:.3f}s is not meaningfully below the "
+            f"pool-starved {starved_p95:.3f}s -- the step is queueing too",
         )
-        self.assertTrue(steps[0].passed)
 
 
 if __name__ == "__main__":
