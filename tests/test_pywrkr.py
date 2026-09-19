@@ -378,6 +378,42 @@ class TestJsonOutput(unittest.TestCase):
 
 
 class TestHtmlReport(unittest.TestCase):
+    def test_values_are_html_escaped(self):
+        """Report data is not ours.
+
+        error_types keys carry server reason phrases, so a target that answers
+        with markup in its status line gets that markup rendered when someone
+        opens the report. The Gatling report was hardened in #109 and this one
+        was not, so the two disagreed about whether this data is trusted.
+        """
+        stats = pywrkr.WorkerStats()
+        stats.total_requests = 1
+        stats.errors = 1
+        stats.error_types = defaultdict(int, {"<script>alert(1)</script>": 1})
+
+        html = pywrkr.generate_html_report(stats, 1.0, 1)
+
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_nested_values_are_escaped_not_repr(self):
+        """step_stats nests two levels, so a value here is itself a dict.
+
+        It used to be interpolated as a Python repr -- unreadable, and just as
+        injectable, since the step name is scenario data.
+        """
+        stats = pywrkr.WorkerStats()
+        stats.total_requests = 1
+        stats.latencies = [0.1]
+        stats.status_codes = defaultdict(int, {200: 1})
+        stats.step_latencies["<b>checkout</b>"] = [0.5]
+
+        html = pywrkr.generate_html_report(stats, 1.0, 1)
+
+        self.assertNotIn("<b>checkout</b>", html, "a step name is not markup")
+        self.assertIn("&lt;b&gt;checkout&lt;/b&gt;", html)
+        self.assertNotIn("{'", html, "no Python dict reprs in the table")
+
     def test_contains_html_tags(self):
         stats = pywrkr.WorkerStats()
         stats.total_requests = 10
