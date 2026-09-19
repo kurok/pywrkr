@@ -146,6 +146,33 @@ async def _drain_reply(
     return elapsed
 
 
+#: How long to look for an already-buffered frame when resynchronising after a
+#: reply timeout. Long enough that a frame sitting in the read buffer is seen,
+#: short enough that an empty buffer costs nothing.
+_RESYNC_POLL_SECONDS = 0.01
+
+
+async def _drain_buffered(
+    ws: "aiohttp.ClientWebSocketResponse[Any]",
+    stats: WorkerStats,
+    ws_stats: WsStats,
+) -> int:
+    """Consume every frame already waiting, returning how many. -1 if the socket ended.
+
+    These are replies to messages whose own wait already timed out. Timing them
+    against the message just sent is what skewed every later RTT toward zero.
+    """
+    drained = 0
+    while True:
+        try:
+            msg = await asyncio.wait_for(ws.receive(), timeout=_RESYNC_POLL_SECONDS)
+        except asyncio.TimeoutError:
+            return drained
+        if not _account_message(msg, stats, ws_stats):
+            return -1
+        drained += 1
+
+
 def _account_message(
     msg: aiohttp.WSMessage,
     stats: WorkerStats,
@@ -373,6 +400,9 @@ async def _send_loop(
 ) -> None:
     """Send payloads on a schedule, optionally timing each reply."""
     index = 0
+    # Set by a reply timeout. While it holds, whatever arrives belongs to an
+    # earlier message, so nothing is timed until the backlog has been drained.
+    desynced = False
     while not stop.is_set():
         payload = ws_config.messages[index % len(ws_config.messages)]
         index += 1
@@ -388,13 +418,28 @@ async def _send_loop(
         stats.total_requests += 1
 
         if ws_config.expect_reply:
-            rtt = await _drain_reply(ws, stats, ws_stats, ws_config.reply_timeout)
-            if rtt is None:
-                if ws.closed:
+            if desynced:
+                # Catch up on the replies owed from before the timeout. Until
+                # they are consumed, the next frame to arrive is an older
+                # message's reply -- timing it against this send is what put a
+                # run of ~0ms RTTs into p50/p95 after a single slow response.
+                drained = await _drain_buffered(ws, stats, ws_stats)
+                if drained < 0:
                     return
-            else:
-                ws_stats.rtt_latencies.append(rtt)
-                _record_latency(stats, rtt)
+                if drained:
+                    ws_stats.unexpected_replies += drained
+                    desynced = False
+                # Nothing buffered yet: stay desynced and skip timing this
+                # round rather than record a reading we cannot attribute.
+            if not desynced:
+                rtt = await _drain_reply(ws, stats, ws_stats, ws_config.reply_timeout)
+                if rtt is None:
+                    if ws.closed:
+                        return
+                    desynced = True
+                else:
+                    ws_stats.rtt_latencies.append(rtt)
+                    _record_latency(stats, rtt)
 
         if ws_config.message_interval <= 0:
             # Flat-out send loop: yield so the receive path and the stop event
