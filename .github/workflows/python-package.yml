@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
     - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
       with:
         python-version: "3.12"
@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
     - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
       with:
         python-version: "3.12"
@@ -67,7 +67,7 @@ jobs:
           - os: macos-latest
             python-version: "3.12"
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
     - name: Set up Python ${{ matrix.python-version }}
       uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
       with:
@@ -96,7 +96,7 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
     - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
       with:
         python-version: "3.12"
@@ -114,7 +114,7 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
     - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
       with:
         python-version: "3.12"
@@ -130,7 +130,7 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
     - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
       with:
         python-version: "3.12"

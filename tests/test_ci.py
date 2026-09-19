@@ -768,3 +768,44 @@ class TestWorkflowHardening(unittest.TestCase):
         concurrency = self.workflow.get("concurrency") or {}
         self.assertTrue(concurrency.get("group"), "no concurrency group")
         self.assertTrue(concurrency.get("cancel-in-progress"))
+
+
+class TestWorkflowActionPinning(unittest.TestCase):
+    """A floating tag is a tag someone else can move."""
+
+    @property
+    def _workflows(self) -> list[pathlib.Path]:
+        root = pathlib.Path(__file__).resolve().parent.parent
+        return sorted((root / ".github" / "workflows").glob("*.yml"))
+
+    def test_all_workflow_actions_are_sha_pinned(self):
+        """Half the repository already pinned by SHA; the rest floated.
+
+        publish.yml built its artifact with unpinned actions and then attested
+        it, which undercuts the point of the attestation: it records what was
+        built, not that the thing which built it was the thing you reviewed.
+        """
+        self.assertTrue(self._workflows, "no workflows found")
+        floating = []
+        for path in self._workflows:
+            for line_no, line in enumerate(path.read_text().splitlines(), start=1):
+                match = re.search(r"uses:\s*(\S+)", line)
+                if not match:
+                    continue
+                ref = match.group(1)
+                if ref.startswith("./"):  # a local composite action, not third-party
+                    continue
+                if not re.search(r"@[0-9a-f]{40}$", ref):
+                    floating.append(f"{path.name}:{line_no} {ref}")
+
+        self.assertEqual(floating, [], "actions pinned by mutable tag: " + "; ".join(floating))
+
+    def test_pins_carry_a_version_comment(self):
+        """A bare SHA is unreadable; the comment is how anyone knows what
+        version they are looking at, and what Dependabot rewrites."""
+        missing = []
+        for path in self._workflows:
+            for line_no, line in enumerate(path.read_text().splitlines(), start=1):
+                if re.search(r"uses:\s*[^.\s]+@[0-9a-f]{40}", line) and "#" not in line:
+                    missing.append(f"{path.name}:{line_no}")
+        self.assertEqual(missing, [], "SHA pins without a version comment: " + "; ".join(missing))
