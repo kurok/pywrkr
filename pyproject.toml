@@ -106,3 +106,16 @@ select = ["E", "F", "W", "I"]
 # Transitive via pip-audit (the `security` extra). Floor for GHSA-qwm4-qh6w-59xr /
 # CVE-2026-13346 (doubly-encoded index URLs), fixed in pip 26.2.0.
 constraint-dependencies = ["pip>=26.2.0"]
+
+[tool.coverage.run]
+# Scoped to the package. A bare --cov also measures the test files, which put
+# the headline at 98% while src alone was 95% -- a floor set against the
+# inflated number would not gate anything.
+source = ["src/pywrkr"]
+
+[tool.coverage.report]
+# The 85% target was documented in codecov.yml and CLAUDE.md but enforced
+# nowhere: codecov's status is not a required check, so a pull request that
+# dropped coverage to 60% still merged green. This makes the required test job
+# itself the gate. src is at 95% today.
+fail_under = 85
