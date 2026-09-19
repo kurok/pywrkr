@@ -4701,8 +4701,12 @@ class TestDistributedIntegration(AioHTTPTestCase):
         self.assertIsNotNone(master_result)
         merged, exit_code = master_result
         self.assertEqual(exit_code, 0)
-        # Each worker sends at least num_requests, so merged should have >= 2x
-        self.assertGreaterEqual(merged.total_requests, 20)
+        # -n is the CLUSTER total, so two workers do 5 each rather than 10 each.
+        # This used to assert >= 20, which encoded the bug in #238: the master
+        # sent num_requests to every node unchanged, and --expect-workers 3
+        # -n 1000 quietly ran 3,000 requests.
+        self.assertEqual(merged.total_requests, 10)
+        self.assertIn(200, merged.status_codes)
 
     async def test_master_worker_user_simulation(self):
         """Worker should handle user simulation mode when config has users set."""
