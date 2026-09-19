@@ -723,3 +723,48 @@ class TestDockerfile(unittest.TestCase):
         # interval and mark the container permanently unhealthy.
         self.assertNotIn("--version", command, f"unusable health command: {command}")
         self.assertIn("--help", command)
+
+
+class TestWorkflowHardening(unittest.TestCase):
+    """The workflow is the thing that actually gates a merge."""
+
+    @property
+    def _root(self) -> pathlib.Path:
+        return pathlib.Path(__file__).resolve().parent.parent
+
+    @property
+    def workflow(self) -> dict:
+        text = (self._root / ".github/workflows/python-package.yml").read_text()
+        return yaml.safe_load(text)
+
+    def test_test_job_enforces_coverage_threshold(self):
+        """The 85% target lived in codecov.yml and CLAUDE.md and was enforced
+        nowhere.
+
+        Codecov's status is not a required check, so a pull request that
+        dropped coverage to 60% still merged green. The floor belongs where
+        every invocation sees it, not only CI's.
+        """
+        pyproject = (self._root / "pyproject.toml").read_text()
+        match = re.search(r"(?m)^fail_under\s*=\s*(\d+)", pyproject)
+        self.assertIsNotNone(match, "no coverage floor in pyproject.toml")
+        self.assertGreaterEqual(int(match.group(1)), 80)
+
+        # And scoped to the package: a bare --cov also measures the tests,
+        # which put the headline at 98% while src alone was 95%.
+        self.assertRegex(pyproject, r'source\s*=\s*\[\s*"src/pywrkr"\s*\]')
+
+    def test_jobs_have_timeouts(self):
+        """No job had one, so a hung aiohttp test server burned the 6-hour
+        default before anyone noticed."""
+        for name, job in self.workflow["jobs"].items():
+            with self.subTest(job=name):
+                self.assertIn("timeout-minutes", job, f"job {name} has no timeout")
+                self.assertLessEqual(job["timeout-minutes"], 60)
+
+    def test_superseded_runs_are_cancelled(self):
+        """A superseded push kept its whole matrix running -- six test jobs
+        plus five others, producing results nobody would read."""
+        concurrency = self.workflow.get("concurrency") or {}
+        self.assertTrue(concurrency.get("group"), "no concurrency group")
+        self.assertTrue(concurrency.get("cancel-in-progress"))

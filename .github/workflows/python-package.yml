@@ -8,11 +8,18 @@ on:
 permissions:
   contents: read
 
+# A superseded push kept its whole matrix running: six test jobs plus five
+# others, all producing results nobody would look at.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # -------------------------------------------------------------------
   # Lint & Format
   # -------------------------------------------------------------------
   lint:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -30,6 +37,7 @@ jobs:
   # Pre-commit hooks
   # -------------------------------------------------------------------
   pre-commit:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -45,6 +53,7 @@ jobs:
   # Unit tests + Coverage (multi-version, multi-OS matrix)
   # -------------------------------------------------------------------
   test:
+    timeout-minutes: 20
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -84,6 +93,7 @@ jobs:
   # OTel integration tests (requires the otel optional extra)
   # -------------------------------------------------------------------
   test-otel:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -101,6 +111,7 @@ jobs:
   # Type checking with mypy
   # -------------------------------------------------------------------
   typecheck:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -116,6 +127,7 @@ jobs:
   # Security scanning
   # -------------------------------------------------------------------
   security:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -133,6 +145,7 @@ jobs:
   # Gate: all required checks must pass before merging
   # -------------------------------------------------------------------
   all-checks-pass:
+    timeout-minutes: 20
     name: All checks pass
     needs: [lint, pre-commit, test, test-otel, typecheck, security]
     runs-on: ubuntu-latest
