@@ -845,7 +845,7 @@ class TestStopCancelsInflight(AioHTTPTestCase):
                 captured["stop"].set()
                 if force:
                     captured["force"].set()
-                await run
+                _ = await run
         return time.monotonic() - t0
 
     async def test_stop_event_cancels_inflight_requests_within_grace(self):

@@ -1424,7 +1424,7 @@ async def _await_workers(
         for waiter in waiters:
             waiter.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await waiter
+                _ = await waiter
 
     return [_task_outcome(task) for task in tasks]
 
