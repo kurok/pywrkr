@@ -569,8 +569,6 @@ class TestRpsTimelineRendering(unittest.TestCase):
         self.assertEqual(out.count("req/s"), 3)  # one bar per second bucket
 
     def test_html_labels_non_negative_with_monotonic_start(self):
-        import re
-
         stats = WorkerStats()
         stats.total_requests = 300
         stats.latencies = [0.01] * 10
