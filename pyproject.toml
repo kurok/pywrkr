@@ -105,7 +105,17 @@ select = ["E", "F", "W", "I"]
 [tool.uv]
 # Transitive via pip-audit (the `security` extra). Floor for GHSA-qwm4-qh6w-59xr /
 # CVE-2026-13346 (doubly-encoded index URLs), fixed in pip 26.2.0.
-constraint-dependencies = ["pip>=26.2.0"]
+#
+# Transitive via cachecontrol[filecache] (pip-audit). filelock 4.2.1 fixes
+# GHSA-v4x8-3wr5-3wq8, -567q-5qvw-pf92, -9vhv-jxww-xfm5, -crv4-6mhj-j5jh,
+# -2g95-wg33-c5x2 and -jqc4-5cvw-7w85, but 4.1.1+ needs Python 3.11. On 3.10 the
+# only version outside every filelock advisory is 3.20.3: it predates the
+# ReadWriteLock code (3.20.4+) and has the GHSA-qmgc-5h2g-mvrw fix.
+constraint-dependencies = [
+    "pip>=26.2.0",
+    "filelock==3.20.3; python_full_version < '3.11'",
+    "filelock>=4.2.1; python_full_version >= '3.11'",
+]
 
 [tool.coverage.run]
 # Scoped to the package. A bare --cov also measures the test files, which put
