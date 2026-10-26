@@ -29,6 +29,7 @@ from pywrkr.main import _build_parser, _parse_and_validate_args
 from pywrkr.reporting import build_results_dict, print_results
 from pywrkr.websockets import (
     WsStats,
+    _close_socket,
     connection_start_times,
     is_websocket_url,
     merge_ws_stats,
@@ -269,6 +270,46 @@ class TestConnectionStartTimes(unittest.TestCase):
 
     def test_zero_sockets_is_empty(self):
         self.assertEqual(connection_start_times(0, 5.0), [])
+
+
+class _ClosingSocket:
+    """Stands in for a client socket whose close() returns with a given code."""
+
+    def __init__(self, close_code: int, exc: BaseException | None = None) -> None:
+        self.closed = False
+        self.close_code: int | None = None
+        self._code = close_code
+        self._exc = exc
+
+    async def close(self) -> bool:
+        self.closed = True
+        self.close_code = self._code
+        return True
+
+    def exception(self) -> BaseException | None:
+        return self._exc
+
+
+class TestCloseSocket(unittest.IsolatedAsyncioTestCase):
+    async def test_an_acknowledged_close_records_its_code(self):
+        ws_stats = WsStats()
+        await _close_socket(_ClosingSocket(1000), ws_stats, timeout=1.0)  # type: ignore[arg-type]
+        self.assertEqual(ws_stats.close_frames_sent, 1)
+        self.assertEqual(ws_stats.close_unacked, 0)
+        self.assertEqual(ws_stats.close_codes, {"1000": 1})
+
+    async def test_an_abnormal_closure_is_counted_as_unacknowledged(self):
+        """aiohttp's close() swallows a transport error and returns normally.
+
+        It stamps 1006 instead, which no peer can send, so the close was never
+        answered. This was what made the slow-close test flaky on macOS.
+        """
+        ws_stats = WsStats()
+        ws = _ClosingSocket(1006, ConnectionResetError("peer went away"))
+        await _close_socket(ws, ws_stats, timeout=1.0)  # type: ignore[arg-type]
+        self.assertEqual(ws_stats.close_frames_sent, 1)
+        self.assertEqual(ws_stats.close_unacked, 1)
+        self.assertEqual(ws_stats.close_codes, {})
 
 
 class TestMergeWsStats(unittest.TestCase):
