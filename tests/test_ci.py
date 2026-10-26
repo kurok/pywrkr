@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import pathlib
 import re
 import unittest
 from io import StringIO
@@ -675,7 +674,7 @@ class TestDockerfile(unittest.TestCase):
 
     @property
     def dockerfile(self) -> str:
-        root = pathlib.Path(__file__).resolve().parent.parent
+        root = Path(__file__).resolve().parent.parent
         return (root / "Dockerfile").read_text()
 
     def test_dockerfile_has_user_and_pinned_base(self):
@@ -729,8 +728,8 @@ class TestWorkflowHardening(unittest.TestCase):
     """The workflow is the thing that actually gates a merge."""
 
     @property
-    def _root(self) -> pathlib.Path:
-        return pathlib.Path(__file__).resolve().parent.parent
+    def _root(self) -> Path:
+        return Path(__file__).resolve().parent.parent
 
     @property
     def workflow(self) -> dict:
@@ -774,8 +773,8 @@ class TestWorkflowActionPinning(unittest.TestCase):
     """A floating tag is a tag someone else can move."""
 
     @property
-    def _workflows(self) -> list[pathlib.Path]:
-        root = pathlib.Path(__file__).resolve().parent.parent
+    def _workflows(self) -> list[Path]:
+        root = Path(__file__).resolve().parent.parent
         return sorted((root / ".github" / "workflows").glob("*.yml"))
 
     def test_all_workflow_actions_are_sha_pinned(self):
@@ -815,8 +814,8 @@ class TestInfraHardening(unittest.TestCase):
     """The pipeline that creates and destroys real infrastructure."""
 
     @property
-    def _root(self) -> pathlib.Path:
-        return pathlib.Path(__file__).resolve().parent.parent
+    def _root(self) -> Path:
+        return Path(__file__).resolve().parent.parent
 
     def test_terraform_state_is_remote(self):
         """State lived in the Jenkins workspace.
