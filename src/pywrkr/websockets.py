@@ -233,10 +233,19 @@ async def _close_socket(
     ws_stats.close_frames_sent += 1
     try:
         await asyncio.wait_for(ws.close(), timeout=timeout)
-        ws_stats.record_close(ws.close_code)
     except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
         ws_stats.close_unacked += 1
         logger.debug("Close handshake did not complete: %s", exc)
+        return
+    # close() also returns normally when the transport fails while it waits
+    # for the answer: aiohttp swallows the error and stamps ABNORMAL_CLOSURE.
+    # 1006 is never sent on the wire (RFC 6455 7.4.1), so it always means no
+    # close frame came back.
+    if ws.close_code == aiohttp.WSCloseCode.ABNORMAL_CLOSURE:
+        ws_stats.close_unacked += 1
+        logger.debug("Close handshake did not complete: %s", ws.exception())
+    else:
+        ws_stats.record_close(ws.close_code)
 
 
 def _record_handshake_failure(exc: BaseException, stats: WorkerStats, ws_stats: WsStats) -> None:
