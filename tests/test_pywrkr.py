@@ -6280,9 +6280,13 @@ class TestDunderMain(unittest.TestCase):
         """Running __main__ under __name__ == '__main__' guard."""
         import runpy
 
+        import pywrkr.__main__ as dunder_main
+
+        # run_path on the file avoids runpy.run_module, which on Python
+        # 3.10/3.11 calls loader.get_code() on pytest's AssertionRewritingHook.
         with patch("pywrkr.main.main") as m:
             with contextlib.suppress(SystemExit):
-                runpy.run_module("pywrkr", run_name="__main__")
+                runpy.run_path(dunder_main.__file__, run_name="__main__")
             m.assert_called()
 
 
