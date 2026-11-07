@@ -19,7 +19,8 @@ resource "aws_ssm_parameter" "worker_secret" {
   description = "pywrkr master/worker HMAC secret (PYWRKR_WORKER_SECRET)"
   type        = "SecureString"
   value       = local.worker_secret
-  tags        = var.tags
+  # No `tags = var.tags`: in this module var.tags are pywrkr benchmark tags
+  # (passed as --tag k=v), not AWS tags; the provider's default_tags apply.
 }
 
 # The execution role fetches `secrets` at task start. The parameter uses the
@@ -35,6 +36,15 @@ resource "aws_iam_role_policy" "read_worker_secret" {
       Resource = aws_ssm_parameter.worker_secret.arn
     }]
   })
+}
+
+# IAM is eventually consistent: a task started right after the policy is
+# written can still be denied ssm:GetParameters and stop before it runs.
+resource "time_sleep" "worker_secret_policy_propagation" {
+  create_duration = "15s"
+  triggers = {
+    policy = aws_iam_role_policy.read_worker_secret.policy
+  }
 }
 
 ###############################################################################
@@ -343,7 +353,7 @@ resource "aws_ecs_task_definition" "worker" {
 
 resource "aws_ecs_service" "master" {
   # The execution role must be able to read the secret before a task starts.
-  depends_on = [aws_iam_role_policy.read_worker_secret]
+  depends_on = [time_sleep.worker_secret_policy_propagation]
 
   name            = "${var.name_prefix}-master"
   cluster         = var.cluster_id

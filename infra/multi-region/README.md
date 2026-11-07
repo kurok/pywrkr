@@ -86,7 +86,8 @@ The executing IAM principal needs permissions for:
 - **EC2/VPC:** `ec2:CreateVpc`, `ec2:CreateSubnet`, `ec2:CreateNatGateway`, `ec2:AllocateAddress`, `ec2:ReleaseAddress`, `ec2:CreateSecurityGroup`, `ec2:*RouteTable*`, `ec2:*InternetGateway*`
 - **Cloud Map:** `servicediscovery:CreatePrivateDnsNamespace`, `servicediscovery:CreateService`, `servicediscovery:DeleteNamespace`
 - **CloudWatch Logs:** `logs:CreateLogGroup`, `logs:PutRetentionPolicy`, `logs:GetLogEvents`, `logs:DeleteLogGroup`
-- **IAM:** `iam:CreateRole`, `iam:AttachRolePolicy`, `iam:PassRole`, `iam:DeleteRole`
+- **IAM:** `iam:CreateRole`, `iam:AttachRolePolicy`, `iam:PassRole`, `iam:DeleteRole`, `iam:PutRolePolicy`, `iam:GetRolePolicy`, `iam:DeleteRolePolicy`
+- **SSM** (master/worker secret, `parameter/pywrkr-*`): `ssm:PutParameter`, `ssm:GetParameter`, `ssm:GetParameters`, `ssm:DeleteParameter`, `ssm:AddTagsToResource`, `ssm:RemoveTagsFromResource`, `ssm:ListTagsForResource`; plus `ssm:DescribeParameters` on `*`
 
 ### AWS Service Quotas
 

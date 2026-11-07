@@ -37,6 +37,15 @@ resource "aws_iam_role_policy" "read_worker_secret" {
   })
 }
 
+# IAM is eventually consistent: a task started right after the policy is
+# written can still be denied ssm:GetParameters and stop before it runs.
+resource "time_sleep" "worker_secret_policy_propagation" {
+  create_duration = "15s"
+  triggers = {
+    policy = aws_iam_role_policy.read_worker_secret.policy
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Regional Test Cell — composes all per-region modules
 # This module is called once per enabled region from the root main.tf.
@@ -89,7 +98,7 @@ module "observability" {
 
 module "master" {
   # The execution role must be able to read the secret before a task starts.
-  depends_on = [aws_iam_role_policy.read_worker_secret]
+  depends_on = [time_sleep.worker_secret_policy_propagation]
 
   source = "../pywrkr-master"
 

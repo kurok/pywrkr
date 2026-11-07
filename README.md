@@ -1695,7 +1695,7 @@ only after it finishes:
 
 ```bash
 # On the master (and the same secret on every worker)
-export PYWRKR_WORKER_SECRET='...'
+export PYWRKR_WORKER_SECRET='<shared secret>'  # e.g. from: openssl rand -hex 32
 pywrkr --master --expect-workers 4 --export-interval 10 \
        --otel-endpoint http://collector:4318/v1/metrics \
        -u 4000 -d 1800 https://api.example.com/
@@ -1749,7 +1749,7 @@ Scale benchmarks across multiple machines by running one master and multiple wor
 
 ```bash
 # The same shared secret on the master and on every worker
-export PYWRKR_WORKER_SECRET='...'
+export PYWRKR_WORKER_SECRET='<shared secret>'  # e.g. from: openssl rand -hex 32
 
 # On the master node: coordinate 3 workers
 pywrkr http://target:8080/ --master --expect-workers 3 -c 300 -d 60
@@ -1796,7 +1796,7 @@ on a non-loopback `--bind` — including the default `0.0.0.0` — without a sec
 environment keeps it out of the process table:
 
 ```bash
-export PYWRKR_WORKER_SECRET='...'          # on the master and on every worker
+export PYWRKR_WORKER_SECRET='<shared secret>'  # same value on master and every worker
 pywrkr http://target:8080/ --master --expect-workers 3 -c 300 -d 60
 pywrkr --worker master-host:9220
 ```

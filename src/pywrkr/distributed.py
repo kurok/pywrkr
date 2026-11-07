@@ -12,6 +12,7 @@ import os
 import socket
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -73,23 +74,44 @@ MASTER_AUTH_REQUIRED_MESSAGE = (
 )
 
 
-def is_loopback_bind(host: str | None) -> bool:
+def _resolved_is_loopback(sockaddr: tuple) -> bool:
+    """True for a loopback address, or an IPv6 link-local one on a loopback interface.
+
+    Some hosts files map ``localhost`` to ``fe80::1%lo0`` as well as ``::1``;
+    that address is only reachable through the loopback interface.
+    """
+    addr = ipaddress.ip_address(str(sockaddr[0]).split("%", 1)[0])
+    if addr.is_loopback:
+        return True
+    if isinstance(addr, ipaddress.IPv6Address) and addr.is_link_local and len(sockaddr) >= 4:
+        try:
+            return socket.if_indextoname(int(sockaddr[3])).startswith("lo")
+        except (OSError, ValueError, AttributeError):
+            return False
+    return False
+
+
+def is_loopback_bind(host: str | Sequence[str] | None) -> bool:
     """Report whether binding *host* listens on the loopback interface only.
 
     Literal ``127.0.0.0/8`` and ``::1`` (bracketed or not) count. ``localhost``
-    counts only if every address it resolves to is loopback, since a hosts
-    file can point it elsewhere. Every other value counts as reachable from
-    off the machine: ``None`` and ``""`` (asyncio's "every interface"),
-    ``0.0.0.0``, ``::`` and any other name.
+    counts only if every address it resolves to is loopback (or link-local on
+    a loopback interface), since a hosts file can point it elsewhere. A list
+    of hosts, as ``asyncio.start_server`` accepts, counts only if every entry
+    does. Every other value counts as reachable from off the machine:
+    ``None``, ``""`` and ``[]`` (asyncio's "every interface"), ``0.0.0.0``,
+    ``::`` and any other name.
 
     Args:
-        host: The address passed to ``--bind`` / ``run_master``.
+        host: The address, or addresses, passed to ``--bind`` / ``run_master``.
 
     Returns:
         True only when the listener cannot be reached from another host.
     """
     if not host:
         return False
+    if not isinstance(host, str):
+        return all(isinstance(h, str) and is_loopback_bind(h) for h in host)
     h = host.strip()
     if h.startswith("[") and h.endswith("]"):
         h = h[1:-1]
@@ -103,12 +125,10 @@ def is_loopback_bind(host: str | None) -> bool:
         infos = socket.getaddrinfo(h, None)
     except OSError:
         return False
-    return bool(infos) and all(
-        ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]).is_loopback for info in infos
-    )
+    return bool(infos) and all(_resolved_is_loopback(info[4]) for info in infos)
 
 
-def check_master_auth(host: str | None, worker_secret: str | None) -> None:
+def check_master_auth(host: str | Sequence[str] | None, worker_secret: str | None) -> None:
     """Refuse an unauthenticated master that other hosts can reach (#303).
 
     The one place the rule lives: the CLI turns the error into a usage error
@@ -960,7 +980,10 @@ async def run_master(
 
     Raises ``ValueError`` when *host* is not a loopback address and no
     *worker_secret* is set: any peer that reaches the port would otherwise be
-    sent the run's credentials and could forge the merged result.
+    sent the run's credentials and could forge the merged result. It is
+    raised before binding, so *ready* is never set: a caller running this as
+    a task should await the task (or ``asyncio.wait`` on both), not *ready*
+    alone.
     """
     # In a thread: resolving ``localhost`` is a blocking getaddrinfo call.
     await asyncio.to_thread(check_master_auth, host, worker_secret)
