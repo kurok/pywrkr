@@ -88,6 +88,9 @@ module "observability" {
 }
 
 module "master" {
+  # The execution role must be able to read the secret before a task starts.
+  depends_on = [aws_iam_role_policy.read_worker_secret]
+
   source = "../pywrkr-master"
 
   name_prefix        = var.name_prefix

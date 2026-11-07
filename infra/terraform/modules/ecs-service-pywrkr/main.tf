@@ -342,6 +342,9 @@ resource "aws_ecs_task_definition" "worker" {
 ###############################################################################
 
 resource "aws_ecs_service" "master" {
+  # The execution role must be able to read the secret before a task starts.
+  depends_on = [aws_iam_role_policy.read_worker_secret]
+
   name            = "${var.name_prefix}-master"
   cluster         = var.cluster_id
   task_definition = aws_ecs_task_definition.master.arn

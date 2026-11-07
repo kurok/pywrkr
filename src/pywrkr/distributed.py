@@ -962,7 +962,8 @@ async def run_master(
     *worker_secret* is set: any peer that reaches the port would otherwise be
     sent the run's credentials and could forge the merged result.
     """
-    check_master_auth(host, worker_secret)
+    # In a thread: resolving ``localhost`` is a blocking getaddrinfo call.
+    await asyncio.to_thread(check_master_auth, host, worker_secret)
     logger.info(
         "Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers
     )

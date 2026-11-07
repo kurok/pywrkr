@@ -777,7 +777,7 @@ class TestMasterRequiresSecretOffLoopback(unittest.IsolatedAsyncioTestCase):
             with patch("sys.stderr", StringIO()), self.assertRaises(SystemExit):
                 self._parse(base)
             # Loopback masters keep working without a secret.
-            for bind in ("127.0.0.1", "127.8.9.10", "::1", "[::1]", "localhost"):
+            for bind in ("127.0.0.1", "127.8.9.10", "::1", "[::1]"):
                 with self.subTest(bind=bind):
                     self._parse([*base, "--bind", bind])
             # A secret from the flag or the environment admits a public bind.
@@ -786,8 +786,17 @@ class TestMasterRequiresSecretOffLoopback(unittest.IsolatedAsyncioTestCase):
             self._parse([*base, "--bind", "0.0.0.0"])
 
     def test_is_loopback_bind(self):
-        for host in ("127.0.0.1", "127.255.0.1", "::1", "[::1]", "localhost", "LOCALHOST"):
+        for host in ("127.0.0.1", "127.255.0.1", "::1", "[::1]"):
             self.assertTrue(is_loopback_bind(host), host)
+        # The real resolver differs per host (some map localhost to fe80::1%lo0),
+        # so the positive name case runs against a pinned answer.
+        loop_only = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0)),
+        ]
+        with patch("pywrkr.distributed.socket.getaddrinfo", return_value=loop_only):
+            for host in ("localhost", "LOCALHOST"):
+                self.assertTrue(is_loopback_bind(host), host)
         for host in (
             None,
             "",

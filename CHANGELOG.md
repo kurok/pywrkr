@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
-- Both terraform stacks take a sensitive `worker_secret` variable, store it in an SSM SecureString and hand it to the master and every worker as `PYWRKR_WORKER_SECRET` through the container `secrets` (the execution role gets `ssm:GetParameters` on that one parameter); left `null`, a random secret is generated per deployment (new `hashicorp/random` provider). Without it the shipped masters, which bind `0.0.0.0`, would no longer start. The secret never appears in the task definition, so `terraform plan` keeps showing container-definition changes. (#303)
+- Both terraform stacks take a sensitive `worker_secret` variable, store it in an SSM SecureString and hand it to the master and every worker as `PYWRKR_WORKER_SECRET` through the container `secrets` (the execution role gets `ssm:GetParameters` on that one parameter); left `null`, a random secret is generated per deployment (new `hashicorp/random` provider). Without it the shipped masters, which bind `0.0.0.0`, would no longer start. The secret never appears in the task definition, so `terraform plan` keeps showing container-definition changes. The principal that runs terraform now needs SSM parameter permissions on `parameter/pywrkr-*` — see the updated policy in `infra/README.md`. (#303)
 
 ## [1.6.0] - 2026-09-11
 

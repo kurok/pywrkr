@@ -374,6 +374,30 @@ Create a custom IAM policy with only the permissions this infrastructure actuall
       ]
     },
     {
+      "Sid": "SSMWorkerSecret",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:DeleteParameter",
+        "ssm:AddTagsToResource",
+        "ssm:RemoveTagsFromResource",
+        "ssm:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:ssm:*:*:parameter/pywrkr-*"
+      ]
+    },
+    {
+      "Sid": "SSMDescribeParameters",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeParameters"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "IAMReadCallerIdentity",
       "Effect": "Allow",
       "Action": [
@@ -1333,6 +1357,7 @@ Check that your IAM user has all required permissions (see [AWS IAM Permissions]
 - `route53:*` — Cloud Map creates Route53 hosted zones internally
 - `iam:PassRole` — needed to assign IAM roles to ECS tasks
 - `ec2:CreateSecurityGroup` — needed for security group creation
+- `ssm:PutParameter` / `ssm:GetParameter` / `ssm:DeleteParameter` — the master/worker secret is stored as an SSM SecureString
 
 ### Jenkins build fails with "python3 not found"
 
