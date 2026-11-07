@@ -147,3 +147,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "worker_secret" {
+  description = "Shared HMAC secret for the master/worker control channel (PYWRKR_WORKER_SECRET)."
+  type        = string
+  sensitive   = true
+}

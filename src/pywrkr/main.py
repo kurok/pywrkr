@@ -49,7 +49,12 @@ from pywrkr.config import (
     load_scenario,
     validate_scenario_templates,
 )
-from pywrkr.distributed import run_master, run_worker_node
+from pywrkr.distributed import (
+    MASTER_SECRET_REQUIRED_MESSAGE,
+    is_loopback_bind,
+    run_master,
+    run_worker_node,
+)
 from pywrkr.feeders import FEEDER_STRATEGIES, load_feeder, validate_unique_capacity
 from pywrkr.har_import import HarImportConfig, convert_har
 from pywrkr.multi_url import load_url_file, run_multi_url
@@ -500,7 +505,13 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
         help="Number of workers the master should wait for (required with --master)",
     )
     parser.add_argument(
-        "--bind", default="0.0.0.0", metavar="HOST", help="Master bind address (default: 0.0.0.0)"
+        "--bind",
+        default="0.0.0.0",
+        metavar="HOST",
+        help=(
+            "Master bind address (default: 0.0.0.0). A non-loopback address "
+            "requires --worker-secret."
+        ),
     )
     parser.add_argument(
         "--port",
@@ -523,7 +534,8 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
             "Shared secret for authenticating distributed workers (HMAC-SHA256). "
             "Can also be set via the PYWRKR_WORKER_SECRET environment variable. "
             "Master and all workers must use the same secret. "
-            "Omitting this leaves the distributed channel unauthenticated."
+            "Required for a master on a non-loopback --bind; omitting it on a "
+            "worker leaves that worker's channel unauthenticated."
         ),
     )
 
@@ -1751,6 +1763,13 @@ def _parse_and_validate_args(
             )
         except ValueError as e:
             parser.error(str(e))
+
+    # Last, so a master that is invalid for another reason (a ws:// target,
+    # --autofind) reports that rather than a missing secret.
+    if args.master:
+        secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
+        if not secret and not is_loopback_bind(args.bind):
+            parser.error(f"--master: {MASTER_SECRET_REQUIRED_MESSAGE}")
 
     return config, args
 

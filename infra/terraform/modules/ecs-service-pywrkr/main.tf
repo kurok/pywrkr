@@ -1,3 +1,15 @@
+# A master bound to 0.0.0.0 refuses to start without a secret (#303), so one is
+# always set: the caller's, or a random one shared by this deployment's nodes.
+resource "random_password" "worker_secret" {
+  count   = var.worker_secret == null ? 1 : 0
+  length  = 48
+  special = false
+}
+
+locals {
+  worker_secret = var.worker_secret != null ? var.worker_secret : random_password.worker_secret[0].result
+}
+
 ###############################################################################
 # Cloud Map — private DNS so workers can discover master
 ###############################################################################
@@ -245,6 +257,7 @@ resource "aws_ecs_task_definition" "master" {
 
     environment = concat(
       [{ name = "PYWRKR_ROLE", value = "master" }],
+      [{ name = "PYWRKR_WORKER_SECRET", value = local.worker_secret }],
       var.otel_endpoint != "" ? [{ name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint }] : [],
       var.prom_remote_write != "" ? [{ name = "PYWRKR_PROM_ENDPOINT", value = var.prom_remote_write }] : [],
     )
@@ -281,6 +294,7 @@ resource "aws_ecs_task_definition" "worker" {
 
     environment = [
       { name = "PYWRKR_ROLE", value = "worker" },
+      { name = "PYWRKR_WORKER_SECRET", value = local.worker_secret },
     ]
 
     logConfiguration = {

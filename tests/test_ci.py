@@ -817,6 +817,25 @@ class TestInfraHardening(unittest.TestCase):
     def _root(self) -> Path:
         return Path(__file__).resolve().parent.parent
 
+    def test_every_node_gets_the_worker_secret(self):
+        """#303: both stacks bind the master to 0.0.0.0, which pywrkr now
+        refuses to do without a secret, and the secret is what keeps another
+        peer from reading the run's credentials or forging its result. Every
+        master and worker container must therefore receive one."""
+        files = {
+            "infra/terraform/modules/ecs-service-pywrkr/main.tf": 2,
+            "infra/multi-region/terraform/modules/pywrkr-master/main.tf": 1,
+            "infra/multi-region/terraform/modules/pywrkr-worker/main.tf": 1,
+        }
+        for rel, containers in files.items():
+            with self.subTest(file=rel):
+                text = (self._root / rel).read_text()
+                self.assertEqual(
+                    len(re.findall(r'name\s*=\s*"PYWRKR_WORKER_SECRET"', text)),
+                    containers,
+                    f"{rel}: not every container sets PYWRKR_WORKER_SECRET",
+                )
+
     def test_terraform_state_is_remote(self):
         """State lived in the Jenkins workspace.
 

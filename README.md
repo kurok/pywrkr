@@ -1760,7 +1760,7 @@ pywrkr --worker master-host:9220
 | `--worker HOST:PORT` | Run as distributed worker, connecting to master at HOST:PORT |
 | `--worker-secret SECRET` | Shared secret authenticating the master/worker channel (HMAC-SHA256). Also read from `PYWRKR_WORKER_SECRET` |
 | `--expect-workers` | Number of workers the master should wait for before starting |
-| `--bind` | Master bind address (default: `0.0.0.0`) |
+| `--bind` | Master bind address (default: `0.0.0.0`). Any non-loopback address requires `--worker-secret` |
 | `--port` | Master listen port (default: `9220`) |
 | `--allow-partial` | Accept a run in which some workers never reported (default: off — see below) |
 
@@ -1784,10 +1784,12 @@ carries `workers_reported` and `workers_expected` tags, so a partial run stays i
 output and in whatever the metrics landed in — not only in the exit code.
 
 **Set `--worker-secret` on any run that leaves localhost.** Without it the control channel is
-unauthenticated: anything that can reach the master's port can register as a worker and feed it
-results, and anything that can reach a worker can hand it a config and make it generate traffic.
-The master and every worker must use the same value, and passing it through the environment keeps
-it out of the process table:
+unauthenticated: anything that can reach the master's port can register as a worker, receive the
+run's credentials (`-A`, `-H`, cookies, body) and feed it forged results, and anything that can reach
+a worker can hand it a config and make it generate traffic. A master therefore **refuses to start**
+on a non-loopback `--bind` — including the default `0.0.0.0` — without a secret; for a local run use
+`--bind 127.0.0.1`. The master and every worker must use the same value, and passing it through the
+environment keeps it out of the process table:
 
 ```bash
 export PYWRKR_WORKER_SECRET='...'          # on the master and on every worker

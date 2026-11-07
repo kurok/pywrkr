@@ -5,6 +5,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -62,6 +63,32 @@ _WORKER_RECV_TIMEOUT_SECONDS = 300.0
 
 # Timeout for the HMAC challenge-response handshake (master and worker sides).
 _WORKER_AUTH_TIMEOUT_SECONDS = 5.0
+
+
+MASTER_SECRET_REQUIRED_MESSAGE = (
+    "a master on a non-loopback bind address requires --worker-secret "
+    "(or PYWRKR_WORKER_SECRET); the control channel would otherwise be "
+    "unauthenticated. Use --bind 127.0.0.1 for a local run."
+)
+
+
+def is_loopback_bind(host: str) -> bool:
+    """Return True only when *host* binds the loopback interface alone.
+
+    ``localhost``, ``127.0.0.0/8`` and ``::1`` count. Anything else -- an empty
+    host (every interface), ``0.0.0.0``, ``::`` or any other name -- does not,
+    because a name other than ``localhost`` cannot be assumed to stay on this
+    machine.
+    """
+    h = host.strip()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    if h.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
 
 
 def _serialize_ssl_config(ssl_cfg: SSLConfig) -> dict:
@@ -896,7 +923,13 @@ async def run_master(
 
     If *ready* is provided, it is set once the server is listening, so callers
     (and tests) can connect only after the bind completes instead of racing it.
+
+    Raises ``ValueError`` when *host* is not a loopback address and no
+    *worker_secret* is set: any peer that reaches the port would otherwise be
+    sent the run's credentials and could forge the merged result.
     """
+    if not worker_secret and not is_loopback_bind(host):
+        raise ValueError(MASTER_SECRET_REQUIRED_MESSAGE)
     logger.info(
         "Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers
     )

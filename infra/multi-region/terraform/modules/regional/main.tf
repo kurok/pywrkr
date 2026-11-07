@@ -1,3 +1,15 @@
+# A master bound to 0.0.0.0 refuses to start without a secret (#303), so one is
+# always set: the caller's, or a random one shared by this deployment's nodes.
+resource "random_password" "worker_secret" {
+  count   = var.worker_secret == null ? 1 : 0
+  length  = 48
+  special = false
+}
+
+locals {
+  worker_secret = var.worker_secret != null ? var.worker_secret : random_password.worker_secret[0].result
+}
+
 # -----------------------------------------------------------------------------
 # Regional Test Cell — composes all per-region modules
 # This module is called once per enabled region from the root main.tf.
@@ -76,6 +88,7 @@ module "master" {
   pywrkr_tags        = var.pywrkr_tags
   otel_endpoint      = var.otel_endpoint
   prom_remote_write  = var.prom_remote_write
+  worker_secret      = local.worker_secret
   tags               = var.tags
 }
 
@@ -102,5 +115,6 @@ module "workers" {
   master_dns        = module.master.dns_name
   tags              = var.tags
 
-  depends_on = [module.master]
+  depends_on    = [module.master]
+  worker_secret = local.worker_secret
 }

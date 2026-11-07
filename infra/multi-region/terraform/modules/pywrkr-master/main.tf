@@ -90,6 +90,7 @@ resource "aws_ecs_task_definition" "master" {
 
       environment = concat(
         [{ name = "PYWRKR_ROLE", value = "master" }],
+        [{ name = "PYWRKR_WORKER_SECRET", value = var.worker_secret }],
         var.otel_endpoint != "" ? [{ name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint }] : [],
         var.prom_remote_write != "" ? [{ name = "PYWRKR_PROM_ENDPOINT", value = var.prom_remote_write }] : [],
       )

@@ -89,4 +89,5 @@ module "ecs_service_pywrkr" {
   tags              = var.tags
   otel_endpoint     = var.otel_endpoint
   prom_remote_write = var.prom_remote_write
+  worker_secret     = var.worker_secret
 }

@@ -838,6 +838,7 @@ After a successful build:
 | `tags` | map(string) | `{}` | Metadata key=value tags |
 | `otel_endpoint` | string | `""` | OpenTelemetry collector endpoint |
 | `prom_remote_write` | string | `""` | Prometheus pushgateway endpoint |
+| `worker_secret` | string (sensitive) | `null` | HMAC secret for the master/worker channel, passed to every container as `PYWRKR_WORKER_SECRET`. `null` generates a random one per deployment (stored in state and the task definitions) |
 | `cloudmap_namespace` | string | `pywrkr.local` | Cloud Map private DNS namespace |
 | `log_retention_days` | number | `14` | CloudWatch log retention period |
 
