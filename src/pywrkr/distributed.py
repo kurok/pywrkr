@@ -233,6 +233,7 @@ def check_worker_target(config: BenchmarkConfig) -> None:
       loader requires. A value that starts with ``${`` is only known once
       rendered, so its scheme is left to the WebSocket client.
     * ``otel_endpoint`` and ``prom_remote_write``, when set, must be http(s).
+    * A ``ca_bundle``, which the worker opens, must be a regular file.
 
     A link-local or instance-metadata host in any of these, or in an HTTP
     step that changes the host (``@169.254.169.254/...``), is allowed but
@@ -266,6 +267,11 @@ def check_worker_target(config: BenchmarkConfig) -> None:
                 _warn_if_link_local(
                     f"{base.scheme}://{base.netloc}{step.path}", f"scenario step {i} URL"
                 )
+    ca_bundle = config.ssl_config.ca_bundle if config.ssl_config is not None else None
+    if ca_bundle and not os.path.isfile(ca_bundle):
+        # The worker opens this path itself. A regular file only: a device
+        # such as /dev/zero would block or exhaust memory.
+        raise ValueError("the ca_bundle from master is not a regular file on this worker")
     for name in ("otel_endpoint", "prom_remote_write"):
         endpoint = getattr(config, name)
         if endpoint:
@@ -1678,7 +1684,7 @@ async def run_worker_node(
         refusal: str | None = None
         try:
             config = _deserialize_config(msg["config"])
-        except (KeyError, TypeError, ValueError, AttributeError, OSError) as e:
+        except Exception as e:  # any parse failure is a refusal, never a traceback
             # Logged here, not echoed: the text of an arbitrary parse error is
             # not the master's to read.
             logger.error("Worker: malformed config from master: %r", e)
