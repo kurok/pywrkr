@@ -127,7 +127,7 @@ variable "worker_secret" {
     Shared HMAC secret for the master/worker control channel, passed to every
     container as PYWRKR_WORKER_SECRET. A master bound to 0.0.0.0 refuses to
     start without one (#303). Leave null to generate a random secret for this
-    deployment; it is stored in state and in the task definitions.
+    deployment. Stored in state and in an SSM SecureString read via the container `secrets`.
   EOT
   type        = string
   default     = null

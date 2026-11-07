@@ -9,6 +9,7 @@ import ipaddress
 import json
 import logging
 import os
+import socket
 import sys
 import time
 from dataclasses import dataclass, field
@@ -72,23 +73,56 @@ MASTER_AUTH_REQUIRED_MESSAGE = (
 )
 
 
-def is_loopback_bind(host: str) -> bool:
-    """Return True only when *host* binds the loopback interface alone.
+def is_loopback_bind(host: str | None) -> bool:
+    """Report whether binding *host* listens on the loopback interface only.
 
-    ``localhost``, ``127.0.0.0/8`` and ``::1`` count. Anything else -- an empty
-    host (every interface), ``0.0.0.0``, ``::`` or any other name -- does not,
-    because a name other than ``localhost`` cannot be assumed to stay on this
-    machine.
+    Literal ``127.0.0.0/8`` and ``::1`` (bracketed or not) count. ``localhost``
+    counts only if every address it resolves to is loopback, since a hosts
+    file can point it elsewhere. Every other value counts as reachable from
+    off the machine: ``None`` and ``""`` (asyncio's "every interface"),
+    ``0.0.0.0``, ``::`` and any other name.
+
+    Args:
+        host: The address passed to ``--bind`` / ``run_master``.
+
+    Returns:
+        True only when the listener cannot be reached from another host.
     """
+    if not host:
+        return False
     h = host.strip()
     if h.startswith("[") and h.endswith("]"):
         h = h[1:-1]
-    if h.lower() == "localhost":
-        return True
     try:
         return ipaddress.ip_address(h).is_loopback
     except ValueError:
+        pass
+    if h.lower() != "localhost":
         return False
+    try:
+        infos = socket.getaddrinfo(h, None)
+    except OSError:
+        return False
+    return bool(infos) and all(
+        ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]).is_loopback for info in infos
+    )
+
+
+def check_master_auth(host: str | None, worker_secret: str | None) -> None:
+    """Refuse an unauthenticated master that other hosts can reach (#303).
+
+    The one place the rule lives: the CLI turns the error into a usage error
+    before doing any work, and ``run_master`` enforces it for API callers.
+
+    Args:
+        host: The address the master will bind.
+        worker_secret: The shared HMAC secret, or None / empty for none.
+
+    Raises:
+        ValueError: *host* is not loopback-only and no secret is set.
+    """
+    if not worker_secret and not is_loopback_bind(host):
+        raise ValueError(MASTER_AUTH_REQUIRED_MESSAGE)
 
 
 def _serialize_ssl_config(ssl_cfg: SSLConfig) -> dict:
@@ -928,8 +962,7 @@ async def run_master(
     *worker_secret* is set: any peer that reaches the port would otherwise be
     sent the run's credentials and could forge the merged result.
     """
-    if not worker_secret and not is_loopback_bind(host):
-        raise ValueError(MASTER_AUTH_REQUIRED_MESSAGE)
+    check_master_auth(host, worker_secret)
     logger.info(
         "Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers
     )

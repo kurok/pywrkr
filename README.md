@@ -1694,7 +1694,8 @@ exports the cluster-wide view on its own interval, so a multi-node soak is visib
 only after it finishes:
 
 ```bash
-# On the master
+# On the master (and the same secret on every worker)
+export PYWRKR_WORKER_SECRET='...'
 pywrkr --master --expect-workers 4 --export-interval 10 \
        --otel-endpoint http://collector:4318/v1/metrics \
        -u 4000 -d 1800 https://api.example.com/
@@ -1747,6 +1748,9 @@ Requests are distributed across all URLs. Results include per-URL breakdowns alo
 Scale benchmarks across multiple machines by running one master and multiple workers:
 
 ```bash
+# The same shared secret on the master and on every worker
+export PYWRKR_WORKER_SECRET='...'
+
 # On the master node: coordinate 3 workers
 pywrkr http://target:8080/ --master --expect-workers 3 -c 300 -d 60
 

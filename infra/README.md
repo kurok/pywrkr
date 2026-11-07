@@ -122,6 +122,8 @@ sh -c "pywrkr --master --expect-workers 2 --bind 0.0.0.0 --port 9000 \
 
 This runs the benchmark, captures the exit code (non-zero if thresholds are breached), outputs the JSON results between markers for CloudWatch extraction, then exits with the original exit code.
 
+The master and every worker also receive `PYWRKR_WORKER_SECRET` from an SSM SecureString through the container `secrets` (see the `worker_secret` variable): a master bound to `0.0.0.0` refuses to start without it.
+
 ### Worker Container Command
 
 Workers use the default Docker `ENTRYPOINT ["pywrkr"]` with:
@@ -838,7 +840,7 @@ After a successful build:
 | `tags` | map(string) | `{}` | Metadata key=value tags |
 | `otel_endpoint` | string | `""` | OpenTelemetry collector endpoint |
 | `prom_remote_write` | string | `""` | Prometheus pushgateway endpoint |
-| `worker_secret` | string (sensitive) | `null` | HMAC secret for the master/worker channel, passed to every container as `PYWRKR_WORKER_SECRET`. `null` generates a random one per deployment (stored in state and the task definitions) |
+| `worker_secret` | string (sensitive) | `null` | HMAC secret for the master/worker channel, stored in an SSM SecureString and handed to every container as `PYWRKR_WORKER_SECRET` via `secrets`. `null` generates a random one per deployment |
 | `cloudmap_namespace` | string | `pywrkr.local` | Cloud Map private DNS namespace |
 | `log_retention_days` | number | `14` | CloudWatch log retention period |
 

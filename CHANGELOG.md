@@ -7,13 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `pywrkr --master` on a non-loopback `--bind` — including the default `0.0.0.0` — no longer starts without a worker secret, and `run_master(...)` raises `ValueError` for that case. To upgrade, set the same `PYWRKR_WORKER_SECRET` (or `--worker-secret`) on the master and every worker, or bind a local-only master with `--bind 127.0.0.1`. (#303)
+
 ### Security
 
 - A distributed master on a non-loopback `--bind` (including the default `0.0.0.0`) now refuses to start without `--worker-secret` / `PYWRKR_WORKER_SECRET`, and `run_master` raises `ValueError` for the same case. Previously any peer that reached the port was admitted, received the run's basic-auth, headers and body, and could submit a fabricated result that passed `--threshold` with no load sent. A loopback master is unchanged. (#303)
 
 ### CI
 
-- Both terraform stacks take a sensitive `worker_secret` variable and pass it to the master and every worker as `PYWRKR_WORKER_SECRET`; left `null`, a random secret is generated per deployment (new `hashicorp/random` provider). Without it the shipped masters, which bind `0.0.0.0`, would no longer start. (#303)
+- Both terraform stacks take a sensitive `worker_secret` variable, store it in an SSM SecureString and hand it to the master and every worker as `PYWRKR_WORKER_SECRET` through the container `secrets` (the execution role gets `ssm:GetParameters` on that one parameter); left `null`, a random secret is generated per deployment (new `hashicorp/random` provider). Without it the shipped masters, which bind `0.0.0.0`, would no longer start. The secret never appears in the task definition, so `terraform plan` keeps showing container-definition changes. (#303)
 
 ## [1.6.0] - 2026-09-11
 

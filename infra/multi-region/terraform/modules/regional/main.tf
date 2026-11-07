@@ -10,6 +10,33 @@ locals {
   worker_secret = var.worker_secret != null ? var.worker_secret : random_password.worker_secret[0].result
 }
 
+# Delivered through the containers' `secrets`, not `environment`: a sensitive
+# value inside jsonencode() would mark every container definition sensitive and
+# hide image/command/target changes from `terraform plan`, and an environment
+# entry would put the plaintext secret in DescribeTaskDefinition output.
+resource "aws_ssm_parameter" "worker_secret" {
+  name        = "/${var.name_prefix}/pywrkr/worker-secret"
+  description = "pywrkr master/worker HMAC secret (PYWRKR_WORKER_SECRET)"
+  type        = "SecureString"
+  value       = local.worker_secret
+  tags        = var.tags
+}
+
+# The execution role fetches `secrets` at task start. The parameter uses the
+# AWS-managed aws/ssm key, which needs no separate kms:Decrypt grant.
+resource "aws_iam_role_policy" "read_worker_secret" {
+  name = "${var.name_prefix}-read-worker-secret"
+  role = element(split("/", module.iam.execution_role_arn), length(split("/", module.iam.execution_role_arn)) - 1)
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameters"]
+      Resource = aws_ssm_parameter.worker_secret.arn
+    }]
+  })
+}
+
 # -----------------------------------------------------------------------------
 # Regional Test Cell — composes all per-region modules
 # This module is called once per enabled region from the root main.tf.
@@ -88,7 +115,7 @@ module "master" {
   pywrkr_tags        = var.pywrkr_tags
   otel_endpoint      = var.otel_endpoint
   prom_remote_write  = var.prom_remote_write
-  worker_secret      = local.worker_secret
+  worker_secret_arn  = aws_ssm_parameter.worker_secret.arn
   tags               = var.tags
 }
 
@@ -115,6 +142,6 @@ module "workers" {
   master_dns        = module.master.dns_name
   tags              = var.tags
 
-  depends_on    = [module.master]
-  worker_secret = local.worker_secret
+  depends_on        = [module.master]
+  worker_secret_arn = aws_ssm_parameter.worker_secret.arn
 }

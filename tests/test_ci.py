@@ -821,7 +821,8 @@ class TestInfraHardening(unittest.TestCase):
         """#303: both stacks bind the master to 0.0.0.0, which pywrkr now
         refuses to do without a secret, and the secret is what keeps another
         peer from reading the run's credentials or forging its result. Every
-        master and worker container must therefore receive one."""
+        master and worker container must therefore receive one, through
+        `secrets` (SSM) rather than a plaintext `environment` entry."""
         files = {
             "infra/terraform/modules/ecs-service-pywrkr/main.tf": 2,
             "infra/multi-region/terraform/modules/pywrkr-master/main.tf": 1,
@@ -831,9 +832,9 @@ class TestInfraHardening(unittest.TestCase):
             with self.subTest(file=rel):
                 text = (self._root / rel).read_text()
                 self.assertEqual(
-                    len(re.findall(r'name\s*=\s*"PYWRKR_WORKER_SECRET"', text)),
+                    len(re.findall(r'name\s*=\s*"PYWRKR_WORKER_SECRET",\s*valueFrom', text)),
                     containers,
-                    f"{rel}: not every container sets PYWRKR_WORKER_SECRET",
+                    f"{rel}: not every container gets PYWRKR_WORKER_SECRET from `secrets`",
                 )
 
     def test_terraform_state_is_remote(self):

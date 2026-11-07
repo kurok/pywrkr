@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import os
+import socket
 import time
 import unittest
 from io import StringIO
@@ -787,8 +788,35 @@ class TestMasterRequiresSecretOffLoopback(unittest.IsolatedAsyncioTestCase):
     def test_is_loopback_bind(self):
         for host in ("127.0.0.1", "127.255.0.1", "::1", "[::1]", "localhost", "LOCALHOST"):
             self.assertTrue(is_loopback_bind(host), host)
-        for host in ("", "0.0.0.0", "::", "[::]", "10.0.0.5", "example.com", "localhost.evil"):
+        for host in (
+            None,
+            "",
+            "0.0.0.0",
+            "::",
+            "[::]",
+            "10.0.0.5",
+            "example.com",
+            "localhost.evil",
+        ):
             self.assertFalse(is_loopback_bind(host), host)
+
+    def test_localhost_mapped_off_loopback_is_not_trusted(self):
+        """A hosts file can point ``localhost`` at a reachable address."""
+        mapped = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))]
+        with patch("pywrkr.distributed.socket.getaddrinfo", return_value=mapped):
+            self.assertFalse(is_loopback_bind("localhost"))
+        with patch("pywrkr.distributed.socket.getaddrinfo", side_effect=OSError):
+            self.assertFalse(is_loopback_bind("localhost"))
+
+    def test_refusal_comes_before_any_input_file_is_read(self):
+        """The secret check must not wait for body/scenario files to load."""
+        argv = ["--master", "--expect-workers", "1", "--bind", "0.0.0.0"]
+        argv += ["-p", "/nonexistent/pywrkr-303-body", "http://127.0.0.1:1/"]
+        err = StringIO()
+        with patch.dict(os.environ, self._ENV, clear=True):
+            with patch("sys.stderr", err), self.assertRaises(SystemExit):
+                self._parse(argv)
+        self.assertIn("--worker-secret", err.getvalue())
 
     async def test_master_rejects_unauthenticated_peer_without_secret(self):
         """run_master itself refuses, so no peer is ever sent the config."""
@@ -796,11 +824,11 @@ class TestMasterRequiresSecretOffLoopback(unittest.IsolatedAsyncioTestCase):
             url="http://127.0.0.1:1", duration=0.01, basic_auth="ci-user:dummy", _quiet=True
         )
         with patch("pywrkr.distributed.asyncio.start_server") as start:
-            for secret in (None, ""):
-                with self.subTest(secret=secret), self.assertRaises(ValueError) as cm:
+            for host, secret in (("0.0.0.0", None), ("0.0.0.0", ""), (None, None)):
+                with self.subTest(host=host, secret=secret), self.assertRaises(ValueError) as cm:
                     # Bounded: the pre-fix master waits for workers instead of raising.
                     await asyncio.wait_for(
-                        run_master(config, "0.0.0.0", 0, expect_workers=1, worker_secret=secret),
+                        run_master(config, host, 0, expect_workers=1, worker_secret=secret),
                         timeout=5,
                     )
                 self.assertIn("--worker-secret", str(cm.exception))

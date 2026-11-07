@@ -10,6 +10,33 @@ locals {
   worker_secret = var.worker_secret != null ? var.worker_secret : random_password.worker_secret[0].result
 }
 
+# Delivered through the containers' `secrets`, not `environment`: a sensitive
+# value inside jsonencode() would mark every container definition sensitive and
+# hide image/command/target changes from `terraform plan`, and an environment
+# entry would put the plaintext secret in DescribeTaskDefinition output.
+resource "aws_ssm_parameter" "worker_secret" {
+  name        = "/${var.name_prefix}/pywrkr/worker-secret"
+  description = "pywrkr master/worker HMAC secret (PYWRKR_WORKER_SECRET)"
+  type        = "SecureString"
+  value       = local.worker_secret
+  tags        = var.tags
+}
+
+# The execution role fetches `secrets` at task start. The parameter uses the
+# AWS-managed aws/ssm key, which needs no separate kms:Decrypt grant.
+resource "aws_iam_role_policy" "read_worker_secret" {
+  name = "${var.name_prefix}-read-worker-secret"
+  role = element(split("/", var.execution_role_arn), length(split("/", var.execution_role_arn)) - 1)
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameters"]
+      Resource = aws_ssm_parameter.worker_secret.arn
+    }]
+  })
+}
+
 ###############################################################################
 # Cloud Map — private DNS so workers can discover master
 ###############################################################################
@@ -257,10 +284,11 @@ resource "aws_ecs_task_definition" "master" {
 
     environment = concat(
       [{ name = "PYWRKR_ROLE", value = "master" }],
-      [{ name = "PYWRKR_WORKER_SECRET", value = local.worker_secret }],
       var.otel_endpoint != "" ? [{ name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint }] : [],
       var.prom_remote_write != "" ? [{ name = "PYWRKR_PROM_ENDPOINT", value = var.prom_remote_write }] : [],
     )
+
+    secrets = [{ name = "PYWRKR_WORKER_SECRET", valueFrom = aws_ssm_parameter.worker_secret.arn }]
 
     logConfiguration = {
       logDriver = "awslogs"
@@ -294,8 +322,9 @@ resource "aws_ecs_task_definition" "worker" {
 
     environment = [
       { name = "PYWRKR_ROLE", value = "worker" },
-      { name = "PYWRKR_WORKER_SECRET", value = local.worker_secret },
     ]
+
+    secrets = [{ name = "PYWRKR_WORKER_SECRET", valueFrom = aws_ssm_parameter.worker_secret.arn }]
 
     logConfiguration = {
       logDriver = "awslogs"

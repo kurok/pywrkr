@@ -50,8 +50,7 @@ from pywrkr.config import (
     validate_scenario_templates,
 )
 from pywrkr.distributed import (
-    MASTER_AUTH_REQUIRED_MESSAGE,
-    is_loopback_bind,
+    check_master_auth,
     run_master,
     run_worker_node,
 )
@@ -1266,6 +1265,11 @@ def _validate_mode_conflicts(
         parser.error("--allow-partial only applies to a distributed master (--master)")
 
 
+def _resolve_worker_secret(args: argparse.Namespace) -> str | None:
+    """Return the distributed secret from --worker-secret or PYWRKR_WORKER_SECRET."""
+    return args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET") or None
+
+
 def _validate_url_and_mode(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -1280,7 +1284,7 @@ def _validate_url_and_mode(
             w_port = int(port_str)
         except ValueError:
             parser.error(f"Invalid port in --worker: {port_str}")
-        worker_secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
+        worker_secret = _resolve_worker_secret(args)
         try:
             # Every give-up path returns 1: an orchestrator cannot otherwise
             # tell a completed benchmark from a five-minute wait for a master
@@ -1322,6 +1326,15 @@ def _validate_url_and_mode(
         _require_http_scheme(parser, args.url, "", allow_websocket=True)
         if is_websocket_url(args.url):
             _validate_websocket_mode(parser, args)
+
+    # After the mode checks, so a master that is invalid for another reason (a
+    # ws:// target, --autofind) reports that; before any body, scenario or data
+    # file is read.
+    if args.master:
+        try:
+            check_master_auth(args.bind, _resolve_worker_secret(args))
+        except ValueError as e:
+            parser.error(f"--master: {e}")
 
 
 def _validate_export_interval(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -1764,13 +1777,6 @@ def _parse_and_validate_args(
         except ValueError as e:
             parser.error(str(e))
 
-    # Last, so a master that is invalid for another reason (a ws:// target,
-    # --autofind) reports that rather than a missing secret.
-    if args.master:
-        secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
-        if not secret and not is_loopback_bind(args.bind):
-            parser.error(f"--master: {MASTER_AUTH_REQUIRED_MESSAGE}")
-
     return config, args
 
 
@@ -1820,7 +1826,7 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
         exit_code = max((r.exit_code for r in results), default=0)
         sys.exit(exit_code)
     elif args.master:
-        worker_secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
+        worker_secret = _resolve_worker_secret(args)
         result = asyncio.run(
             run_master(
                 config, args.bind, args.port, args.expect_workers, worker_secret=worker_secret

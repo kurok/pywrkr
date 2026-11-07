@@ -148,8 +148,7 @@ variable "tags" {
   default     = {}
 }
 
-variable "worker_secret" {
-  description = "Shared HMAC secret for the master/worker control channel (PYWRKR_WORKER_SECRET)."
+variable "worker_secret_arn" {
+  description = "ARN of the SSM SecureString holding the master/worker HMAC secret, exposed to the container as PYWRKR_WORKER_SECRET."
   type        = string
-  sensitive   = true
 }
