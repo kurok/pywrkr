@@ -1029,6 +1029,37 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(rc, 1)
                 self.assertEqual(reply["type"], "error")
 
+    async def test_traffic_profile_naming_a_file_is_refused_without_reading_it(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            secret_file = os.path.join(tmp, "private.csv")
+            with open(secret_file, "w") as f:
+                f.write("time,rate\nTOP-SECRET-ROW,also-secret\n")
+            base = _serialize_config(
+                pywrkr.BenchmarkConfig(url="http://127.0.0.1:1/", duration=0.01, _quiet=True)
+            )
+            for spec in (f"csv:{secret_file}", f" CSV :{secret_file}", "csv:/nonexistent", 7):
+                with self.subTest(spec=spec):
+                    config = dict(base, traffic_profile={"kind": "spec", "spec": spec})
+                    with patch("pywrkr.traffic_profiles.CsvProfile") as csv_profile:
+                        rc, reply = await self._run_against_fake_master(config)
+                    csv_profile.assert_not_called()
+                    self.assertEqual(rc, 1)
+                    self.assertEqual(reply["type"], "error")
+                    self.assertNotIn("SECRET", reply["error"])
+                    self.assertNotIn(tmp, reply["error"])
+
+    async def test_parse_error_text_is_not_echoed_to_the_master(self):
+        config = _serialize_config(
+            pywrkr.BenchmarkConfig(url="http://127.0.0.1:1/", duration=0.01, _quiet=True)
+        )
+        config["traffic_profile"] = {"kind": "spec", "spec": "sine:PRIVATE-DETAIL"}
+        rc, reply = await self._run_against_fake_master(config)
+        self.assertEqual(rc, 1)
+        self.assertNotIn("PRIVATE-DETAIL", reply["error"])
+        self.assertIn("malformed config", reply["error"])
+
     def test_legitimate_scenarios_pass(self):
         """Templated paths and ws URLs, and an empty endpoint, are not refused."""
         from pywrkr.config import Scenario, ScenarioStep
@@ -1043,6 +1074,7 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
                     ScenarioStep(path="?q=1"),
                     ScenarioStep(path="ws://10.0.0.1/s", ws="ws://10.0.0.1/s"),
                     ScenarioStep(path="${ws_url}", ws="${ws_url}"),
+                    ScenarioStep(path="https://10.0.0.1/sock", ws="https://10.0.0.1/sock"),
                 ]
             ),
             otel_endpoint="",

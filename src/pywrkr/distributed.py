@@ -50,7 +50,7 @@ from pywrkr.reporting import (
     run_baseline_gate,
 )
 from pywrkr.traffic_profiles import CsvProfile, TrafficProfile, parse_traffic_profile
-from pywrkr.websockets import is_websocket_url
+from pywrkr.websockets import WS_SCHEMES
 from pywrkr.workers import run_benchmark, run_user_simulation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -228,7 +228,7 @@ def check_worker_target(config: BenchmarkConfig) -> None:
     """Refuse a config from the master that the CLI would refuse itself (#304).
 
     * The target must be http(s), by the rule the CLI applies to its own URL.
-    * A ``ws:`` scenario step must be ws(s), and its ``path`` -- the URL the
+    * A ``ws:`` scenario step must be ws(s) or http(s), and its ``path`` -- the URL the
       worker actually connects to -- must equal ``ws``, as the scenario
       loader requires. A value that starts with ``${`` is only known once
       rendered, so its scheme is left to the WebSocket client.
@@ -258,11 +258,9 @@ def check_worker_target(config: BenchmarkConfig) -> None:
                     raise ValueError(
                         f"Scenario step {i} from master sets 'ws' and a different 'path'"
                     )
-                if not step.path.startswith("${") and not is_websocket_url(step.path):
-                    raise ValueError(
-                        f"Invalid URL scheme in scenario step {i} from master: {step.path}. "
-                        "Use ws:// or wss://"
-                    )
+                if not step.path.startswith("${"):
+                    # ws_connect also takes http(s), and the scenario loader allows it.
+                    check_url_scheme(step.path, f" in scenario step {i} from master", WS_SCHEMES)
                 _warn_if_link_local(step.path, f"scenario step {i} URL")
             elif "${" not in step.path:
                 _warn_if_link_local(
@@ -514,7 +512,13 @@ def _deserialize_traffic_profile(data: "dict | None") -> "TrafficProfile | None"
             bool(data.get("is_multiplier", False)),
         )
     else:
-        profile = parse_traffic_profile(data["spec"])
+        spec = data["spec"]
+        # A master sends a CSV profile as parsed points (kind "csv" above). A
+        # "csv:<path>" spec would make the worker open a file of the master's
+        # choosing on its own disk (#304).
+        if not isinstance(spec, str) or spec.split(":", 1)[0].strip().lower() == "csv":
+            raise ValueError("a traffic profile from the master must not name a file")
+        profile = parse_traffic_profile(spec)
     return profile
 
 
@@ -1671,13 +1675,23 @@ async def run_worker_node(
         if msg.get("type") != "config":
             logger.error("Worker: unexpected message type: %s", msg.get("type"))
             return 1
+        refusal: str | None = None
         try:
             config = _deserialize_config(msg["config"])
-            check_worker_target(config)
-        except (KeyError, TypeError, ValueError, AttributeError) as e:
-            logger.error("Worker: refusing the config: %s", e)
+        except (KeyError, TypeError, ValueError, AttributeError, OSError) as e:
+            # Logged here, not echoed: the text of an arbitrary parse error is
+            # not the master's to read.
+            logger.error("Worker: malformed config from master: %r", e)
+            refusal = f"worker refused: malformed config ({type(e).__name__})"
+        else:
+            try:
+                check_worker_target(config)
+            except ValueError as e:
+                logger.error("Worker: refusing the config: %s", e)
+                refusal = f"worker refused: {e}"
+        if refusal is not None:
             with contextlib.suppress(OSError, ConnectionError):
-                await _send_msg(writer, {"type": "error", "error": f"worker refused: {e}"})
+                await _send_msg(writer, {"type": "error", "error": refusal})
             return 1
         logger.info("Worker: received config. Target: %s", config.url)
 
