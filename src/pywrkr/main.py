@@ -50,7 +50,7 @@ from pywrkr.config import (
     validate_scenario_templates,
 )
 from pywrkr.distributed import (
-    MASTER_SECRET_REQUIRED_MESSAGE,
+    MASTER_AUTH_REQUIRED_MESSAGE,
     is_loopback_bind,
     run_master,
     run_worker_node,
@@ -1769,7 +1769,7 @@ def _parse_and_validate_args(
     if args.master:
         secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
         if not secret and not is_loopback_bind(args.bind):
-            parser.error(f"--master: {MASTER_SECRET_REQUIRED_MESSAGE}")
+            parser.error(f"--master: {MASTER_AUTH_REQUIRED_MESSAGE}")
 
     return config, args
 

@@ -65,7 +65,7 @@ _WORKER_RECV_TIMEOUT_SECONDS = 300.0
 _WORKER_AUTH_TIMEOUT_SECONDS = 5.0
 
 
-MASTER_SECRET_REQUIRED_MESSAGE = (
+MASTER_AUTH_REQUIRED_MESSAGE = (
     "a master on a non-loopback bind address requires --worker-secret "
     "(or PYWRKR_WORKER_SECRET); the control channel would otherwise be "
     "unauthenticated. Use --bind 127.0.0.1 for a local run."
@@ -929,7 +929,7 @@ async def run_master(
     sent the run's credentials and could forge the merged result.
     """
     if not worker_secret and not is_loopback_bind(host):
-        raise ValueError(MASTER_SECRET_REQUIRED_MESSAGE)
+        raise ValueError(MASTER_AUTH_REQUIRED_MESSAGE)
     logger.info(
         "Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers
     )
