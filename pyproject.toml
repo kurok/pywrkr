@@ -112,6 +112,8 @@ select = ["E", "F", "W", "I"]
 # GHSA-8mx5-7m5m-r77g, -v4x8-3wr5-3wq8, -567q-5qvw-pf92, -9vhv-jxww-xfm5,
 # -crv4-6mhj-j5jh, -2g95-wg33-c5x2 and -jqc4-5cvw-7w85, but 4.1.1+ needs
 # Python 3.11, so pip-audit is not installed on 3.10 (see the security extra).
+# Deliberately unscoped: if something new pulls filelock on 3.10 (virtualenv,
+# tox, pre-commit), `uv lock` fails instead of quietly locking a vulnerable one.
 #
 # Transitive via cachecontrol (pip-audit). msgpack 1.2.3 fixes GHSA-j586-36cw-2gc2.
 constraint-dependencies = [
