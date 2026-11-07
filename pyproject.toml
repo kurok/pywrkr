@@ -35,7 +35,9 @@ all = ["rich>=13.0", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "open
 # must run for real, not importorskip themselves into silence.
 dev = ["pytest>=9.0.3", "pytest-xdist>=3.0", "pytest-cov>=4.0", "aiohttp>=3.14.0", "httpx[http2]>=0.27", "hypercorn>=0.17", "pyyaml>=6.0"]
 lint = ["mypy>=1.0", "ruff>=0.1.0"]
-security = ["bandit>=1.7", "pip-audit>=2.6"]
+# pip-audit only on 3.11+: its cachecontrol[filecache] needs filelock, and no
+# filelock release that fixes GHSA-8mx5-7m5m-r77g supports Python 3.10.
+security = ["bandit>=1.7", "pip-audit>=2.6; python_version >= '3.11'"]
 # The plugin itself imports nothing but pytest; the extra exists so
 # `pip install pywrkr[pytest]` reads as intent rather than as a guess.
 pytest = ["pytest>=7.0"]
@@ -107,14 +109,15 @@ select = ["E", "F", "W", "I"]
 # CVE-2026-13346 (doubly-encoded index URLs), fixed in pip 26.2.0.
 #
 # Transitive via cachecontrol[filecache] (pip-audit). filelock 4.2.1 fixes
-# GHSA-v4x8-3wr5-3wq8, -567q-5qvw-pf92, -9vhv-jxww-xfm5, -crv4-6mhj-j5jh,
-# -2g95-wg33-c5x2 and -jqc4-5cvw-7w85, but 4.1.1+ needs Python 3.11. On 3.10 the
-# only version outside every filelock advisory is 3.20.3: it predates the
-# ReadWriteLock code (3.20.4+) and has the GHSA-qmgc-5h2g-mvrw fix.
+# GHSA-8mx5-7m5m-r77g, -v4x8-3wr5-3wq8, -567q-5qvw-pf92, -9vhv-jxww-xfm5,
+# -crv4-6mhj-j5jh, -2g95-wg33-c5x2 and -jqc4-5cvw-7w85, but 4.1.1+ needs
+# Python 3.11, so pip-audit is not installed on 3.10 (see the security extra).
+#
+# Transitive via cachecontrol (pip-audit). msgpack 1.2.3 fixes GHSA-j586-36cw-2gc2.
 constraint-dependencies = [
     "pip>=26.2.0",
-    "filelock==3.20.3; python_full_version < '3.11'",
-    "filelock>=4.2.1; python_full_version >= '3.11'",
+    "filelock>=4.2.1",
+    "msgpack>=1.2.3",
 ]
 
 [tool.coverage.run]
