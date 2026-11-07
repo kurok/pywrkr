@@ -777,17 +777,26 @@ class TestMasterRequiresSecretOffLoopback(unittest.IsolatedAsyncioTestCase):
             with patch("sys.stderr", StringIO()), self.assertRaises(SystemExit):
                 self._parse(base)
             # Loopback masters keep working without a secret.
-            for bind in ("127.0.0.1", "127.8.9.10", "::1", "[::1]"):
+            for bind in ("127.0.0.1", "127.8.9.10", "::1"):
                 with self.subTest(bind=bind):
                     self._parse([*base, "--bind", bind])
+            # Bracketed / padded forms are normalised to the address that is
+            # actually bound (start_server rejects "[::1]").
+            for bind, bound in (("[::1]", "::1"), (" 127.0.0.1 ", "127.0.0.1")):
+                with self.subTest(bind=bind):
+                    _, args = self._parse([*base, "--bind", bind])
+                    self.assertEqual(args.bind, bound)
             # A secret from the flag or the environment admits a public bind.
             self._parse([*base, "--bind", "0.0.0.0", "--worker-secret", "s3cret"])
         with patch.dict(os.environ, {**self._ENV, "PYWRKR_WORKER_SECRET": "s3cret"}, clear=True):
             self._parse([*base, "--bind", "0.0.0.0"])
 
     def test_is_loopback_bind(self):
-        for host in ("127.0.0.1", "127.255.0.1", "::1", "[::1]"):
+        for host in ("127.0.0.1", "127.255.0.1", "::1"):
             self.assertTrue(is_loopback_bind(host), host)
+        # Judged as the literal string start_server would receive.
+        for host in ("[::1]", " 127.0.0.1"):
+            self.assertFalse(is_loopback_bind(host), host)
         # The real resolver differs per host (some map localhost to fe80::1%lo0),
         # so the positive name case runs against a pinned answer.
         loop_only = [

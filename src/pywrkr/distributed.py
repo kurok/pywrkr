@@ -95,7 +95,7 @@ def _resolved_is_loopback(sockaddr: tuple) -> bool:
 def is_loopback_bind(host: str | Sequence[str] | None) -> bool:
     """Report whether binding *host* listens on the loopback interface only.
 
-    Literal ``127.0.0.0/8`` and ``::1`` (bracketed or not) count. ``localhost``
+    Literal ``127.0.0.0/8`` and ``::1`` count. ``localhost``
     counts only if every address it resolves to is loopback (or link-local on
     a loopback interface), since a hosts file can point it elsewhere. A list
     of hosts, as ``asyncio.start_server`` accepts, counts only if every entry
@@ -113,9 +113,9 @@ def is_loopback_bind(host: str | Sequence[str] | None) -> bool:
         return False
     if not isinstance(host, str):
         return all(isinstance(h, str) and is_loopback_bind(h) for h in host)
-    h = host.strip()
-    if h.startswith("[") and h.endswith("]"):
-        h = h[1:-1]
+    # Judged exactly as given: this is the string handed to start_server, so
+    # a form that would not bind (``[::1]``, padded) is not loopback either.
+    h = host
     try:
         return ipaddress.ip_address(h).is_loopback
     except ValueError:

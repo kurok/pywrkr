@@ -1331,6 +1331,12 @@ def _validate_url_and_mode(
     # ws:// target, --autofind) reports that; before any body, scenario or data
     # file is read.
     if args.master:
+        # Normalised once, so the address checked is the address bound:
+        # start_server rejects "[::1]" and padded values.
+        bind = args.bind.strip()
+        if bind.startswith("[") and bind.endswith("]"):
+            bind = bind[1:-1]
+        args.bind = bind
         try:
             check_master_auth(args.bind, _resolve_worker_secret(args))
         except ValueError as e:
