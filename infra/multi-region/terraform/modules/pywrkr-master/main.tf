@@ -92,6 +92,8 @@ resource "aws_ecs_task_definition" "master" {
 
       environment = concat(
         [{ name = "PYWRKR_ROLE", value = "master" }],
+        # Not the secret: its SSM version, so a secret change rolls the tasks.
+        [{ name = "PYWRKR_SECRET_VERSION", value = tostring(var.worker_secret_version) }],
         var.otel_endpoint != "" ? [{ name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint }] : [],
         var.prom_remote_write != "" ? [{ name = "PYWRKR_PROM_ENDPOINT", value = var.prom_remote_write }] : [],
       )

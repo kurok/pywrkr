@@ -820,8 +820,9 @@ class TestMasterRequiresSecretOffLoopback(unittest.IsolatedAsyncioTestCase):
         with patch("pywrkr.distributed.socket.getaddrinfo", return_value=scoped):
             with patch("pywrkr.distributed.socket.if_indextoname", return_value="lo0"):
                 self.assertTrue(is_loopback_bind("localhost"))
-            with patch("pywrkr.distributed.socket.if_indextoname", return_value="en0"):
-                self.assertFalse(is_loopback_bind("localhost"))
+            for name in ("en0", "lowpan0", "lo-mgmt"):
+                with patch("pywrkr.distributed.socket.if_indextoname", return_value=name):
+                    self.assertFalse(is_loopback_bind("localhost"), name)
 
     def test_localhost_mapped_off_loopback_is_not_trusted(self):
         """A hosts file can point ``localhost`` at a reachable address."""

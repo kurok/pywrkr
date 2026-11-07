@@ -214,6 +214,31 @@ aws iam attach-user-policy --user-name $USER_NAME \
 
 aws iam attach-user-policy --user-name $USER_NAME \
   --policy-arn arn:aws:iam::aws:policy/AWSCloudMapFullAccess
+
+# None of the managed policies above covers SSM Parameter Store, which holds
+# the master/worker secret. Add just those statements (the same ones as in
+# Option B) inline rather than the much broader AmazonSSMFullAccess:
+aws iam put-user-policy --user-name $USER_NAME \
+  --policy-name pywrkr-worker-secret-ssm \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "ssm:PutParameter", "ssm:GetParameter", "ssm:GetParameters",
+          "ssm:DeleteParameter", "ssm:AddTagsToResource",
+          "ssm:RemoveTagsFromResource", "ssm:ListTagsForResource"
+        ],
+        "Resource": "arn:aws:ssm:*:*:parameter/pywrkr-*"
+      },
+      {
+        "Effect": "Allow",
+        "Action": "ssm:DescribeParameters",
+        "Resource": "*"
+      }
+    ]
+  }'
 ```
 
 ### Option B: Least-Privilege Custom Policy (Recommended for Production)

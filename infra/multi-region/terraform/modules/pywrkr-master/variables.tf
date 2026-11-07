@@ -152,3 +152,8 @@ variable "worker_secret_arn" {
   description = "ARN of the SSM SecureString holding the master/worker HMAC secret, exposed to the container as PYWRKR_WORKER_SECRET."
   type        = string
 }
+
+variable "worker_secret_version" {
+  description = "Version of the worker-secret SSM parameter; set in the environment so a secret change rolls the tasks."
+  type        = number
+}

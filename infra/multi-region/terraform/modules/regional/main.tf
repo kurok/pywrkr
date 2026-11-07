@@ -102,33 +102,34 @@ module "master" {
 
   source = "../pywrkr-master"
 
-  name_prefix        = var.name_prefix
-  cluster_id         = module.ecs_cluster.cluster_id
-  namespace_id       = module.ecs_cluster.namespace_id
-  image              = var.image
-  cpu                = var.master_cpu
-  memory             = var.master_memory
-  execution_role_arn = module.iam.execution_role_arn
-  task_role_arn      = module.iam.task_role_arn
-  subnet_id          = var.egress_mode == "nat_eip" ? module.network.master_subnet_id : module.network.public_subnet_ids[0]
-  security_group_id  = module.network.master_sg_id
-  assign_public_ip   = var.egress_mode == "public_ip"
-  log_group_name     = module.logging.master_log_group_name
-  aws_region         = var.region_name
-  cloudmap_namespace = var.cloudmap_namespace
-  worker_count       = var.worker_count
-  target_url         = var.target_url
-  test_duration      = var.test_duration
-  users              = var.users
-  connections        = var.connections
-  rate               = var.rate
-  thresholds         = var.thresholds
-  scenario_file      = var.scenario_file
-  pywrkr_tags        = var.pywrkr_tags
-  otel_endpoint      = var.otel_endpoint
-  prom_remote_write  = var.prom_remote_write
-  worker_secret_arn  = aws_ssm_parameter.worker_secret.arn
-  tags               = var.tags
+  name_prefix           = var.name_prefix
+  cluster_id            = module.ecs_cluster.cluster_id
+  namespace_id          = module.ecs_cluster.namespace_id
+  image                 = var.image
+  cpu                   = var.master_cpu
+  memory                = var.master_memory
+  execution_role_arn    = module.iam.execution_role_arn
+  task_role_arn         = module.iam.task_role_arn
+  subnet_id             = var.egress_mode == "nat_eip" ? module.network.master_subnet_id : module.network.public_subnet_ids[0]
+  security_group_id     = module.network.master_sg_id
+  assign_public_ip      = var.egress_mode == "public_ip"
+  log_group_name        = module.logging.master_log_group_name
+  aws_region            = var.region_name
+  cloudmap_namespace    = var.cloudmap_namespace
+  worker_count          = var.worker_count
+  target_url            = var.target_url
+  test_duration         = var.test_duration
+  users                 = var.users
+  connections           = var.connections
+  rate                  = var.rate
+  thresholds            = var.thresholds
+  scenario_file         = var.scenario_file
+  pywrkr_tags           = var.pywrkr_tags
+  otel_endpoint         = var.otel_endpoint
+  prom_remote_write     = var.prom_remote_write
+  worker_secret_arn     = aws_ssm_parameter.worker_secret.arn
+  worker_secret_version = aws_ssm_parameter.worker_secret.version
+  tags                  = var.tags
 }
 
 module "workers" {
@@ -154,6 +155,7 @@ module "workers" {
   master_dns        = module.master.dns_name
   tags              = var.tags
 
-  depends_on        = [module.master]
-  worker_secret_arn = aws_ssm_parameter.worker_secret.arn
+  depends_on            = [module.master]
+  worker_secret_arn     = aws_ssm_parameter.worker_secret.arn
+  worker_secret_version = aws_ssm_parameter.worker_secret.version
 }

@@ -9,6 +9,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import time
@@ -85,7 +86,7 @@ def _resolved_is_loopback(sockaddr: tuple) -> bool:
         return True
     if isinstance(addr, ipaddress.IPv6Address) and addr.is_link_local and len(sockaddr) >= 4:
         try:
-            return socket.if_indextoname(int(sockaddr[3])).startswith("lo")
+            return re.fullmatch(r"lo\d*", socket.if_indextoname(int(sockaddr[3]))) is not None
         except (OSError, ValueError, AttributeError):
             return False
     return False
