@@ -1793,9 +1793,11 @@ run's credentials (`-A`, `-H`, cookies, body) and feed it forged results, and an
 a worker can hand it a config and make it generate traffic. A master therefore **refuses to start**
 on a non-loopback `--bind` — including the default `0.0.0.0` — without a secret, and a worker
 refuses to connect to a non-loopback master without one; for a local run use `--bind 127.0.0.1` and
-`--worker 127.0.0.1:9220`. Whatever the secret, a worker only runs an `http://` or `https://` target
-(the same rule the CLI applies to its own URL) and logs a warning for a link-local one such as
-`169.254.169.254`. The master and every worker must use the same value, and passing it through the
+`--worker 127.0.0.1:9220`. Whatever the secret, a worker refuses a config that could aim it outside
+`http(s)://`: the target and any `--otel-endpoint` / `--prom-remote-write` URL must be
+`http://` or `https://` (the rule the CLI applies to its own URL), a scenario `ws:` step must be
+`ws://` or `wss://`, and an HTTP step path must start with `/` or `?` so it cannot change the host.
+A link-local or cloud-metadata host (such as `169.254.169.254`) is logged as a warning. The master and every worker must use the same value, and passing it through the
 environment keeps it out of the process table:
 
 ```bash

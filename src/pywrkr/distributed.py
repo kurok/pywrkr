@@ -50,6 +50,7 @@ from pywrkr.reporting import (
     run_baseline_gate,
 )
 from pywrkr.traffic_profiles import CsvProfile, TrafficProfile, parse_traffic_profile
+from pywrkr.websockets import WS_SCHEMES
 from pywrkr.workers import run_benchmark, run_user_simulation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -148,6 +149,18 @@ def check_master_auth(host: str | Sequence[str] | None, worker_secret: str | Non
         raise ValueError(MASTER_AUTH_REQUIRED_MESSAGE)
 
 
+def normalize_host(host: str) -> str:
+    """Strip whitespace and IPv6 brackets: ``" [::1] "`` -> ``"::1"``.
+
+    The form ``asyncio`` binds or connects to, and the one the loopback
+    checks judge.
+    """
+    h = host.strip()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    return h
+
+
 WORKER_AUTH_REQUIRED_MESSAGE = (
     "a worker connecting to a non-loopback master requires --worker-secret "
     "(or PYWRKR_WORKER_SECRET); without it, whatever answers on that address "
@@ -174,26 +187,70 @@ def check_worker_auth(master_host: str | None, worker_secret: str | None) -> Non
         raise ValueError(WORKER_AUTH_REQUIRED_MESSAGE)
 
 
-def check_worker_target(config: BenchmarkConfig) -> None:
-    """Refuse a config from the master that the CLI would refuse itself (#304).
+#: Hosts that answer as a cloud instance-metadata service but are not
+#: link-local literals: GCE's name and AWS's IPv6 IMDS (a ULA address).
+_METADATA_HOSTS = frozenset({"metadata.google.internal", "metadata", "fd00:ec2::254"})
 
-    The target, and a scenario's ``base_url``, must be http(s) by the same
-    rule the CLI applies. A link-local target (cloud metadata endpoints live
-    there) is allowed but logged, since the master chose it, not this host.
+
+def _is_metadata_or_link_local(host: str | None) -> bool:
+    """True for a link-local address or a known instance-metadata host."""
+    if not host:
+        return False
+    h = host.rstrip(".").lower()
+    if h in _METADATA_HOSTS:
+        return True
+    try:
+        addr = ipaddress.ip_address(h.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.is_link_local or str(addr) in _METADATA_HOSTS
+
+
+def _warn_if_link_local(url: str, what: str) -> None:
+    if _is_metadata_or_link_local(urlparse(url).hostname):
+        logger.warning("Worker: the master sent a link-local or metadata %s: %s", what, url)
+
+
+def check_worker_target(config: BenchmarkConfig) -> None:
+    """Refuse a config from the master that could aim the worker elsewhere (#304).
+
+    Checks every URL the worker would contact on the master's say-so:
+
+    * the target must be http(s), by the rule the CLI applies to its own URL;
+    * an HTTP scenario step is appended to the target, so its path must start
+      with ``/`` or ``?`` -- anything else (``@host/...``) could change the
+      host the request goes to;
+    * a ``ws:`` scenario step must be ws(s);
+    * ``otel_endpoint`` and ``prom_remote_write`` must be http(s).
+
+    A link-local or instance-metadata host in any of them is allowed but
+    logged, since the master chose it, not this host.
 
     Raises:
-        ValueError: A URL in *config* has a scheme the worker does not drive.
+        ValueError: A URL in *config* is one the worker will not contact.
     """
     check_url_scheme(config.url, " from master")
-    if config.scenario is not None and config.scenario.base_url is not None:
-        check_url_scheme(config.scenario.base_url, " in scenario base_url from master")
-    host = urlparse(config.url).hostname
-    try:
-        link_local = host is not None and ipaddress.ip_address(host).is_link_local
-    except ValueError:
-        link_local = False
-    if link_local:
-        logger.warning("Worker: the master sent a link-local target: %s", config.url)
+    _warn_if_link_local(config.url, "target")
+    if config.scenario is not None:
+        for i, step in enumerate(config.scenario.steps, 1):
+            if step.ws is not None:
+                if not isinstance(step.ws, str) or urlparse(step.ws).scheme not in WS_SCHEMES:
+                    raise ValueError(
+                        f"Invalid URL scheme in scenario step {i} from master: {step.ws}. "
+                        "Use ws:// or wss://"
+                    )
+                _warn_if_link_local(step.ws, f"scenario step {i} URL")
+            elif not isinstance(step.path, str) or not step.path.startswith(("/", "?")):
+                raise ValueError(
+                    f"Scenario step {i} path from master must start with '/' or '?': {step.path!r}"
+                )
+    for name in ("otel_endpoint", "prom_remote_write"):
+        endpoint = getattr(config, name)
+        if endpoint is not None:
+            check_url_scheme(endpoint, f" in {name} from master")
+            _warn_if_link_local(endpoint, name)
 
 
 def _serialize_ssl_config(ssl_cfg: SSLConfig) -> dict:
@@ -1504,6 +1561,7 @@ async def run_worker_node(
         has no other way to tell a completed run from a five-minute wait for a
         master that never appeared.
     """
+    master_host = normalize_host(master_host)
     try:
         await asyncio.to_thread(check_worker_auth, master_host, worker_secret)
     except ValueError as e:
@@ -1591,10 +1649,10 @@ async def run_worker_node(
         if msg.get("type") != "config":
             logger.error("Worker: unexpected message type: %s", msg.get("type"))
             return 1
-        config = _deserialize_config(msg["config"])
         try:
+            config = _deserialize_config(msg["config"])
             check_worker_target(config)
-        except ValueError as e:
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
             logger.error("Worker: refusing the config: %s", e)
             with contextlib.suppress(OSError, ConnectionError):
                 await _send_msg(writer, {"type": "error", "error": f"worker refused: {e}"})

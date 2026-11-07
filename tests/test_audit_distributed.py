@@ -991,29 +991,86 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(reply["type"], "error")
                 self.assertIn("Invalid URL scheme", reply["error"])
 
-    async def test_worker_rejects_scenario_base_url_with_non_http_scheme(self):
+    async def test_worker_rejects_scenario_step_that_could_change_host(self):
         from pywrkr.config import Scenario, ScenarioStep
 
-        good = pywrkr.BenchmarkConfig(
-            url="http://127.0.0.1:1/",
-            duration=0.01,
-            scenario=Scenario(name="s", steps=[ScenarioStep(path="/")], base_url="file:///etc"),
+        steps = (
+            ScenarioStep(path="@169.254.169.254/latest/meta-data/"),
+            ScenarioStep(path=".evil.example/"),
+            ScenarioStep(path="file:///etc/passwd", ws="file:///etc/passwd"),
+        )
+        for step in steps:
+            with self.subTest(path=step.path):
+                good = pywrkr.BenchmarkConfig(
+                    url="http://10.0.0.1",
+                    duration=0.01,
+                    scenario=Scenario(name="s", steps=[ScenarioStep(path="/ok"), step]),
+                    _quiet=True,
+                )
+                rc, reply = await self._run_against_fake_master(_serialize_config(good))
+                self.assertEqual(rc, 1)
+                self.assertIn("step 2", reply["error"])
+
+    async def test_worker_rejects_non_http_metrics_endpoint(self):
+        for field_name in ("otel_endpoint", "prom_remote_write"):
+            with self.subTest(field=field_name):
+                config = _serialize_config(
+                    pywrkr.BenchmarkConfig(url="http://127.0.0.1:1/", duration=0.01, _quiet=True)
+                )
+                config[field_name] = "file:///etc/passwd"
+                rc, reply = await self._run_against_fake_master(config)
+                self.assertEqual(rc, 1)
+                self.assertIn(field_name, reply["error"])
+
+    async def test_malformed_config_returns_1_with_an_error_reply(self):
+        for bad in ({}, {"url": "http://127.0.0.1:1/", "body": "not base64!"}, {"url": None}):
+            with self.subTest(config=bad):
+                rc, reply = await self._run_against_fake_master(bad)
+                self.assertEqual(rc, 1)
+                self.assertEqual(reply["type"], "error")
+
+    def test_scenario_steps_that_keep_the_host_pass(self):
+        from pywrkr.config import Scenario, ScenarioStep
+
+        cfg = pywrkr.BenchmarkConfig(
+            url="http://10.0.0.1",
+            scenario=Scenario(
+                steps=[
+                    ScenarioStep(path="/a/${id}"),
+                    ScenarioStep(path="?q=1"),
+                    ScenarioStep(path="ws://10.0.0.1/s", ws="ws://10.0.0.1/s"),
+                ]
+            ),
+            otel_endpoint="http://collector:4318",
             _quiet=True,
         )
-        rc, reply = await self._run_against_fake_master(_serialize_config(good))
-        self.assertEqual(rc, 1)
-        self.assertIn("base_url", reply["error"])
+        check_worker_target(cfg)
 
-    def test_link_local_target_is_logged(self):
-        cfg = pywrkr.BenchmarkConfig(url="http://169.254.169.254/latest/", _quiet=True)
-        with self.assertLogs("pywrkr.distributed", level="WARNING") as logs:
-            check_worker_target(cfg)
-        self.assertIn("link-local", logs.output[0])
+    def test_link_local_and_metadata_hosts_are_logged(self):
+        urls = (
+            "http://169.254.169.254./",
+            "http://[::ffff:169.254.169.254]/",
+            "http://[fd00:ec2::254]/",
+            "http://metadata.google.internal/",
+            "http://[fe80::1]/",
+        )
+        for url in urls:
+            with self.subTest(url=url):
+                cfg = pywrkr.BenchmarkConfig(url=url, _quiet=True)
+                with self.assertLogs("pywrkr.distributed", level="WARNING"):
+                    check_worker_target(cfg)
+
+    async def test_api_accepts_bracketed_loopback_master(self):
+        with patch("pywrkr.distributed.asyncio.open_connection", side_effect=OSError) as conn:
+            rc = await run_worker_node(" [::1] ", 9220)
+        self.assertEqual(rc, 1)
+        conn.assert_called_once_with("::1", 9220)
 
     def test_ordinary_target_passes_quietly(self):
         for url in ("http://10.0.0.1/", "https://example.com/x", "http://[::1]:8080/"):
             with self.subTest(url=url):
-                check_worker_target(pywrkr.BenchmarkConfig(url=url, _quiet=True))
+                with self.assertNoLogs("pywrkr.distributed", level="WARNING"):
+                    check_worker_target(pywrkr.BenchmarkConfig(url=url, _quiet=True))
 
 
 if __name__ == "__main__":

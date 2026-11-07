@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Unauthenticated distributed master closed (see **Changed**): previously any peer that reached a non-loopback master's port was admitted, received the run's basic-auth, headers and body, and could submit a fabricated result that passed `--threshold` with no load sent. A loopback master is unchanged. (#303)
-- Unauthenticated distributed worker closed (see **Changed**): previously a worker took its config from whatever answered on the master address and sent the requests it described, with that peer's headers, to any URL. A worker now also refuses a config whose target (or scenario `base_url`) is not `http(s)://`, using the CLI's own scheme check, and warns on a link-local target. (#304)
+- Unauthenticated distributed worker closed (see **Changed**): previously a worker took its config from whatever answered on the master address and sent the requests it described, with that peer's headers, to any URL. A worker now also refuses a config whose target or metrics endpoint is not `http(s)://` (the CLI's own scheme check), whose scenario `ws:` step is not `ws(s)://`, or whose HTTP step path does not start with `/` or `?`, and warns on a link-local or cloud-metadata host. A malformed config now returns 1 with an error reply instead of a traceback. (#304)
 
 ## [1.6.0] - 2026-09-11
 

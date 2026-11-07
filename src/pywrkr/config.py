@@ -38,8 +38,8 @@ HTTP_SCHEMES = ("http", "https")
 def check_url_scheme(url: object, context: str = "", extra_schemes: tuple[str, ...] = ()) -> None:
     """Refuse a target URL whose scheme pywrkr does not drive.
 
-    The one copy of the rule: the CLI turns the error into a usage error and a
-    distributed worker refuses a config from its master with it (#304).
+    Shared by the CLI, which turns the error into a usage error, and a
+    distributed worker, which refuses a config from its master with it (#304).
 
     Args:
         url: The target URL. Anything that is not a string is refused.

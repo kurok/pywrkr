@@ -52,6 +52,7 @@ from pywrkr.config import (
 from pywrkr.distributed import (
     check_master_auth,
     check_worker_auth,
+    normalize_host,
     run_master,
     run_worker_node,
 )
@@ -1287,8 +1288,7 @@ def _validate_url_and_mode(
             w_port = int(port_str)
         except ValueError:
             parser.error(f"Invalid port in --worker: {port_str}")
-        if host.startswith("[") and host.endswith("]"):
-            host = host[1:-1]
+        host = normalize_host(host)
         worker_secret = _resolve_worker_secret(args)
         try:
             check_worker_auth(host, worker_secret)
@@ -1342,10 +1342,7 @@ def _validate_url_and_mode(
     if args.master:
         # Normalised once, so the address checked is the address bound:
         # start_server rejects "[::1]" and padded values.
-        bind = args.bind.strip()
-        if bind.startswith("[") and bind.endswith("]"):
-            bind = bind[1:-1]
-        args.bind = bind
+        args.bind = normalize_host(args.bind)
         try:
             check_master_auth(args.bind, _resolve_worker_secret(args))
         except ValueError as e:
