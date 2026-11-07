@@ -1805,8 +1805,8 @@ pywrkr --worker master-host:9220
 Whatever the secret, a worker checks the URLs in the config it receives: the target and any
 `--otel-endpoint` / `--prom-remote-write` URL must be `http://` or `https://` (the rule the CLI
 applies to its own URL), a scenario `ws:` step must be `ws(s)://` or `http(s)://`, a traffic
-profile may not name a file on the worker, and a `--ca-bundle` path must be a regular file
-on every worker. A link-local or cloud-metadata host (such as
+profile may not name a file on the worker, and with `--ssl-verify` a `--ca-bundle` path must be a
+regular file on every worker. A link-local or cloud-metadata host (such as
 `169.254.169.254`) is allowed but logged as a warning.
 
 **A worker's exit code means something.** `0` only when a benchmark ran and its results reached the

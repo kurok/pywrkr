@@ -1064,6 +1064,32 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(rc, 1)
                     self.assertIn("ca_bundle", reply["error"])
 
+    def test_unused_ca_bundle_is_not_checked(self):
+        """A master's PYWRKR_CA_BUNDLE travels even with verification off; the
+        worker never opens it then, so a path missing on the worker is fine."""
+        from pywrkr.config import SSLConfig
+
+        for url in ("http://10.0.0.1/", "https://10.0.0.1/"):
+            with self.subTest(url=url):
+                cfg = _deserialize_config(
+                    _serialize_config(
+                        pywrkr.BenchmarkConfig(
+                            url=url,
+                            ssl_config=SSLConfig(verify=False, ca_bundle="/only/on/master.pem"),
+                        )
+                    )
+                )
+                check_worker_target(cfg)
+
+    async def test_non_string_ca_bundle_returns_1_with_an_error_reply(self):
+        config = _serialize_config(
+            pywrkr.BenchmarkConfig(url="https://127.0.0.1:1/", duration=0.01, _quiet=True)
+        )
+        config["ssl_config"] = {"verify": True, "ca_bundle": ["x"]}
+        rc, reply = await self._run_against_fake_master(config)
+        self.assertEqual(rc, 1)
+        self.assertIn("TypeError", reply["error"])
+
     def test_ca_bundle_that_is_a_regular_file_passes(self):
         import tempfile
 

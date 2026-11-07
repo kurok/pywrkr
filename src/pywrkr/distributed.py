@@ -233,7 +233,8 @@ def check_worker_target(config: BenchmarkConfig) -> None:
       loader requires. A value that starts with ``${`` is only known once
       rendered, so its scheme is left to the WebSocket client.
     * ``otel_endpoint`` and ``prom_remote_write``, when set, must be http(s).
-    * A ``ca_bundle``, which the worker opens, must be a regular file.
+    * With verification on, the ``ca_bundle`` the worker opens must be a
+      regular file.
 
     A link-local or instance-metadata host in any of these, or in an HTTP
     step that changes the host (``@169.254.169.254/...``), is allowed but
@@ -267,10 +268,16 @@ def check_worker_target(config: BenchmarkConfig) -> None:
                 _warn_if_link_local(
                     f"{base.scheme}://{base.netloc}{step.path}", f"scenario step {i} URL"
                 )
-    ca_bundle = config.ssl_config.ca_bundle if config.ssl_config is not None else None
-    if ca_bundle and not os.path.isfile(ca_bundle):
-        # The worker opens this path itself. A regular file only: a device
-        # such as /dev/zero would block or exhaust memory.
+    ssl_cfg = config.ssl_config
+    if (
+        ssl_cfg is not None
+        and ssl_cfg.verify
+        and ssl_cfg.ca_bundle
+        and not os.path.isfile(ssl_cfg.ca_bundle)
+    ):
+        # The worker opens this path itself, but only with verification on
+        # (a master's PYWRKR_CA_BUNDLE travels even when it is off). A regular
+        # file only: a device such as /dev/zero would block or exhaust memory.
         raise ValueError("the ca_bundle from master is not a regular file on this worker")
     for name in ("otel_endpoint", "prom_remote_write"):
         endpoint = getattr(config, name)
@@ -288,7 +295,10 @@ def _deserialize_ssl_config(data: dict | None) -> SSLConfig:
     """Deserialize a dict back into SSLConfig."""
     if not data:
         return SSLConfig()
-    return SSLConfig(verify=data.get("verify", False), ca_bundle=data.get("ca_bundle"))
+    ca_bundle = data.get("ca_bundle")
+    if ca_bundle is not None and not isinstance(ca_bundle, str):
+        raise TypeError(f"ca_bundle must be a string, got {type(ca_bundle).__name__}")
+    return SSLConfig(verify=data.get("verify", False), ca_bundle=ca_bundle)
 
 
 def _serialize_threshold(th: Threshold) -> dict:
