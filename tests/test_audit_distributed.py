@@ -20,8 +20,10 @@ from pywrkr.config import normalize_timeline as _normalize_timeline
 from pywrkr.distributed import (
     _deserialize_config,
     _recv_msg,
+    _send_msg,
     _serialize_config,
     _serialize_stats,
+    check_worker_target,
     is_loopback_bind,
     merge_worker_stats,
     run_master,
@@ -897,6 +899,121 @@ class TestMasterRequiresSecretOffLoopback(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bound_hosts, ["0.0.0.0"])
         self.assertIsNotNone(result)
         self.assertEqual(worker_exit, 0)
+
+
+class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
+    """#304: a worker without a secret only trusts a loopback master, and never
+    runs a config whose target the CLI itself would refuse."""
+
+    _ENV = {k: v for k, v in os.environ.items() if k != "PYWRKR_WORKER_SECRET"}
+
+    def _main(self, argv: list[str]):
+        from pywrkr.main import main
+
+        with patch.dict(os.environ, self._ENV, clear=True), patch("sys.argv", ["pywrkr", *argv]):
+            with patch("pywrkr.main.run_worker_node") as run, contextlib.suppress(SystemExit):
+                main()
+        return run
+
+    def test_cli_refuses_worker_without_secret_off_loopback(self):
+        from pywrkr.main import main
+
+        for target in ("10.0.0.1:9220", "master.internal:9220", "0.0.0.0:9220"):
+            with self.subTest(target=target):
+                err = StringIO()
+                with (
+                    patch.dict(os.environ, self._ENV, clear=True),
+                    patch("sys.argv", ["pywrkr", "--worker", target]),
+                    patch("pywrkr.main.run_worker_node") as run,
+                    patch("sys.stderr", err),
+                    self.assertRaises(SystemExit) as cm,
+                ):
+                    main()
+                self.assertEqual(cm.exception.code, 2)
+                self.assertIn("--worker-secret", err.getvalue())
+                run.assert_not_called()
+
+    def test_cli_allows_loopback_master_or_a_secret(self):
+        cases = (
+            (["--worker", "127.0.0.1:9220"], "127.0.0.1", None),
+            (["--worker", "[::1]:9220"], "::1", None),
+            (["--worker", "10.0.0.1:9220", "--worker-secret", "s"], "10.0.0.1", "s"),
+        )
+        for argv, host, secret in cases:
+            with self.subTest(argv=argv):
+                run = self._main(argv)
+                run.assert_called_once_with(host, 9220, worker_secret=secret)
+
+    async def test_worker_refuses_to_run_without_worker_secret(self):
+        """API callers get the same rule: no connection is even attempted."""
+        with patch("pywrkr.distributed.asyncio.open_connection") as conn:
+            for secret in (None, ""):
+                with self.subTest(secret=secret):
+                    rc = await asyncio.wait_for(
+                        run_worker_node("10.0.0.5", 9220, worker_secret=secret), timeout=5
+                    )
+                    self.assertEqual(rc, 1)
+        conn.assert_not_called()
+
+    async def _run_against_fake_master(self, config: dict) -> tuple[int, dict | None]:
+        reply: asyncio.Future = asyncio.get_running_loop().create_future()
+
+        async def _handle(reader, writer):
+            await _send_msg(writer, {"type": "config", "config": config})
+            try:
+                reply.set_result(await asyncio.wait_for(_recv_msg(reader), timeout=5))
+            except Exception:
+                reply.set_result(None)
+            writer.close()
+
+        server = await asyncio.start_server(_handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            with patch("pywrkr.distributed.run_benchmark") as bench:
+                with patch("pywrkr.distributed.run_user_simulation") as users:
+                    rc = await asyncio.wait_for(run_worker_node("127.0.0.1", port), timeout=10)
+            bench.assert_not_called()
+            users.assert_not_called()
+            return rc, await asyncio.wait_for(reply, timeout=5)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_worker_rejects_config_with_non_http_target(self):
+        good = pywrkr.BenchmarkConfig(url="http://127.0.0.1:1/", duration=0.01, _quiet=True)
+        for bad_url in ("file:///etc/passwd", "gopher://127.0.0.1/", "ws://127.0.0.1/", 123):
+            with self.subTest(url=bad_url):
+                config = _serialize_config(good)
+                config["url"] = bad_url
+                rc, reply = await self._run_against_fake_master(config)
+                self.assertEqual(rc, 1)
+                self.assertIsNotNone(reply)
+                self.assertEqual(reply["type"], "error")
+                self.assertIn("Invalid URL scheme", reply["error"])
+
+    async def test_worker_rejects_scenario_base_url_with_non_http_scheme(self):
+        from pywrkr.config import Scenario, ScenarioStep
+
+        good = pywrkr.BenchmarkConfig(
+            url="http://127.0.0.1:1/",
+            duration=0.01,
+            scenario=Scenario(name="s", steps=[ScenarioStep(path="/")], base_url="file:///etc"),
+            _quiet=True,
+        )
+        rc, reply = await self._run_against_fake_master(_serialize_config(good))
+        self.assertEqual(rc, 1)
+        self.assertIn("base_url", reply["error"])
+
+    def test_link_local_target_is_logged(self):
+        cfg = pywrkr.BenchmarkConfig(url="http://169.254.169.254/latest/", _quiet=True)
+        with self.assertLogs("pywrkr.distributed", level="WARNING") as logs:
+            check_worker_target(cfg)
+        self.assertIn("link-local", logs.output[0])
+
+    def test_ordinary_target_passes_quietly(self):
+        for url in ("http://10.0.0.1/", "https://example.com/x", "http://[::1]:8080/"):
+            with self.subTest(url=url):
+                check_worker_target(pywrkr.BenchmarkConfig(url=url, _quiet=True))
 
 
 if __name__ == "__main__":

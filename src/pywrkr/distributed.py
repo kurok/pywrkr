@@ -16,6 +16,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
 from pywrkr.compare import parse_fail_on
@@ -32,6 +33,7 @@ from pywrkr.config import (
     SSLConfig,
     Threshold,
     WorkerStats,
+    check_url_scheme,
     merge_stats,
     parse_extract_spec,
 )
@@ -144,6 +146,54 @@ def check_master_auth(host: str | Sequence[str] | None, worker_secret: str | Non
     """
     if not worker_secret and not is_loopback_bind(host):
         raise ValueError(MASTER_AUTH_REQUIRED_MESSAGE)
+
+
+WORKER_AUTH_REQUIRED_MESSAGE = (
+    "a worker connecting to a non-loopback master requires --worker-secret "
+    "(or PYWRKR_WORKER_SECRET); without it, whatever answers on that address "
+    "chooses the target, headers and body the worker sends. Point a local run "
+    "at 127.0.0.1."
+)
+
+
+def check_worker_auth(master_host: str | None, worker_secret: str | None) -> None:
+    """Refuse an unauthenticated worker whose master is off the machine (#304).
+
+    The worker-side twin of :func:`check_master_auth`: without a secret the
+    worker cannot tell its master from any other peer, so it only runs
+    against a loopback master.
+
+    Args:
+        master_host: The master address the worker connects to.
+        worker_secret: The shared HMAC secret, or None / empty for none.
+
+    Raises:
+        ValueError: *master_host* is not loopback and no secret is set.
+    """
+    if not worker_secret and not is_loopback_bind(master_host):
+        raise ValueError(WORKER_AUTH_REQUIRED_MESSAGE)
+
+
+def check_worker_target(config: BenchmarkConfig) -> None:
+    """Refuse a config from the master that the CLI would refuse itself (#304).
+
+    The target, and a scenario's ``base_url``, must be http(s) by the same
+    rule the CLI applies. A link-local target (cloud metadata endpoints live
+    there) is allowed but logged, since the master chose it, not this host.
+
+    Raises:
+        ValueError: A URL in *config* has a scheme the worker does not drive.
+    """
+    check_url_scheme(config.url, " from master")
+    if config.scenario is not None and config.scenario.base_url is not None:
+        check_url_scheme(config.scenario.base_url, " in scenario base_url from master")
+    host = urlparse(config.url).hostname
+    try:
+        link_local = host is not None and ipaddress.ip_address(host).is_link_local
+    except ValueError:
+        link_local = False
+    if link_local:
+        logger.warning("Worker: the master sent a link-local target: %s", config.url)
 
 
 def _serialize_ssl_config(ssl_cfg: SSLConfig) -> dict:
@@ -1445,12 +1495,20 @@ async def run_worker_node(
     headers -- and the results travel in clear text. Run it on a trusted
     network or tunnel it.
 
+    Without a secret the worker only runs against a loopback master (#304),
+    and it refuses a config whose target is not http(s) whatever the secret.
+
     Returns:
         0 when a benchmark ran and its results reached the master, 1 on every
         give-up path. An orchestrator -- systemd, a k8s Job, a Jenkins agent --
         has no other way to tell a completed run from a five-minute wait for a
         master that never appeared.
     """
+    try:
+        await asyncio.to_thread(check_worker_auth, master_host, worker_secret)
+    except ValueError as e:
+        logger.error("Worker: %s", e)
+        return 1
     logger.info("Worker: connecting to master at %s:%s...", master_host, master_port)
 
     try:
@@ -1534,6 +1592,13 @@ async def run_worker_node(
             logger.error("Worker: unexpected message type: %s", msg.get("type"))
             return 1
         config = _deserialize_config(msg["config"])
+        try:
+            check_worker_target(config)
+        except ValueError as e:
+            logger.error("Worker: refusing the config: %s", e)
+            with contextlib.suppress(OSError, ConnectionError):
+                await _send_msg(writer, {"type": "error", "error": f"worker refused: {e}"})
+            return 1
         logger.info("Worker: received config. Target: %s", config.url)
 
         # The master decides the protocol, but each worker needs the backend

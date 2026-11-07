@@ -1761,7 +1761,7 @@ pywrkr --worker master-host:9220
 | Flag | Description |
 |------|-------------|
 | `--master` | Run as distributed master (coordinates workers) |
-| `--worker HOST:PORT` | Run as distributed worker, connecting to master at HOST:PORT |
+| `--worker HOST:PORT` | Run as distributed worker, connecting to master at HOST:PORT. A non-loopback master requires `--worker-secret` |
 | `--worker-secret SECRET` | Shared secret authenticating the master/worker channel (HMAC-SHA256). Also read from `PYWRKR_WORKER_SECRET` |
 | `--expect-workers` | Number of workers the master should wait for before starting |
 | `--bind` | Master bind address (default: `0.0.0.0`). Any non-loopback address requires `--worker-secret` |
@@ -1791,8 +1791,11 @@ output and in whatever the metrics landed in — not only in the exit code.
 unauthenticated: anything that can reach the master's port can register as a worker, receive the
 run's credentials (`-A`, `-H`, cookies, body) and feed it forged results, and anything that can reach
 a worker can hand it a config and make it generate traffic. A master therefore **refuses to start**
-on a non-loopback `--bind` — including the default `0.0.0.0` — without a secret; for a local run use
-`--bind 127.0.0.1`. The master and every worker must use the same value, and passing it through the
+on a non-loopback `--bind` — including the default `0.0.0.0` — without a secret, and a worker
+refuses to connect to a non-loopback master without one; for a local run use `--bind 127.0.0.1` and
+`--worker 127.0.0.1:9220`. Whatever the secret, a worker only runs an `http://` or `https://` target
+(the same rule the CLI applies to its own URL) and logs a warning for a link-local one such as
+`169.254.169.254`. The master and every worker must use the same value, and passing it through the
 environment keeps it out of the process table:
 
 ```bash

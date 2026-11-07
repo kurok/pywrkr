@@ -10,11 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Breaking:** `pywrkr --master` on a non-loopback `--bind` — including the default `0.0.0.0` — no longer starts without a worker secret, and `run_master(...)` raises `ValueError` for that case. To upgrade, set the same `PYWRKR_WORKER_SECRET` (or `--worker-secret`) on the master and every worker, or bind a local-only master with `--bind 127.0.0.1`. (#303)
+- **Breaking:** `pywrkr --worker` pointed at a non-loopback master no longer connects without a worker secret, and `run_worker_node(...)` returns 1 for that case. Set the same `PYWRKR_WORKER_SECRET` on the master and every worker, or run both against `127.0.0.1`. (#304)
 - **Terraform upgrade:** both stacks take a sensitive `worker_secret` variable, store it in an SSM SecureString and hand it to the master and every worker as `PYWRKR_WORKER_SECRET` through the container `secrets`; left `null`, a random secret is generated per deployment. **The principal that runs terraform now needs SSM parameter permissions on `parameter/pywrkr-*`** (see the updated policies in `infra/README.md` and `infra/multi-region/README.md`), and `terraform init` pulls two new providers, `hashicorp/random` and `hashicorp/time`. The execution role gets `ssm:GetParameters` on that one parameter only; the secret never appears in the task definition, so `terraform plan` keeps showing container-definition changes. (#303)
 
 ### Security
 
 - Unauthenticated distributed master closed (see **Changed**): previously any peer that reached a non-loopback master's port was admitted, received the run's basic-auth, headers and body, and could submit a fabricated result that passed `--threshold` with no load sent. A loopback master is unchanged. (#303)
+- Unauthenticated distributed worker closed (see **Changed**): previously a worker took its config from whatever answered on the master address and sent the requests it described, with that peer's headers, to any URL. A worker now also refuses a config whose target (or scenario `base_url`) is not `http(s)://`, using the CLI's own scheme check, and warns on a link-local target. (#304)
 
 ## [1.6.0] - 2026-09-11
 
