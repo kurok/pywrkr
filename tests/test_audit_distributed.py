@@ -991,13 +991,13 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(reply["type"], "error")
                 self.assertIn("Invalid URL scheme", reply["error"])
 
-    async def test_worker_rejects_scenario_step_that_could_change_host(self):
+    async def test_worker_rejects_bad_ws_step(self):
         from pywrkr.config import Scenario, ScenarioStep
 
         steps = (
-            ScenarioStep(path="@169.254.169.254/latest/meta-data/"),
-            ScenarioStep(path=".evil.example/"),
             ScenarioStep(path="file:///etc/passwd", ws="file:///etc/passwd"),
+            # path is what the worker connects to: it must not differ from ws.
+            ScenarioStep(path="ws://169.254.169.254/x", ws="ws://10.0.0.1/"),
         )
         for step in steps:
             with self.subTest(path=step.path):
@@ -1029,7 +1029,8 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(rc, 1)
                 self.assertEqual(reply["type"], "error")
 
-    def test_scenario_steps_that_keep_the_host_pass(self):
+    def test_legitimate_scenarios_pass(self):
+        """Templated paths and ws URLs, and an empty endpoint, are not refused."""
         from pywrkr.config import Scenario, ScenarioStep
 
         cfg = pywrkr.BenchmarkConfig(
@@ -1037,14 +1038,30 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
             scenario=Scenario(
                 steps=[
                     ScenarioStep(path="/a/${id}"),
+                    ScenarioStep(path="${next}"),
+                    ScenarioStep(path=""),
                     ScenarioStep(path="?q=1"),
                     ScenarioStep(path="ws://10.0.0.1/s", ws="ws://10.0.0.1/s"),
+                    ScenarioStep(path="${ws_url}", ws="${ws_url}"),
                 ]
             ),
-            otel_endpoint="http://collector:4318",
+            otel_endpoint="",
+            prom_remote_write="http://prom:9090/api/v1/write",
             _quiet=True,
         )
-        check_worker_target(cfg)
+        with self.assertNoLogs("pywrkr.distributed", level="WARNING"):
+            check_worker_target(cfg)
+
+    def test_host_changing_step_to_metadata_is_logged(self):
+        from pywrkr.config import Scenario, ScenarioStep
+
+        cfg = pywrkr.BenchmarkConfig(
+            url="http://10.0.0.1",
+            scenario=Scenario(steps=[ScenarioStep(path="@169.254.169.254/latest/")]),
+            _quiet=True,
+        )
+        with self.assertLogs("pywrkr.distributed", level="WARNING"):
+            check_worker_target(cfg)
 
     def test_link_local_and_metadata_hosts_are_logged(self):
         urls = (
@@ -1053,6 +1070,9 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
             "http://[fd00:ec2::254]/",
             "http://metadata.google.internal/",
             "http://[fe80::1]/",
+            "http://2852039166/",
+            "http://0xa9fea9fe/",
+            "http://169.254.43518/",
         )
         for url in urls:
             with self.subTest(url=url):

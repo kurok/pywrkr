@@ -50,7 +50,7 @@ from pywrkr.reporting import (
     run_baseline_gate,
 )
 from pywrkr.traffic_profiles import CsvProfile, TrafficProfile, parse_traffic_profile
-from pywrkr.websockets import WS_SCHEMES
+from pywrkr.websockets import is_websocket_url
 from pywrkr.workers import run_benchmark, run_user_simulation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -152,8 +152,12 @@ def check_master_auth(host: str | Sequence[str] | None, worker_secret: str | Non
 def normalize_host(host: str) -> str:
     """Strip whitespace and IPv6 brackets: ``" [::1] "`` -> ``"::1"``.
 
-    The form ``asyncio`` binds or connects to, and the one the loopback
-    checks judge.
+    Args:
+        host: A ``--bind`` value or a master address.
+
+    Returns:
+        The form ``asyncio`` binds or connects to, and the one the loopback
+        checks judge.
     """
     h = host.strip()
     if h.startswith("[") and h.endswith("]"):
@@ -202,7 +206,14 @@ def _is_metadata_or_link_local(host: str | None) -> bool:
     try:
         addr = ipaddress.ip_address(h.split("%", 1)[0])
     except ValueError:
-        return False
+        # Numeric spellings the resolver also accepts: 2852039166, 0xa9fea9fe,
+        # 169.254.43518 all mean 169.254.169.254.
+        if ":" in h:
+            return False
+        try:
+            addr = ipaddress.IPv4Address(socket.inet_aton(h))
+        except OSError:
+            return False
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
         addr = addr.ipv4_mapped
     return addr.is_link_local or str(addr) in _METADATA_HOSTS
@@ -214,19 +225,23 @@ def _warn_if_link_local(url: str, what: str) -> None:
 
 
 def check_worker_target(config: BenchmarkConfig) -> None:
-    """Refuse a config from the master that could aim the worker elsewhere (#304).
+    """Refuse a config from the master that the CLI would refuse itself (#304).
 
-    Checks every URL the worker would contact on the master's say-so:
+    * The target must be http(s), by the rule the CLI applies to its own URL.
+    * A ``ws:`` scenario step must be ws(s), and its ``path`` -- the URL the
+      worker actually connects to -- must equal ``ws``, as the scenario
+      loader requires. A value that starts with ``${`` is only known once
+      rendered, so its scheme is left to the WebSocket client.
+    * ``otel_endpoint`` and ``prom_remote_write``, when set, must be http(s).
 
-    * the target must be http(s), by the rule the CLI applies to its own URL;
-    * an HTTP scenario step is appended to the target, so its path must start
-      with ``/`` or ``?`` -- anything else (``@host/...``) could change the
-      host the request goes to;
-    * a ``ws:`` scenario step must be ws(s);
-    * ``otel_endpoint`` and ``prom_remote_write`` must be http(s).
+    A link-local or instance-metadata host in any of these, or in an HTTP
+    step that changes the host (``@169.254.169.254/...``), is allowed but
+    logged: the master chose it, not this host. The host itself is not
+    restricted -- the master picks the target anyway; the secret, or a
+    loopback master, is what makes that master trusted.
 
-    A link-local or instance-metadata host in any of them is allowed but
-    logged, since the master chose it, not this host.
+    Args:
+        config: The configuration received from the master.
 
     Raises:
         ValueError: A URL in *config* is one the worker will not contact.
@@ -234,21 +249,28 @@ def check_worker_target(config: BenchmarkConfig) -> None:
     check_url_scheme(config.url, " from master")
     _warn_if_link_local(config.url, "target")
     if config.scenario is not None:
+        base = urlparse(config.url)
         for i, step in enumerate(config.scenario.steps, 1):
+            if not isinstance(step.path, str):
+                raise ValueError(f"Scenario step {i} path from master is not a string")
             if step.ws is not None:
-                if not isinstance(step.ws, str) or urlparse(step.ws).scheme not in WS_SCHEMES:
+                if step.ws != step.path:
                     raise ValueError(
-                        f"Invalid URL scheme in scenario step {i} from master: {step.ws}. "
+                        f"Scenario step {i} from master sets 'ws' and a different 'path'"
+                    )
+                if not step.path.startswith("${") and not is_websocket_url(step.path):
+                    raise ValueError(
+                        f"Invalid URL scheme in scenario step {i} from master: {step.path}. "
                         "Use ws:// or wss://"
                     )
-                _warn_if_link_local(step.ws, f"scenario step {i} URL")
-            elif not isinstance(step.path, str) or not step.path.startswith(("/", "?")):
-                raise ValueError(
-                    f"Scenario step {i} path from master must start with '/' or '?': {step.path!r}"
+                _warn_if_link_local(step.path, f"scenario step {i} URL")
+            elif "${" not in step.path:
+                _warn_if_link_local(
+                    f"{base.scheme}://{base.netloc}{step.path}", f"scenario step {i} URL"
                 )
     for name in ("otel_endpoint", "prom_remote_write"):
         endpoint = getattr(config, name)
-        if endpoint is not None:
+        if endpoint:
             check_url_scheme(endpoint, f" in {name} from master")
             _warn_if_link_local(endpoint, name)
 
