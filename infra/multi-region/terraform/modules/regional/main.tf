@@ -43,6 +43,8 @@ resource "time_sleep" "worker_secret_policy_propagation" {
   create_duration = "15s"
   triggers = {
     policy = aws_iam_role_policy.read_worker_secret.policy
+    # A replaced execution role gets the same policy JSON; wait again for it.
+    role = aws_iam_role_policy.read_worker_secret.role
   }
 }
 

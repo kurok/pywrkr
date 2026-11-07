@@ -963,7 +963,7 @@ def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
 
 async def run_master(
     config: BenchmarkConfig,
-    host: str,
+    host: str | Sequence[str] | None,
     port: int,
     expect_workers: int,
     worker_secret: str | None = None,
