@@ -233,8 +233,6 @@ def check_worker_target(config: BenchmarkConfig) -> None:
       loader requires. A value that starts with ``${`` is only known once
       rendered, so its scheme is left to the WebSocket client.
     * ``otel_endpoint`` and ``prom_remote_write``, when set, must be http(s).
-    * With verification on, the ``ca_bundle`` the worker opens must be a
-      regular file.
 
     A link-local or instance-metadata host in any of these, or in an HTTP
     step that changes the host (``@169.254.169.254/...``), is allowed but
@@ -268,17 +266,6 @@ def check_worker_target(config: BenchmarkConfig) -> None:
                 _warn_if_link_local(
                     f"{base.scheme}://{base.netloc}{step.path}", f"scenario step {i} URL"
                 )
-    ssl_cfg = config.ssl_config
-    if (
-        ssl_cfg is not None
-        and ssl_cfg.verify
-        and ssl_cfg.ca_bundle
-        and not os.path.isfile(ssl_cfg.ca_bundle)
-    ):
-        # The worker opens this path itself, but only with verification on
-        # (a master's PYWRKR_CA_BUNDLE travels even when it is off). A regular
-        # file only: a device such as /dev/zero would block or exhaust memory.
-        raise ValueError("the ca_bundle from master is not a regular file on this worker")
     for name in ("otel_endpoint", "prom_remote_write"):
         endpoint = getattr(config, name)
         if endpoint:
