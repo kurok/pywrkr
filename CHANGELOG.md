@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `pywrkr --master` on a non-loopback `--bind` — including the default `0.0.0.0` — no longer starts without a worker secret, and `run_master(...)` raises `ValueError` for that case. To upgrade, set the same `PYWRKR_WORKER_SECRET` (or `--worker-secret`) on the master and every worker, or bind a local-only master with `--bind 127.0.0.1`. (#303)
+- **Terraform upgrade:** both stacks take a sensitive `worker_secret` variable, store it in an SSM SecureString and hand it to the master and every worker as `PYWRKR_WORKER_SECRET` through the container `secrets`; left `null`, a random secret is generated per deployment. **The principal that runs terraform now needs SSM parameter permissions on `parameter/pywrkr-*`** (see the updated policies in `infra/README.md` and `infra/multi-region/README.md`), and `terraform init` pulls two new providers, `hashicorp/random` and `hashicorp/time`. The execution role gets `ssm:GetParameters` on that one parameter only; the secret never appears in the task definition, so `terraform plan` keeps showing container-definition changes. (#303)
+
+### Security
+
+- Unauthenticated distributed master closed (see **Changed**): previously any peer that reached a non-loopback master's port was admitted, received the run's basic-auth, headers and body, and could submit a fabricated result that passed `--threshold` with no load sent. A loopback master is unchanged. (#303)
+
 ## [1.6.0] - 2026-09-11
 
 ### Added

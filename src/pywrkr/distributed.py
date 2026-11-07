@@ -5,11 +5,15 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
+import re
+import socket
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -62,6 +66,84 @@ _WORKER_RECV_TIMEOUT_SECONDS = 300.0
 
 # Timeout for the HMAC challenge-response handshake (master and worker sides).
 _WORKER_AUTH_TIMEOUT_SECONDS = 5.0
+
+
+MASTER_AUTH_REQUIRED_MESSAGE = (
+    "a master on a non-loopback bind address requires --worker-secret "
+    "(or PYWRKR_WORKER_SECRET); the control channel would otherwise be "
+    "unauthenticated. Use --bind 127.0.0.1 for a local run."
+)
+
+
+def _resolved_is_loopback(sockaddr: tuple) -> bool:
+    """True for a loopback address, or an IPv6 link-local one on a loopback interface.
+
+    Some hosts files map ``localhost`` to ``fe80::1%lo0`` as well as ``::1``;
+    that address is only reachable through the loopback interface.
+    """
+    addr = ipaddress.ip_address(str(sockaddr[0]).split("%", 1)[0])
+    if addr.is_loopback:
+        return True
+    if isinstance(addr, ipaddress.IPv6Address) and addr.is_link_local and len(sockaddr) >= 4:
+        try:
+            return re.fullmatch(r"lo\d*", socket.if_indextoname(int(sockaddr[3]))) is not None
+        except (OSError, ValueError, AttributeError):
+            return False
+    return False
+
+
+def is_loopback_bind(host: str | Sequence[str] | None) -> bool:
+    """Report whether binding *host* listens on the loopback interface only.
+
+    Literal ``127.0.0.0/8`` and ``::1`` count. ``localhost``
+    counts only if every address it resolves to is loopback (or link-local on
+    a loopback interface), since a hosts file can point it elsewhere. A list
+    of hosts, as ``asyncio.start_server`` accepts, counts only if every entry
+    does. Every other value counts as reachable from off the machine:
+    ``None``, ``""`` and ``[]`` (asyncio's "every interface"), ``0.0.0.0``,
+    ``::`` and any other name.
+
+    Args:
+        host: The address, or addresses, passed to ``--bind`` / ``run_master``.
+
+    Returns:
+        True only when the listener cannot be reached from another host.
+    """
+    if not host:
+        return False
+    if not isinstance(host, str):
+        return all(isinstance(h, str) and is_loopback_bind(h) for h in host)
+    # Judged exactly as given: this is the string handed to start_server, so
+    # a form that would not bind (``[::1]``, padded) is not loopback either.
+    h = host
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        pass
+    if h.lower() != "localhost":
+        return False
+    try:
+        infos = socket.getaddrinfo(h, None)
+    except OSError:
+        return False
+    return bool(infos) and all(_resolved_is_loopback(info[4]) for info in infos)
+
+
+def check_master_auth(host: str | Sequence[str] | None, worker_secret: str | None) -> None:
+    """Refuse an unauthenticated master that other hosts can reach (#303).
+
+    The one place the rule lives: the CLI turns the error into a usage error
+    before doing any work, and ``run_master`` enforces it for API callers.
+
+    Args:
+        host: The address the master will bind.
+        worker_secret: The shared HMAC secret, or None / empty for none.
+
+    Raises:
+        ValueError: *host* is not loopback-only and no secret is set.
+    """
+    if not worker_secret and not is_loopback_bind(host):
+        raise ValueError(MASTER_AUTH_REQUIRED_MESSAGE)
 
 
 def _serialize_ssl_config(ssl_cfg: SSLConfig) -> dict:
@@ -881,7 +963,7 @@ def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
 
 async def run_master(
     config: BenchmarkConfig,
-    host: str,
+    host: str | Sequence[str] | None,
     port: int,
     expect_workers: int,
     worker_secret: str | None = None,
@@ -896,7 +978,16 @@ async def run_master(
 
     If *ready* is provided, it is set once the server is listening, so callers
     (and tests) can connect only after the bind completes instead of racing it.
+
+    Raises ``ValueError`` when *host* is not a loopback address and no
+    *worker_secret* is set: any peer that reaches the port would otherwise be
+    sent the run's credentials and could forge the merged result. It is
+    raised before binding, so *ready* is never set: a caller running this as
+    a task should await the task (or ``asyncio.wait`` on both), not *ready*
+    alone.
     """
+    # In a thread: resolving ``localhost`` is a blocking getaddrinfo call.
+    await asyncio.to_thread(check_master_auth, host, worker_secret)
     logger.info(
         "Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers
     )

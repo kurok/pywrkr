@@ -7,6 +7,8 @@ FAIL on the pre-fix code and PASS after the fix.
 import asyncio
 import contextlib
 import json
+import os
+import socket
 import time
 import unittest
 from io import StringIO
@@ -20,9 +22,12 @@ from pywrkr.distributed import (
     _recv_msg,
     _serialize_config,
     _serialize_stats,
+    is_loopback_bind,
     merge_worker_stats,
     run_master,
+    run_worker_node,
 )
+from pywrkr.main import _build_parser, _parse_and_validate_args
 
 
 async def _free_port() -> int:
@@ -741,6 +746,157 @@ class TestDist6ConcurrentCollection(unittest.IsolatedAsyncioTestCase):
         # Bounded by the slowest worker (~1.5s + overhead), well under a
         # sequential-with-full-timeout worst case.
         self.assertLess(elapsed, 5.0)
+
+
+class TestMasterRequiresSecretOffLoopback(unittest.IsolatedAsyncioTestCase):
+    """#303: a master reachable off-host must not run an unauthenticated channel.
+
+    Nothing here binds a non-loopback interface: ``start_server`` is patched to
+    bind 127.0.0.1 on a random port, so the decision is taken on the address
+    the caller asked for while the socket stays local and xdist-safe.
+    """
+
+    _ENV = {k: v for k, v in os.environ.items() if k != "PYWRKR_WORKER_SECRET"}
+
+    def _parse(self, argv: list[str]):
+        parser = _build_parser()
+        args = parser.parse_args(argv)
+        return _parse_and_validate_args(parser, args)
+
+    def test_master_requires_worker_secret_on_non_loopback_bind(self):
+        base = ["--master", "--expect-workers", "1", "http://127.0.0.1:1/"]
+        with patch.dict(os.environ, self._ENV, clear=True):
+            for bind in ("0.0.0.0", "::", "10.0.0.5", "master.internal"):
+                with self.subTest(bind=bind):
+                    err = StringIO()
+                    with patch("sys.stderr", err), self.assertRaises(SystemExit) as cm:
+                        self._parse([*base, "--bind", bind])
+                    self.assertEqual(cm.exception.code, 2)
+                    self.assertIn("--worker-secret", err.getvalue())
+            # The default bind is every interface, so it is refused too.
+            with patch("sys.stderr", StringIO()), self.assertRaises(SystemExit):
+                self._parse(base)
+            # Loopback masters keep working without a secret.
+            for bind in ("127.0.0.1", "127.8.9.10", "::1"):
+                with self.subTest(bind=bind):
+                    self._parse([*base, "--bind", bind])
+            # Bracketed / padded forms are normalised to the address that is
+            # actually bound (start_server rejects "[::1]").
+            for bind, bound in (("[::1]", "::1"), (" 127.0.0.1 ", "127.0.0.1")):
+                with self.subTest(bind=bind):
+                    _, args = self._parse([*base, "--bind", bind])
+                    self.assertEqual(args.bind, bound)
+            # A secret from the flag or the environment admits a public bind.
+            self._parse([*base, "--bind", "0.0.0.0", "--worker-secret", "s3cret"])
+        with patch.dict(os.environ, {**self._ENV, "PYWRKR_WORKER_SECRET": "s3cret"}, clear=True):
+            self._parse([*base, "--bind", "0.0.0.0"])
+
+    def test_is_loopback_bind(self):
+        for host in ("127.0.0.1", "127.255.0.1", "::1"):
+            self.assertTrue(is_loopback_bind(host), host)
+        # Judged as the literal string start_server would receive.
+        for host in ("[::1]", " 127.0.0.1"):
+            self.assertFalse(is_loopback_bind(host), host)
+        # The real resolver differs per host (some map localhost to fe80::1%lo0),
+        # so the positive name case runs against a pinned answer.
+        loop_only = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0)),
+        ]
+        with patch("pywrkr.distributed.socket.getaddrinfo", return_value=loop_only):
+            for host in ("localhost", "LOCALHOST"):
+                self.assertTrue(is_loopback_bind(host), host)
+        for host in (
+            None,
+            "",
+            "0.0.0.0",
+            "::",
+            "[::]",
+            "10.0.0.5",
+            "example.com",
+            "localhost.evil",
+        ):
+            self.assertFalse(is_loopback_bind(host), host)
+
+    def test_host_lists_and_scoped_loopback(self):
+        self.assertTrue(is_loopback_bind(["127.0.0.1", "::1"]))
+        self.assertFalse(is_loopback_bind(["127.0.0.1", "0.0.0.0"]))
+        self.assertFalse(is_loopback_bind([]))
+        scoped = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1%lo0", 0, 0, 1)),
+        ]
+        with patch("pywrkr.distributed.socket.getaddrinfo", return_value=scoped):
+            with patch("pywrkr.distributed.socket.if_indextoname", return_value="lo0"):
+                self.assertTrue(is_loopback_bind("localhost"))
+            for name in ("en0", "lowpan0", "lo-mgmt"):
+                with patch("pywrkr.distributed.socket.if_indextoname", return_value=name):
+                    self.assertFalse(is_loopback_bind("localhost"), name)
+
+    def test_localhost_mapped_off_loopback_is_not_trusted(self):
+        """A hosts file can point ``localhost`` at a reachable address."""
+        mapped = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))]
+        with patch("pywrkr.distributed.socket.getaddrinfo", return_value=mapped):
+            self.assertFalse(is_loopback_bind("localhost"))
+        with patch("pywrkr.distributed.socket.getaddrinfo", side_effect=OSError):
+            self.assertFalse(is_loopback_bind("localhost"))
+
+    def test_refusal_comes_before_any_input_file_is_read(self):
+        """The secret check must not wait for body/scenario files to load."""
+        argv = ["--master", "--expect-workers", "1", "--bind", "0.0.0.0"]
+        argv += ["-p", "/nonexistent/pywrkr-303-body", "http://127.0.0.1:1/"]
+        err = StringIO()
+        with patch.dict(os.environ, self._ENV, clear=True):
+            with patch("sys.stderr", err), self.assertRaises(SystemExit):
+                self._parse(argv)
+        self.assertIn("--worker-secret", err.getvalue())
+
+    async def test_master_rejects_unauthenticated_peer_without_secret(self):
+        """run_master itself refuses, so no peer is ever sent the config."""
+        config = pywrkr.BenchmarkConfig(
+            url="http://127.0.0.1:1", duration=0.01, basic_auth="ci-user:dummy", _quiet=True
+        )
+        with patch("pywrkr.distributed.asyncio.start_server") as start:
+            for host, secret in (("0.0.0.0", None), ("0.0.0.0", ""), (None, None)):
+                with self.subTest(host=host, secret=secret), self.assertRaises(ValueError) as cm:
+                    # Bounded: the pre-fix master waits for workers instead of raising.
+                    await asyncio.wait_for(
+                        run_master(config, host, 0, expect_workers=1, worker_secret=secret),
+                        timeout=5,
+                    )
+                self.assertIn("--worker-secret", str(cm.exception))
+        start.assert_not_called()
+
+    async def test_master_with_secret_still_admits_a_real_worker(self):
+        secret = "test-secret-303"
+        config = pywrkr.BenchmarkConfig(
+            url="http://127.0.0.1:1", duration=0.01, connections=1, _quiet=True
+        )
+        port_holder = [0]
+        bound_hosts: list = []
+        orig_start = asyncio.start_server
+
+        async def _patched_start(cb, host, port):
+            bound_hosts.append(host)
+            server = await orig_start(cb, "127.0.0.1", 0)
+            port_holder[0] = server.sockets[0].getsockname()[1]
+            return server
+
+        with patch("pywrkr.distributed.asyncio.start_server", side_effect=_patched_start):
+            with patch("sys.stdout", new_callable=StringIO):
+                master = asyncio.create_task(
+                    run_master(config, "0.0.0.0", 0, expect_workers=1, worker_secret=secret)
+                )
+                port = await _bound_port(port_holder)
+                worker = asyncio.create_task(
+                    run_worker_node("127.0.0.1", port, worker_secret=secret)
+                )
+                result = await asyncio.wait_for(master, timeout=15)
+                worker_exit = await asyncio.wait_for(worker, timeout=15)
+
+        self.assertEqual(bound_hosts, ["0.0.0.0"])
+        self.assertIsNotNone(result)
+        self.assertEqual(worker_exit, 0)
 
 
 if __name__ == "__main__":

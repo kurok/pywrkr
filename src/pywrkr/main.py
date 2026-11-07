@@ -49,7 +49,11 @@ from pywrkr.config import (
     load_scenario,
     validate_scenario_templates,
 )
-from pywrkr.distributed import run_master, run_worker_node
+from pywrkr.distributed import (
+    check_master_auth,
+    run_master,
+    run_worker_node,
+)
 from pywrkr.feeders import FEEDER_STRATEGIES, load_feeder, validate_unique_capacity
 from pywrkr.har_import import HarImportConfig, convert_har
 from pywrkr.multi_url import load_url_file, run_multi_url
@@ -500,7 +504,13 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
         help="Number of workers the master should wait for (required with --master)",
     )
     parser.add_argument(
-        "--bind", default="0.0.0.0", metavar="HOST", help="Master bind address (default: 0.0.0.0)"
+        "--bind",
+        default="0.0.0.0",
+        metavar="HOST",
+        help=(
+            "Master bind address (default: 0.0.0.0). A non-loopback address "
+            "requires --worker-secret."
+        ),
     )
     parser.add_argument(
         "--port",
@@ -523,7 +533,8 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
             "Shared secret for authenticating distributed workers (HMAC-SHA256). "
             "Can also be set via the PYWRKR_WORKER_SECRET environment variable. "
             "Master and all workers must use the same secret. "
-            "Omitting this leaves the distributed channel unauthenticated."
+            "Required for a master on a non-loopback --bind; omitting it on a "
+            "worker leaves that worker's channel unauthenticated."
         ),
     )
 
@@ -1254,6 +1265,11 @@ def _validate_mode_conflicts(
         parser.error("--allow-partial only applies to a distributed master (--master)")
 
 
+def _resolve_worker_secret(args: argparse.Namespace) -> str | None:
+    """Return the distributed secret from --worker-secret or PYWRKR_WORKER_SECRET."""
+    return args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET") or None
+
+
 def _validate_url_and_mode(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -1268,7 +1284,7 @@ def _validate_url_and_mode(
             w_port = int(port_str)
         except ValueError:
             parser.error(f"Invalid port in --worker: {port_str}")
-        worker_secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
+        worker_secret = _resolve_worker_secret(args)
         try:
             # Every give-up path returns 1: an orchestrator cannot otherwise
             # tell a completed benchmark from a five-minute wait for a master
@@ -1310,6 +1326,21 @@ def _validate_url_and_mode(
         _require_http_scheme(parser, args.url, "", allow_websocket=True)
         if is_websocket_url(args.url):
             _validate_websocket_mode(parser, args)
+
+    # After the mode checks, so a master that is invalid for another reason (a
+    # ws:// target, --autofind) reports that; before any body, scenario or data
+    # file is read.
+    if args.master:
+        # Normalised once, so the address checked is the address bound:
+        # start_server rejects "[::1]" and padded values.
+        bind = args.bind.strip()
+        if bind.startswith("[") and bind.endswith("]"):
+            bind = bind[1:-1]
+        args.bind = bind
+        try:
+            check_master_auth(args.bind, _resolve_worker_secret(args))
+        except ValueError as e:
+            parser.error(f"--master: {e}")
 
 
 def _validate_export_interval(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -1801,7 +1832,7 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
         exit_code = max((r.exit_code for r in results), default=0)
         sys.exit(exit_code)
     elif args.master:
-        worker_secret = args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET")
+        worker_secret = _resolve_worker_secret(args)
         result = asyncio.run(
             run_master(
                 config, args.bind, args.port, args.expect_workers, worker_secret=worker_secret

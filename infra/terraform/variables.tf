@@ -141,3 +141,20 @@ variable "log_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "worker_secret" {
+  description = <<-EOT
+    Shared HMAC secret for the master/worker control channel, passed to every
+    container as PYWRKR_WORKER_SECRET. A master bound to 0.0.0.0 refuses to
+    start without one (#303). Leave null to generate a random secret for this
+    deployment. Stored in state and in an SSM SecureString read via the container `secrets`.
+  EOT
+  type        = string
+  default     = null
+  sensitive   = true
+
+  validation {
+    condition     = var.worker_secret == null || try(length(var.worker_secret) >= 16, false)
+    error_message = "worker_secret must be at least 16 characters (or null to generate one)."
+  }
+}

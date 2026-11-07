@@ -32,8 +32,11 @@ resource "aws_ecs_task_definition" "worker" {
       }
 
       environment = [
-        { name = "PYWRKR_ROLE", value = "worker" }
+        { name = "PYWRKR_ROLE", value = "worker" },
+        { name = "PYWRKR_SECRET_VERSION", value = tostring(var.worker_secret_version) },
       ]
+
+      secrets = [{ name = "PYWRKR_WORKER_SECRET", valueFrom = var.worker_secret_arn }]
     }
   ])
 

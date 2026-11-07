@@ -122,6 +122,8 @@ sh -c "pywrkr --master --expect-workers 2 --bind 0.0.0.0 --port 9000 \
 
 This runs the benchmark, captures the exit code (non-zero if thresholds are breached), outputs the JSON results between markers for CloudWatch extraction, then exits with the original exit code.
 
+The master and every worker also receive `PYWRKR_WORKER_SECRET` from an SSM SecureString through the container `secrets` (see the `worker_secret` variable): a master bound to `0.0.0.0` refuses to start without it.
+
 ### Worker Container Command
 
 Workers use the default Docker `ENTRYPOINT ["pywrkr"]` with:
@@ -212,6 +214,31 @@ aws iam attach-user-policy --user-name $USER_NAME \
 
 aws iam attach-user-policy --user-name $USER_NAME \
   --policy-arn arn:aws:iam::aws:policy/AWSCloudMapFullAccess
+
+# None of the managed policies above covers SSM Parameter Store, which holds
+# the master/worker secret. Add just those statements (the same ones as in
+# Option B) inline rather than the much broader AmazonSSMFullAccess:
+aws iam put-user-policy --user-name $USER_NAME \
+  --policy-name pywrkr-worker-secret-ssm \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "ssm:PutParameter", "ssm:GetParameter", "ssm:GetParameters",
+          "ssm:DeleteParameter", "ssm:AddTagsToResource",
+          "ssm:RemoveTagsFromResource", "ssm:ListTagsForResource"
+        ],
+        "Resource": "arn:aws:ssm:*:*:parameter/pywrkr-*"
+      },
+      {
+        "Effect": "Allow",
+        "Action": "ssm:DescribeParameters",
+        "Resource": "*"
+      }
+    ]
+  }'
 ```
 
 ### Option B: Least-Privilege Custom Policy (Recommended for Production)
@@ -370,6 +397,30 @@ Create a custom IAM policy with only the permissions this infrastructure actuall
       "Resource": [
         "arn:aws:iam::*:role/pywrkr-*"
       ]
+    },
+    {
+      "Sid": "SSMWorkerSecret",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:DeleteParameter",
+        "ssm:AddTagsToResource",
+        "ssm:RemoveTagsFromResource",
+        "ssm:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:ssm:*:*:parameter/pywrkr-*"
+      ]
+    },
+    {
+      "Sid": "SSMDescribeParameters",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeParameters"
+      ],
+      "Resource": "*"
     },
     {
       "Sid": "IAMReadCallerIdentity",
@@ -838,6 +889,7 @@ After a successful build:
 | `tags` | map(string) | `{}` | Metadata key=value tags |
 | `otel_endpoint` | string | `""` | OpenTelemetry collector endpoint |
 | `prom_remote_write` | string | `""` | Prometheus pushgateway endpoint |
+| `worker_secret` | string (sensitive) | `null` | HMAC secret for the master/worker channel, stored in an SSM SecureString and handed to every container as `PYWRKR_WORKER_SECRET` via `secrets`. `null` generates a random one per deployment |
 | `cloudmap_namespace` | string | `pywrkr.local` | Cloud Map private DNS namespace |
 | `log_retention_days` | number | `14` | CloudWatch log retention period |
 
@@ -1330,6 +1382,7 @@ Check that your IAM user has all required permissions (see [AWS IAM Permissions]
 - `route53:*` — Cloud Map creates Route53 hosted zones internally
 - `iam:PassRole` — needed to assign IAM roles to ECS tasks
 - `ec2:CreateSecurityGroup` — needed for security group creation
+- `ssm:PutParameter` / `ssm:GetParameter` / `ssm:DeleteParameter` — the master/worker secret is stored as an SSM SecureString
 
 ### Jenkins build fails with "python3 not found"
 
