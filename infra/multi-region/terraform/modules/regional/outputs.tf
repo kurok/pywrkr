@@ -40,5 +40,6 @@ output "vpc_id" {
 
 output "worker_secret_parameter_name" {
   description = "SSM SecureString the operator creates for this region's master/worker secret"
-  value       = data.aws_ssm_parameter.worker_secret.name
+  # From the name, not the data source, so it is known before the parameter exists.
+  value = local.worker_secret_parameter_name
 }

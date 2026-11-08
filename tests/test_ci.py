@@ -874,8 +874,25 @@ class TestInfraHardening(unittest.TestCase):
                     f'-backend-config="{setting}' in init,
                     f"terraform init is not given -backend-config {setting}",
                 )
-        # With the state remote, nothing in the workspace is needed afterwards.
-        self.assertTrue("cleanWs()" in pipeline, "the pipeline does not clean its workspace")
+        # With the state remote, nothing in the workspace is needed afterwards,
+        # but the cleanup must come after the destroy that still reads it.
+        post = pipeline[pipeline.rindex("post {") :]
+        always = post[post.index("always {") : post.index("failure {")]
+        self.assertTrue("cleanWs()" in always, "the workspace is not cleaned in post.always")
+        self.assertLess(always.index("terraform destroy"), always.index("cleanWs()"))
+
+    def test_multi_region_pipeline_does_not_lose_or_take_over_state(self):
+        """Review of #315: a pre-change workspace's local state must be migrated,
+        not wiped, and a build must not apply over (then destroy) another
+        deployment's resources unless asked to."""
+        pipeline = (self._root / "infra/multi-region/jenkins/Jenkinsfile").read_text()
+        for marker in ("-migrate-state", "ADOPT_EXISTING_STATE", "terraform state list"):
+            with self.subTest(marker=marker):
+                self.assertTrue(marker in pipeline, f"the pipeline lacks {marker}")
+        always = pipeline[pipeline.rindex("post {") :]
+        self.assertTrue(
+            "TF_APPLIED" in always, "the destroy does not depend on this build applying"
+        )
 
     def test_multi_region_state_does_not_hold_the_worker_secret(self):
         """The secret was a resource attribute, so terraform wrote it to state

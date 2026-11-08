@@ -1,6 +1,6 @@
 # A master bound to 0.0.0.0 refuses to start without a secret (#303), so every
 # node gets one. The operator creates it out of band, one SecureString per
-# region, at the name in the `worker_secret_parameter_name` output (#315):
+# region, at this name (#315):
 #
 #   aws ssm put-parameter --region <region> --type SecureString \
 #     --name /<name_prefix>/pywrkr/worker-secret --value "$(openssl rand -hex 32)"
@@ -10,8 +10,12 @@
 # most, and a plan fails here when the parameter has not been created. A
 # terraform-managed value would be a resource attribute, written to state in
 # the clear.
+locals {
+  worker_secret_parameter_name = "/${var.name_prefix}/pywrkr/worker-secret"
+}
+
 data "aws_ssm_parameter" "worker_secret" {
-  name            = "/${var.name_prefix}/pywrkr/worker-secret"
+  name            = local.worker_secret_parameter_name
   with_decryption = false
 }
 
