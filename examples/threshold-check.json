@@ -1,32 +1,147 @@
 {
-  "duration_sec": 6.007,
+  "schema_version": 1,
+  "duration_sec": 5.025,
   "connections": 5,
-  "total_requests": 386,
-  "total_errors": 1,
-  "requests_per_sec": 64.26,
-  "transfer_per_sec_bytes": 33842.11,
-  "total_bytes": 203280,
+  "total_requests": 1377,
+  "total_errors": 0,
+  "requests_per_sec": 274.02,
+  "transfer_per_sec_bytes": 161124.88,
+  "total_bytes": 809676,
   "content_length_errors": 0,
+  "extract_failures": 0,
+  "template_errors": 0,
   "status_codes": {
-    "200": 385
+    "200": 1377
   },
-  "error_types": {
-    "ClientConnectionError": 1
+  "http_versions": {
+    "1.1": 1377
+  },
+  "error_types": {},
+  "rps_timeline": [
+    [
+      0.0,
+      57
+    ],
+    [
+      1.012,
+      60
+    ],
+    [
+      2.042,
+      59
+    ],
+    [
+      3.042,
+      57
+    ],
+    [
+      4.054,
+      51
+    ],
+    [
+      0.0,
+      58
+    ],
+    [
+      1.03,
+      57
+    ],
+    [
+      2.032,
+      53
+    ],
+    [
+      3.038,
+      53
+    ],
+    [
+      4.04,
+      51
+    ],
+    [
+      0.0,
+      60
+    ],
+    [
+      1.015,
+      60
+    ],
+    [
+      2.032,
+      55
+    ],
+    [
+      3.04,
+      52
+    ],
+    [
+      4.065,
+      53
+    ],
+    [
+      0.0,
+      53
+    ],
+    [
+      1.009,
+      49
+    ],
+    [
+      2.026,
+      57
+    ],
+    [
+      3.034,
+      55
+    ],
+    [
+      4.037,
+      58
+    ],
+    [
+      0.0,
+      55
+    ],
+    [
+      1.009,
+      54
+    ],
+    [
+      2.026,
+      57
+    ],
+    [
+      3.038,
+      53
+    ],
+    [
+      4.065,
+      50
+    ]
+  ],
+  "config": {
+    "mode": "duration",
+    "connections": 5,
+    "users": null,
+    "duration": 5.0,
+    "num_requests": null,
+    "rate": null,
+    "url_host": "127.0.0.1:8080",
+    "read_body": true
   },
   "latency": {
-    "min": 0.050134,
-    "max": 0.166766,
-    "mean": 0.065062,
-    "median": 0.055086,
-    "stdev": 0.026737
+    "min": 0.005584,
+    "max": 0.031524,
+    "mean": 0.018189,
+    "median": 0.01782,
+    "stdev": 0.007133
   },
   "percentiles": {
-    "p50": 0.05508,
-    "p75": 0.057209,
-    "p90": 0.114837,
-    "p95": 0.138788,
-    "p99": 0.164545,
-    "p99.9": 0.166766,
-    "p99.99": 0.166766
+    "p50": 0.01782,
+    "p75": 0.024317,
+    "p90": 0.028353,
+    "p95": 0.02977,
+    "p99": 0.030762,
+    "p99.9": 0.031498
   }
 }
