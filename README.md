@@ -625,7 +625,7 @@ steps:
 |--------|-----------|-------|
 | `json` | `$.a.b[0].c` | Dotted JSONPath subset: object keys, array indices (negative allowed), and `["quoted keys"]`. Wildcards, slices, filters, and recursive descent are not supported. `$` selects the whole document. |
 | `header` | `X-Session-Id` | Response header, matched case-insensitively. |
-| `regex` | `value="([^"]+)"` | Searched against the first 8,192 characters of the response body; capture group 1 is used. The pattern must have at least one group. |
+| `regex` | `value="([^"]+)"` | Searched against the first 8,192 characters of the response body (up to 16,384 are read to confirm a match); capture group 1 is used. The pattern must have at least one group. |
 
 Non-string JSON values keep their JSON spelling (`true`, not `True`); objects and arrays are
 re-serialized compactly, so a whole sub-document can be carried between steps.
@@ -637,9 +637,11 @@ the rule fails as *undecided* rather than extracting a value that could be wrong
 uses a lookahead that reads to the end, a backreference, conditional, atomic group, possessive repeat
 or lookahead inside a lookbehind (as for assertions), and when the match found in the first 8,192
 characters is not also the match found in the first 16,384, which catches a capture cut short at the
-window's end or a greedy one such as `src="(.*)"` that backtracked onto an earlier match. That check
-is bounded: a greedy match spanning more than 16 KiB can still differ from the whole-body one. Use a
-`json` rule for values deep in a large JSON response.
+window's end or a greedy one such as `src="(.*)"` that backtracked onto an earlier match; confirming
+a match reads up to 16,384 characters. That check is bounded: if matching reads past the first
+16,384 characters (a greedy repeat or a lookahead that runs that far, even from a match starting near
+the 8,192 mark), the value can still differ from the whole-body one. Use a `json` rule for values
+deep in a large JSON response.
 
 **Where `${var}` works:** the step `path`, header names and values, and the `body` — including
 inside nested JSON object/array bodies. Values are inserted verbatim, so URL-encode anything that

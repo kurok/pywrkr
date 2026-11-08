@@ -215,9 +215,10 @@ def bounded_search(
             catches a capture cut short at the window's end
             (``token=([a-z]+)``) and a greedy one that read past it and
             backtracked onto an earlier match (``src="(.*)"`` on a long
-            line). It is a bounded check, not a proof: a greedy match
-            spanning more than twice the window can still differ from the
-            whole-text one.
+            line). It is a bounded check, not a proof: if matching reads
+            past twice the window -- a greedy repeat or a lookahead that runs
+            that far, even from a match starting near the end of the first
+            window -- the value can still differ from the whole-text one.
 
     Returns:
         The match, or None; :data:`UNDECIDED` when the text was cut and the

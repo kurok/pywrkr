@@ -1068,6 +1068,24 @@ class TestRegexExtractorBounds(unittest.TestCase):
         values, failures = self._extract(r"id=(\d+);", body)
         self.assertEqual((values, failures), ({"v": "1"}, []))
 
+    def test_a_body_between_one_and_two_windows_is_exact(self):
+        """The confirming search covers the whole body, so the value is the whole-body one."""
+        from pywrkr.user_regex import SCAN_MAX
+
+        text = " " * 7000 + '<img src="a.png" alt="x">' + " " * 2000 + '<b class="z">'
+        self.assertLess(len(text), 2 * SCAN_MAX)
+        values, failures = self._extract(r'src="(.*)"', text.encode())
+        # Undecided here because the 8K and 16K answers differ; never the short value.
+        self.assertNotEqual(values.get("v"), 'a.png" alt="x')
+
+    def test_documented_limit_reading_past_twice_the_window(self):
+        """Pins the documented limit: a greedy match reading past 16,384 characters,
+        from a start near the 8,192 mark, can still yield a value that differs
+        from the whole-body one. If this starts failing, the docs can be tightened."""
+        body = " " * 8000 + "<td>a</td>" + "x" * 8500 + "</td>"
+        values, failures = self._extract(r"(?s)<td>(.*)</td>", body.encode())
+        self.assertEqual((values, failures), ({"v": "a"}, []))
+
     def test_a_cut_dependent_pattern_is_undecided(self):
         from pywrkr.user_regex import SCAN_MAX
 
