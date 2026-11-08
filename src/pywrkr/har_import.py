@@ -287,25 +287,31 @@ def _split_domain(value: str) -> tuple[str, int | None]:
 
     Accepts ``api.example.com``, ``localhost:8080``, ``[::1]:8080``, and a
     pasted URL such as ``http://localhost:8080/path`` (its host and port are
-    used). A bare IPv6 address without brackets is taken as a host.
+    used; a URL without a port means its scheme's default). A bare IPv6
+    address without brackets is taken as a host.
 
     Raises:
-        ValueError: The value names a port that is not a number in 0-65535.
+        ValueError: The value has no host, or a port that is not a number in
+            0-65535.
     """
     text = value.strip()
     if not text:
         return "", None
+    bad = ValueError(f"--domain {value!r}: expected host or host:port with a port of 0-65535")
+    if "://" not in text and _is_ip_literal(text.split("%", 1)[0]) and ":" in text:
+        # An unbracketed IPv6 address: all of it is the host.
+        return text.lower(), None
     try:
         parts = urlsplit(text if "://" in text else "//" + text)
         host = parts.hostname or ""
         port = parts.port
     except ValueError:
-        # An unbracketed IPv6 address has several colons and no valid port.
-        if text.count(":") > 1 and "[" not in text:
-            return text.lower(), None
-        raise ValueError(
-            f"--domain {value!r}: expected host or host:port with a port of 0-65535"
-        ) from None
+        raise bad from None
+    if not host:
+        raise bad
+    if port is None and parts.scheme in _DEFAULT_PORTS:
+        # A pasted https://example.com means that origin, not every port.
+        port = _DEFAULT_PORTS[parts.scheme]
     return host, port
 
 
@@ -494,12 +500,18 @@ def har_to_scenario(
     # Keyed on scheme, lower-cased host and effective port, so example.com and
     # Example.com:80 are one origin -- as --domain treats them.
     origins = []
-    seen_origins: set[tuple[str, str, int | None]] = set()
+    seen_origins: set[tuple[str, str, str, int | str | None]] = set()
     for entry in entries:
         parsed = urlparse(entry.url)
         if not parsed.netloc:
             continue
-        key = (parsed.scheme, parsed.hostname or "", _effective_port(parsed))
+        # Userinfo stays in the key: base_url is the first entry's netloc, so
+        # merging http://user:pw@h with http://h would replay the credentials
+        # on every step. An unparseable port stays distinct too.
+        port: int | str | None = _effective_port(parsed)
+        if port is None and parsed.netloc.rpartition(":")[2] not in ("", parsed.netloc):
+            port = parsed.netloc
+        key = (parsed.scheme, parsed.netloc.rpartition("@")[0], parsed.hostname or "", port)
         if key not in seen_origins:
             seen_origins.add(key)
             origins.append(f"{parsed.scheme}://{parsed.netloc}")
@@ -1014,10 +1026,11 @@ def convert_har(
                 p = urlparse(e.url)
                 if p.scheme not in ("http", "https") or not p.hostname:
                     continue
+                host = f"[{p.hostname}]" if ":" in p.hostname else p.hostname
                 try:
-                    shown = p.hostname + (f":{p.port}" if p.port is not None else "")
+                    shown = host + (f":{p.port}" if p.port is not None else "")
                 except ValueError:
-                    shown = p.hostname
+                    shown = host
                 shown = repr(shown)[1:-1][:80]
                 if shown not in hosts:
                     hosts.append(shown)

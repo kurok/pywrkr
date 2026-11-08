@@ -7,6 +7,8 @@ FAIL on the pre-fix code and PASS on the fixed code in
 
 import json
 import logging
+import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -1221,7 +1223,8 @@ def test_empty_filter_error_names_the_domain_values(tmp_path):
         ("[::1]:8080", ("::1", 8080)),
         ("::1", ("::1", None)),
         ("http://localhost:8080/path?q=1", ("localhost", 8080)),
-        ("https://Example.com", ("example.com", None)),
+        ("https://Example.com", ("example.com", 443)),
+        ("fe80::1%eth0", ("fe80::1%eth0", None)),
         ("", ("", None)),
     ],
 )
@@ -1231,7 +1234,9 @@ def test_split_domain(value, expected):
     assert _split_domain(value) == expected
 
 
-@pytest.mark.parametrize("value", ["localhost:99999", "host:abc"])
+@pytest.mark.parametrize(
+    "value", ["localhost:99999", "host:abc", "http://localhost:99999/", "host:80:90", ":8080"]
+)
 def test_split_domain_rejects_a_bad_port(value):
     from pywrkr.har_import import _split_domain
 
@@ -1296,3 +1301,54 @@ def test_empty_filter_hint_only_when_domain_emptied_it(tmp_path):
     with pytest.raises(ValueError) as exc:
         convert_har(path, config=HarImportConfig(allowed_domains=["localhost"]))
     assert "--domain was" not in str(exc.value)
+
+
+def test_domain_filter_pasted_https_url_means_that_origin():
+    """https://example.com is the https origin, not http entries as well."""
+    entries = [_entry("http://example.com/a"), _entry("https://example.com/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["https://example.com"]))
+    assert [e.url for e in kept] == ["https://example.com/b"]
+
+
+def test_userinfo_keeps_origins_apart():
+    """Merging http://user:pw@h with http://h would replay the credentials on every step."""
+    entries = [_entry("http://user:pw@h.test/a"), _entry("http://h.test/b")]
+    with pytest.raises(ValueError, match="spans multiple hosts"):
+        har_to_scenario(entries, HarImportConfig())
+
+
+def test_empty_filter_hint_brackets_ipv6(tmp_path):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "http://[::1]:8080/x", "method": "GET"},
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+    with pytest.raises(ValueError) as exc:
+        convert_har(path, config=HarImportConfig(allowed_domains=["[::1]:9000"]))
+    assert "[::1]:8080" in str(exc.value)
+
+
+def test_cli_reports_a_bad_domain_cleanly(tmp_path, capsys):
+    from pywrkr.main import main
+
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {"request": {"url": "http://h/x", "method": "GET"}, "response": {"status": 200}}
+            ]
+        },
+    )
+    with patch.object(sys, "argv", ["pywrkr", "har-import", path, "--domain", "localhost:99999"]):
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "expected host or host:port" in err
+    assert "Traceback" not in err
