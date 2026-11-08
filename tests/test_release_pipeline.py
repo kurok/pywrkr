@@ -29,7 +29,9 @@ def _run_lines(workflow: str) -> list[str]:
     lines = []
     for job in data["jobs"].values():
         for step in job.get("steps", []):
-            for line in str(step.get("run", "")).splitlines():
+            # Join shell continuations, so a flag on the next line counts.
+            script = str(step.get("run", "")).replace("\\\n", " ")
+            for line in script.splitlines():
                 if line.strip():
                     lines.append(line.strip())
     return lines
@@ -52,11 +54,14 @@ def _pinned_requirements() -> dict[str, str]:
 
 @pytest.mark.parametrize("workflow", RELEASE_WORKFLOWS)
 def test_every_pip_install_in_the_release_path_is_pinned(workflow):
-    installs = [line for line in _run_lines(workflow) if re.search(r"\bpip install\b", line)]
+    installs = [line for line in _run_lines(workflow) if re.search(r"\bpip3?\s+install\b", line)]
     assert installs, f"{workflow}: expected a pip install step"
     for line in installs:
         hashed = "--require-hashes" in line and "-r requirements-build.txt" in line
-        local_only = "--no-build-isolation" in line and "--no-deps" in line
+        # Only the checkout itself may be installed this way.
+        local_only = (
+            "--no-build-isolation" in line and "--no-deps" in line and line.split()[-1] == "."
+        )
         assert hashed or local_only, f"{workflow}: unpinned install: {line!r}"
         if hashed:
             assert "--no-deps" in line, f"{workflow}: hashed install must not resolve: {line!r}"
@@ -66,7 +71,7 @@ def test_every_pip_install_in_the_release_path_is_pinned(workflow):
 def test_no_build_runs_in_an_isolated_environment(workflow):
     """An isolated build resolves the build backend from the index."""
     for line in _run_lines(workflow):
-        if re.search(r"\b-m build\b", line):
+        if re.search(r"-m\s+build(\s|$)", line):
             assert "--no-isolation" in line, f"{workflow}: isolated build: {line!r}"
 
 
@@ -90,3 +95,19 @@ def test_build_requirements_cover_the_build_backend():
         assert requirement.specifier.contains(Version(pinned[name])), (
             f"pinned {name}=={pinned[name]} does not satisfy {raw!r}"
         )
+
+
+@pytest.mark.parametrize("workflow", RELEASE_WORKFLOWS)
+def test_release_python_matches_the_lockfile(workflow):
+    """requirements-build.txt is compiled for one Python; --no-deps would hide
+    a dependency another version needs until the tag is pushed."""
+    header = re.search(r"--python-version (\S+)", REQUIREMENTS.read_text())
+    assert header, "requirements-build.txt does not record its Python version"
+    data = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / workflow).read_text())
+    versions = {
+        str(step.get("with", {}).get("python-version"))
+        for job in data["jobs"].values()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/setup-python@")
+    }
+    assert versions == {header.group(1)}, (workflow, versions)

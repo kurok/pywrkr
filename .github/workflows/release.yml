@@ -54,7 +54,7 @@ jobs:
         python -m pip install --quiet --no-build-isolation --no-deps .
         RUNTIME_VERSION=$(python -c "from importlib.metadata import version; print(version('pywrkr'))")
         if [ "$RUNTIME_VERSION" != "$TAG_VERSION" ]; then
-          echo "::error::pywrkr.__version__ ($RUNTIME_VERSION) != tag ($TAG_VERSION)"
+          echo "::error::installed pywrkr version ($RUNTIME_VERSION) != tag ($TAG_VERSION)"
           exit 1
         fi
 
