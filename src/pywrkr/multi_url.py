@@ -123,7 +123,7 @@ async def run_multi_url(
             logger.warning(
                 "  Endpoint %s %s had 100%% errors (%s/%s); marking as failed.",
                 entry.method,
-                entry.url,
+                loggable_url(entry.url),
                 stats.errors,
                 stats.total_requests,
             )

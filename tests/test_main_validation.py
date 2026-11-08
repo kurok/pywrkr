@@ -561,6 +561,13 @@ class TestMasterMode:
 
 
 class TestSslCredentialWarning:
+    @pytest.fixture(autouse=True)
+    def _no_tls_environment(self, monkeypatch):
+        """PYWRKR_SSL_VERIFY / PYWRKR_CA_BUNDLE in the caller's shell must not
+        change what these tests see."""
+        monkeypatch.delenv("PYWRKR_SSL_VERIFY", raising=False)
+        monkeypatch.delenv("PYWRKR_CA_BUNDLE", raising=False)
+
     def test_warning_with_basic_auth_no_verify(self, capsys):
         _parse(["-A", "user:pass", "https://example.com/"])
         captured = capsys.readouterr()
@@ -588,7 +595,10 @@ class TestSslCredentialWarning:
         captured = capsys.readouterr()
         assert "WARNING" not in captured.err
 
-    @pytest.mark.parametrize("header", ["Authorization: Bearer x", "X-API-Key: k", "cookie: a=b"])
+    @pytest.mark.parametrize(
+        "header",
+        ["Authorization: Bearer x", "X-API-Key: k", "cookie: a=b", "X-Auth-Token: t", "Api-Key: k"],
+    )
     def test_warning_with_a_credential_header_no_verify(self, capsys, header):
         """-H Authorization carries a credential just as -A does (#309)."""
         _parse(["-H", header, "https://example.com/"])
@@ -600,6 +610,36 @@ class TestSslCredentialWarning:
         _parse(["https://example.com/"])
         err = capsys.readouterr().err
         assert err.count("NOTE: the target's TLS certificate is not verified") == 1
+
+    def test_warning_with_userinfo_in_the_url(self, capsys):
+        _parse(["https://user:pass@example.com/"])
+        assert "WARNING: SSL verification is disabled" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("url", ["HTTPS://example.com/", "wss://example.com/socket"])
+    def test_note_covers_every_tls_scheme_spelling(self, capsys, url):
+        _parse([url])
+        assert "NOTE: the target's TLS certificate is not verified" in capsys.readouterr().err
+
+    def test_note_and_warning_cover_url_file_targets(self, capsys, tmp_path):
+        url_file = tmp_path / "urls.txt"
+        url_file.write_text("https://example.com/a\nhttp://example.com/b\n")
+        _parse(["--url-file", str(url_file)])
+        assert "NOTE: the target's TLS certificate is not verified" in capsys.readouterr().err
+        _parse(["--url-file", str(url_file), "-H", "Authorization: Bearer x"])
+        assert "WARNING: SSL verification is disabled" in capsys.readouterr().err
+
+    def test_warning_with_a_credential_header_in_a_scenario_step(self, capsys, tmp_path):
+        scenario = tmp_path / "s.json"
+        scenario.write_text(
+            json.dumps(
+                {
+                    "base_url": "https://example.com",
+                    "steps": [{"path": "/", "headers": {"Authorization": "Bearer T"}}],
+                }
+            )
+        )
+        _parse(["--scenario", str(scenario)])
+        assert "WARNING: SSL verification is disabled" in capsys.readouterr().err
 
     def test_no_note_when_verifying_or_on_plain_http(self, capsys):
         _parse(["--ssl-verify", "https://example.com/"])

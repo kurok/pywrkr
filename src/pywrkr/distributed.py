@@ -222,7 +222,9 @@ def _is_metadata_or_link_local(host: str | None) -> bool:
 
 def _warn_if_link_local(url: str, what: str) -> None:
     if _is_metadata_or_link_local(urlparse(url).hostname):
-        logger.warning("Worker: the master sent a link-local or metadata %s: %s", what, url)
+        logger.warning(
+            "Worker: the master sent a link-local or metadata %s: %s", what, loggable_url(url)
+        )
 
 
 def check_worker_target(config: BenchmarkConfig) -> None:
