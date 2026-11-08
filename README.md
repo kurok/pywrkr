@@ -524,7 +524,7 @@ steps:
 |-----------|--------|
 | `assert_status` | Exact status code |
 | `assert_body_contains` | Substring is present in the body |
-| `assert_body_regex` | Regex matches somewhere in the first 64 KiB of the body |
+| `assert_body_regex` | Regex matches somewhere in the first 8,192 characters of the body |
 | `assert_json` | JSONPath → expected value, or `"*"` for "must exist" |
 | `assert_header` | Header equals a string, or matches `{regex: "..."}` |
 | `assert_max_latency` | This request took no longer than `500ms` / `1.5s` / `250us` |
@@ -538,9 +538,13 @@ Exact `assert_header` matches are exact: a server sending `application/json; cha
 
 Assertion regexes run against text the server under test chooses, on the event loop, and Python's
 `re` has no timeout. So `assert_body_regex` and the `assert_header` regex form search only the first
-64 KiB, and a pattern that repeats a group which itself repeats — the `(a+)+` shape behind
-catastrophic backtracking — logs a warning when the scenario loads. Prefer `assert_body_contains`
-or `assert_json` where they will do.
+8,192 characters of that text (the same bound `har-import` puts on URLs), and a match further in does
+not count. When the text is longer and the answer could depend on where it was cut, such as a
+negative lookahead like `(?!.*ERROR)` or an end anchor matching right at the cut, the assertion
+fails as *undecided* rather than passing. A pattern that nests an unbounded repeat inside a repeat,
+the `(a+)+` shape behind catastrophic backtracking, logs a warning when the scenario loads. That
+check is a heuristic and misses some shapes, such as overlapping alternation like `(a|ab)*`. For
+large JSON responses, prefer `assert_json` or `assert_body_contains`.
 
 A failed assertion counts the request as **one** error however many rules broke, and each broken
 rule gets its own key in the error distribution. Those keys name the *rule*, never the observed

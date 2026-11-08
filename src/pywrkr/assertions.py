@@ -14,16 +14,18 @@ assertions never disagree about what ``$.a.b[0]`` means.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
+import sys
 from dataclasses import dataclass
 from typing import Any, Iterator, Mapping
 
-try:  # Python 3.11+
-    import re._parser as _sre_parse  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - Python 3.10
-    import sre_parse as _sre_parse  # type: ignore[no-redef]
+if sys.version_info >= (3, 11):
+    import re._parser as _sre_parse
+else:  # pragma: no cover - Python 3.10
+    import sre_parse as _sre_parse
 
 from pywrkr.templating import ExtractError, parse_json_path, resolve_json_path, stringify
 
@@ -43,16 +45,16 @@ ANY_VALUE = "*"
 
 logger = logging.getLogger(__name__)
 
-#: Cap on the response text a user-supplied assertion regex may scan. The body
-#: and headers come from the server under test, ``re`` has no per-match
-#: timeout, and the match runs on the event loop, so an unbounded scan lets the
-#: target stall the worker. Text past the cap is not searched; 64 KiB keeps
-#: ordinary API responses whole. (``har_import._MATCH_URL_MAX`` is the same
-#: guard on the URL path.)
-_ASSERT_MATCH_MAX = 64 * 1024
+#: Cap, in characters, on the response text a user-supplied assertion regex
+#: may scan. The body and headers come from the server under test, ``re`` has
+#: no per-match timeout, and the match runs on the event loop, so an unbounded
+#: scan lets the target stall the worker: even a common pattern such as
+#: ``\s+$`` is quadratic. Same bound as ``har_import._MATCH_URL_MAX`` on the URL
+#: path. Large JSON is better checked with ``assert_json``.
+_ASSERT_MATCH_MAX = 8192
 
 _BACKTRACKING_WARNING = (
-    "%s %s: pattern %r repeats a group that itself repeats. Patterns with "
+    "%s %s: pattern %r repeats an unbounded repeat. Patterns with "
     "catastrophic backtracking (e.g. '(a+)+') matched against a server's "
     "response can hang the worker, since the server chooses the text; only the "
     "first %d characters are searched. Prefer a pattern without nested "
@@ -154,27 +156,36 @@ def _subpatterns(value: object) -> Iterator[Any]:
 
 
 def _has_nested_repetition(pattern: str) -> bool:
-    """Whether a regex repeats something that itself repeats, like ``(a+)+``.
+    r"""Whether a regex nests an unbounded repeat inside a repeat, like ``(a+)+``.
 
-    That shape is what drives catastrophic backtracking. It is a heuristic for
-    a warning, not a proof of safety; a pattern the parser cannot read is
-    simply not flagged (it has already compiled, so this does not happen in
-    practice).
+    That shape is what drives catastrophic backtracking: the outer repeat must
+    be unbounded or large (``{10,}`` and up, as in ``(.*a){20}``) and the inner
+    one unbounded. Bounded shapes such as ``(?:\d{1,3}\.){3}``, and atomic or
+    possessive groups, which cannot backtrack, are not flagged. It is a
+    heuristic for a warning, not a proof of safety: overlapping alternation
+    such as ``(a|ab)*`` is not detected.
     """
     repeat_ops = {_sre_parse.MAX_REPEAT, _sre_parse.MIN_REPEAT}
+    no_backtrack_ops = {
+        getattr(_sre_parse, name)
+        for name in ("ATOMIC_GROUP", "POSSESSIVE_REPEAT")
+        if hasattr(_sre_parse, name)
+    }
 
-    def walk(items: Any, inside_repeat: bool) -> bool:
+    def walk(items: Any, outer_repeats: bool) -> bool:
         for op, av in items:
+            if op in no_backtrack_ops:
+                continue
             if op in repeat_ops:
                 _lo, hi, sub = av
-                repeats = hi == _sre_parse.MAXREPEAT or hi > 1
-                if repeats and inside_repeat:
+                unbounded = hi == _sre_parse.MAXREPEAT
+                if unbounded and outer_repeats:
                     return True
-                if walk(sub, inside_repeat or repeats):
+                if walk(sub, outer_repeats or unbounded or hi >= 10):
                     return True
             else:
                 for child in _subpatterns(av):
-                    if walk(child, inside_repeat):
+                    if walk(child, outer_repeats):
                         return True
         return False
 
@@ -182,6 +193,72 @@ def _has_nested_repetition(pattern: str) -> bool:
         return walk(_sre_parse.parse(pattern), False)
     except Exception:  # pragma: no cover - parser internals vary by version
         return False
+
+
+@functools.lru_cache(maxsize=256)
+def _cut_sensitivity(pattern: str) -> tuple[bool, bool]:
+    r"""How a pattern's result can change when the text is cut short.
+
+    Returns:
+        ``(negative_lookaround, end_dependent)``. A negative lookaround such as
+        ``(?!.*ERROR)`` can succeed on the cut text and fail on the whole one.
+        An end anchor or word boundary (``$``, ``\Z``, ``\b``) can match at
+        the cut, where the whole text continues.
+    """
+    neg = {_sre_parse.ASSERT_NOT}
+    end_codes = {
+        getattr(_sre_parse, name)
+        for name in (
+            "AT_END",
+            "AT_END_LINE",
+            "AT_END_STRING",
+            "AT_BOUNDARY",
+            "AT_NON_BOUNDARY",
+            "AT_UNI_BOUNDARY",
+            "AT_UNI_NON_BOUNDARY",
+            "AT_LOC_BOUNDARY",
+            "AT_LOC_NON_BOUNDARY",
+        )
+        if hasattr(_sre_parse, name)
+    }
+    found = [False, False]
+
+    def walk(items: Any) -> None:
+        for op, av in items:
+            if op in neg:
+                found[0] = True
+            if op == _sre_parse.AT and av in end_codes:
+                found[1] = True
+            for child in _subpatterns(av):
+                walk(child)
+
+    try:
+        walk(_sre_parse.parse(pattern))
+    except Exception:  # pragma: no cover - parser internals vary by version
+        return True, True
+    return found[0], found[1]
+
+
+def _bounded_search(pattern: "re.Pattern[str]", text: str) -> "bool | None":
+    """Search at most ``_ASSERT_MATCH_MAX`` characters of server-supplied text.
+
+    Returns:
+        True or False when the answer is the same as for the whole text, or
+        None when the text was cut and the pattern's result could depend on
+        where it ends (see :func:`_cut_sensitivity`).
+    """
+    if len(text) <= _ASSERT_MATCH_MAX:
+        return pattern.search(text) is not None
+    negative_lookaround, end_dependent = _cut_sensitivity(pattern.pattern)
+    if negative_lookaround:
+        return None
+    prefix = text[:_ASSERT_MATCH_MAX]
+    match = pattern.search(prefix)
+    if match is None:
+        return False
+    if end_dependent and match.end() == len(prefix):
+        return None
+    return True
 
 
 def _compile_user_regex(pattern: str, where: str, field: str) -> "re.Pattern[str]":
@@ -376,8 +453,15 @@ def evaluate_assertions(
         value = headers.get(header_rule.name) if headers is not None else None
         if value is None:
             failures.append(AssertionFailure(f"AssertHeader: {header_rule.name} missing"))
+        elif header_rule.pattern and _bounded_search(header_rule.pattern, value) is None:
+            failures.append(
+                AssertionFailure(
+                    f"AssertHeader: {header_rule.name} {header_rule.describe()}"
+                    f" (longer than the {_ASSERT_MATCH_MAX}-char scan limit)"
+                )
+            )
         elif (
-            (header_rule.pattern.search(value[:_ASSERT_MATCH_MAX]) is None)
+            (not _bounded_search(header_rule.pattern, value))
             if header_rule.pattern
             else (value != header_rule.expected)
         ):
@@ -393,6 +477,16 @@ def evaluate_assertions(
 
     text: "str | None" = None
     if body is not None:
+        if (
+            rules.body_contains is None
+            and not rules.json_rules
+            and len(body) > 4 * (_ASSERT_MATCH_MAX + 1)
+        ):
+            # Only the regex looks at the body and it scans a bounded prefix,
+            # so decoding a large body in full on the event loop is waste. A
+            # UTF-8 character is at most 4 bytes, so this prefix still decodes
+            # to more than the scan limit and the cut is still detected.
+            body = body[: 4 * (_ASSERT_MATCH_MAX + 1)]
         text = body.decode("utf-8", errors="replace")
 
     if rules.body_contains is not None:
@@ -400,7 +494,15 @@ def evaluate_assertions(
             failures.append(AssertionFailure(f"AssertBody: '{rules.body_contains}' not found"))
 
     if rules.body_regex is not None:
-        if text is None or not rules.body_regex.search(text[:_ASSERT_MATCH_MAX]):
+        found = None if text is None else _bounded_search(rules.body_regex, text)
+        if text is not None and found is None:
+            failures.append(
+                AssertionFailure(
+                    f"AssertBodyRegex: {rules.body_regex.pattern!r} undecided: the body is "
+                    f"longer than the {_ASSERT_MATCH_MAX}-char scan limit"
+                )
+            )
+        elif not found:
             failures.append(
                 AssertionFailure(f"AssertBodyRegex: {rules.body_regex.pattern!r} did not match")
             )

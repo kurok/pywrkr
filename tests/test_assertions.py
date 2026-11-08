@@ -742,10 +742,6 @@ class TestAssertionsIntegration(AioHTTPTestCase):
         self.assertEqual(stats.errors, stats.total_requests // 2)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ---------------------------------------------------------------------------
 # A user regex against server-supplied text (#306)
 # ---------------------------------------------------------------------------
@@ -807,3 +803,52 @@ class TestAssertionRegexBounds(unittest.TestCase):
         for pattern in ("(a+)+b", "(a*)*", "(.*a){20}", r"(\w+\s?)*$", "(?:x+y?)+"):
             with self.subTest(pattern=pattern):
                 self.assertTrue(_has_nested_repetition(pattern))
+
+    def test_a_cut_body_does_not_let_a_negative_lookahead_pass(self):
+        """ "Must not contain ERROR" must not pass just because ERROR is past the cut."""
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"x" * _ASSERT_MATCH_MAX + b"ERROR"
+        failures = self._evaluate({"assert_body_regex": r"(?s)\A(?!.*ERROR)"}, body=body)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_a_cut_body_does_not_let_an_end_anchor_pass(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"x" * (_ASSERT_MATCH_MAX * 2) + b"}"
+        failures = self._evaluate({"assert_body_regex": r"x\Z"}, body=body)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_short_bodies_keep_full_regex_semantics(self):
+        self.assertEqual(self._evaluate({"assert_body_regex": r"(?s)\A(?!.*ERROR)"}, b"ok"), [])
+        self.assertEqual(
+            len(self._evaluate({"assert_body_regex": r"(?s)\A(?!.*ERROR)"}, b"ERROR")), 1
+        )
+        self.assertEqual(self._evaluate({"assert_body_regex": r"\}\Z"}, b'{"a": 1}'), [])
+
+    def test_a_match_early_in_a_long_body_still_counts(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b'{"id": 42, "pad": "' + b"x" * (_ASSERT_MATCH_MAX * 4) + b'"}'
+        self.assertEqual(self._evaluate({"assert_body_regex": r'"id":\s*42\b'}, body=body), [])
+
+    def test_quadratic_pattern_against_a_long_hostile_body_is_bounded(self):
+        """\\s+$ is quadratic and not flagged; the cap is what bounds it."""
+        import time
+
+        start = time.perf_counter()
+        self._evaluate({"assert_body_regex": r"\s+$"}, body=b" " * 200_000 + b"x")
+        self.assertLess(time.perf_counter() - start, 2.0)
+
+    def test_bounded_and_atomic_shapes_are_not_flagged(self):
+        from pywrkr.assertions import _has_nested_repetition
+
+        for pattern in (r"(?:\d{1,3}\.){3}\d{1,3}", "(a{1,2}){3}", "(ab)+", "(?:foo|bar)+"):
+            with self.subTest(pattern=pattern):
+                self.assertFalse(_has_nested_repetition(pattern))
+
+
+if __name__ == "__main__":
+    unittest.main()
