@@ -377,7 +377,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--follow-redirects` | Follow 3xx responses instead of measuring them (default: off, as in wrk/ab) |
 | | `--threshold` / `--th` | SLO threshold (repeatable), e.g. `--threshold "p95 < 300ms"`. Exit code 2 on breach |
 | | `--tag` | Metadata tag as `key=value` (repeatable), e.g. `--tag environment=staging` |
-| | `--otel-endpoint` | Export metrics to OpenTelemetry collector (OTLP/HTTP) |
+| | `--otel-endpoint` | Export metrics to an OpenTelemetry collector (OTLP/HTTP): its base URL (`/v1/metrics` is added when the URL has no path) or the full metrics endpoint |
 | | `--prom-remote-write` | Push metrics to Prometheus Pushgateway endpoint |
 | | `--export-interval` | Stream metric snapshots every N seconds instead of only at the end (needs an export endpoint) |
 | | `--ssl-verify` / `PYWRKR_SSL_VERIFY` | Enable TLS certificate verification (default: disabled). Recommended when using `--basic-auth` or `--cookie` against `https://` targets |
@@ -1336,6 +1336,10 @@ session state between worker nodes, so a session started on one node is never co
 `--no-read-body` releases the connection instead of reading the response body, for runs where
 nothing looks at it.
 
+By default each response body is read in full and held in memory until the request is done, with
+no size cap, so a target that returns very large bodies makes the client hold them. Use
+`--no-read-body` when nothing needs the body.
+
 ```bash
 pywrkr --no-read-body -c 100 -d 30 http://localhost:8080/large.json
 ```
@@ -1652,6 +1656,11 @@ pywrkr --otel-endpoint http://localhost:4318 \
     -c 100 -d 30 http://localhost:8080/
 ```
 
+`--otel-endpoint` takes the collector's base URL (`http://localhost:4318`), and pywrkr posts to its
+`/v1/metrics` signal path; a URL that already has a path, such as `http://collector:4318/v1/metrics`
+or a gateway's own route, is used as given. If the collector refuses a batch (a wrong path, for
+example, answers 404), the export is reported as failed rather than silently dropped.
+
 Exports gauges and counters: `pywrkr.requests.total`, `pywrkr.errors.total`, `pywrkr.requests_per_sec`, `pywrkr.latency.p50/p95/p99/mean/max`, `pywrkr.transfer_bytes_per_sec`, `pywrkr.duration_sec`.
 
 #### Prometheus Remote Write (Pushgateway)
@@ -1828,7 +1837,10 @@ a worker can hand it a config and make it generate traffic. A master therefore *
 on a non-loopback `--bind` — including the default `0.0.0.0` — without a secret, and a worker
 refuses to connect to a non-loopback master without one; for a local run use `--bind 127.0.0.1` and
 `--worker 127.0.0.1:9220`. The master and every worker must use the same value, and passing it through the
-environment keeps it out of the process table:
+environment keeps it out of the process table. The secret **authenticates** the two ends; it does not
+**encrypt** anything. The channel is plain TCP, so the config (credentials included) and the results
+still cross the network in clear text: run it on a trusted network, or tunnel it (SSH, WireGuard, a
+service mesh). pywrkr has no TLS for this channel.
 
 ```bash
 export PYWRKR_WORKER_SECRET='<shared secret>'  # same value on master and every worker

@@ -28,6 +28,7 @@ from pywrkr.config import (
     StepResult,
     WorkerStats,
     _setup_signal_handlers,
+    loggable_url,
     merge_stats,
 )
 from pywrkr.feeders import DataRuntime
@@ -640,7 +641,7 @@ async def worker(
     batched per-second here but recorded per-request in user_worker /
     scenario_worker. See issue #123 for the consolidation plan.
     """
-    logger.debug("Worker starting (target=%s)", config.url)
+    logger.debug("Worker starting (target=%s)", loggable_url(config.url))
     start_time = time.monotonic()
     interval_start = start_time
     interval_count = 0
@@ -1598,7 +1599,7 @@ async def run_benchmark(
     mode_str = (
         f"{config.num_requests} requests" if config.num_requests else f"{config.duration}s duration"
     )
-    logger.info("Running benchmark: %s", config.url)
+    logger.info("Running benchmark: %s", loggable_url(config.url))
     logger.info(
         "  %d worker groups, %d connections, %s", config.threads, config.connections, mode_str
     )
@@ -1766,7 +1767,7 @@ async def run_user_simulation(
     quiet = getattr(config, "_quiet", False)
 
     if not quiet:
-        logger.info("Running user simulation: %s", config.url)
+        logger.info("Running user simulation: %s", loggable_url(config.url))
         logger.info("  %d virtual users, %s duration", num_users, format_duration(duration))
         logger.info(
             "  Ramp-up: %s, Think time: %s (jitter: %s)",
@@ -2012,7 +2013,7 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
     if config.start_users < 1:
         raise ValueError(f"start_users ({config.start_users}) must be >= 1")
 
-    logger.info("Autofind: ramping load on %s", config.url)
+    logger.info("Autofind: ramping load on %s", loggable_url(config.url))
     logger.info(
         "  Thresholds: max error rate=%s%%, max p95=%ss", config.max_error_rate, config.max_p95
     )

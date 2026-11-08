@@ -12,7 +12,7 @@ import sys
 from collections import defaultdict
 from string import Template
 from typing import TYPE_CHECKING, NamedTuple, Sequence, TextIO
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from pywrkr.compare import (
     EXIT_USAGE,
@@ -28,6 +28,7 @@ from pywrkr.config import (
     StepResult,
     Threshold,
     WorkerStats,
+    loggable_url,
 )
 from pywrkr.traffic_profiles import RateLimiter
 
@@ -42,7 +43,10 @@ RICH_AVAILABLE = importlib.util.find_spec("rich") is not None
 try:
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.sdk.metrics.export import (
+        MetricExportResult,
+        PeriodicExportingMetricReader,
+    )
     from opentelemetry.sdk.resources import Resource
 
     OTEL_AVAILABLE = True
@@ -656,7 +660,7 @@ def _config_snapshot(config: BenchmarkConfig, connections: int) -> dict:
         "duration": config.duration,
         "num_requests": config.num_requests,
         "rate": config.rate,
-        "url_host": urlparse(config.url).netloc or None,
+        "url_host": urlparse(config.url).netloc.rpartition("@")[2] or None,
         # Whether bodies were read. Two runs that differ here are not measuring
         # the same thing -- total_bytes counts only what was read, and the
         # latency of a released response excludes receiving it -- so `compare`
@@ -1254,10 +1258,46 @@ def _resolve_metric_value(
     return val * multiplier
 
 
+#: The OTLP/HTTP path a collector serves metrics on.
+OTEL_METRICS_PATH = "/v1/metrics"
+
+
+def otel_metrics_endpoint(endpoint: str) -> str:
+    """The OTLP/HTTP metrics endpoint for ``--otel-endpoint``.
+
+    The exporter wants the full signal endpoint, path included. Given only a
+    collector's base URL it would post to the collector's root, which answers
+    404, so a URL with no path gets ``/v1/metrics`` appended. A URL that already
+    has a path is used as given.
+
+    Args:
+        endpoint: A collector base URL (``http://collector:4318``) or a full
+            signal endpoint (``http://collector:4318/v1/metrics``).
+
+    Returns:
+        The URL to hand to the OTLP metric exporter.
+
+    Raises:
+        ValueError: The endpoint is not an http(s) URL with a host, or does
+            not parse (``http://[::1:4318``).
+    """
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError(f"--otel-endpoint must be an http:// or https:// URL, got {endpoint!r}")
+    if parsed.path in ("", "/"):
+        return urlunparse(parsed._replace(path=OTEL_METRICS_PATH))
+    return endpoint
+
+
 def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
     """Export benchmark metrics to an OpenTelemetry collector via OTLP/HTTP.
 
-    Returns True on success, False on any error (including missing packages).
+    *endpoint* may be the collector's base URL; see :func:`otel_metrics_endpoint`.
+
+    Returns True when every batch was delivered, False on any error -- missing
+    packages, an exception, or a batch the collector refused (a 404 from a
+    wrong path, for one). The SDK's ``force_flush()`` reports success even for
+    a refused batch, so the exporter's own results are what decide.
     """
     if not OTEL_AVAILABLE:
         _logger.error(
@@ -1266,11 +1306,32 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
         )
         return False
 
+    signal_endpoint = endpoint
     try:
+        # Inside the try: a malformed endpoint is a failed export, not an
+        # exception that aborts the run's finalisation.
+        signal_endpoint = otel_metrics_endpoint(endpoint)
         resource_attrs = {"service.name": "pywrkr"}
         resource_attrs.update(tags)
         resource = Resource.create(resource_attrs)
-        exporter = OTLPMetricExporter(endpoint=endpoint)
+        exporter = OTLPMetricExporter(endpoint=signal_endpoint)
+
+        outcomes: list[object] = []
+        deliver = exporter.export
+
+        def recording_export(*args: object, **kwargs: object) -> object:
+            # The SDK's reader logs and swallows an exception from export(), so
+            # record it here or a raising exporter would read as success.
+            try:
+                outcome = deliver(*args, **kwargs)
+            except Exception:
+                outcomes.append(MetricExportResult.FAILURE)
+                raise
+            outcomes.append(outcome)
+            return outcome
+
+        exporter.export = recording_export  # type: ignore[method-assign]
+
         reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
         provider = MeterProvider(resource=resource, metric_readers=[reader])
         meter = provider.get_meter("pywrkr")
@@ -1291,10 +1352,25 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
 
         provider.force_flush()
         provider.shutdown()
-        return True
     except Exception as e:
-        _logger.error("OTel export failed (endpoint=%s): %s", endpoint, e)
+        _logger.error("OTel export failed (endpoint=%s): %s", signal_endpoint, e)
         return False
+
+    if not outcomes:
+        _logger.error("OTel export failed: no metric batch was exported to %s", signal_endpoint)
+        return False
+    failed = sum(1 for outcome in outcomes if outcome is not MetricExportResult.SUCCESS)
+    if failed:
+        _logger.error(
+            "OTel export failed: %d of %d metric batches to %s were not delivered "
+            "(see the exporter's error above). Check that the endpoint is an "
+            "OTLP/HTTP collector that is reachable.",
+            failed,
+            len(outcomes),
+            signal_endpoint,
+        )
+        return False
+    return True
 
 
 def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
@@ -1881,7 +1957,8 @@ def print_multi_url_summary(results: "list[MultiUrlResult]", file: TextIO | None
 
     for i, r in enumerate(results, 1):
         rps = r.stats.total_requests / r.duration if r.duration > 0 else 0
-        url_display = r.url if len(r.url) <= 40 else r.url[:37] + "..."
+        shown = loggable_url(r.url)
+        url_display = shown if len(shown) <= 40 else shown[:37] + "..."
 
         # Compute percentiles
         p50 = p95 = p99 = 0.0
