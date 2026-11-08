@@ -25,13 +25,11 @@ from pywrkr.user_regex import (
     SCAN_MAX,
     Undecided,
     bounded_search,
-    cut_sensitivity,
     has_nested_repetition,
 )
 
-# Kept under their earlier private names for callers and tests.
+# Kept under its earlier private name for callers and tests.
 _has_nested_repetition = has_nested_repetition
-_cut_sensitivity = cut_sensitivity
 
 __all__ = [
     "ANY_VALUE",

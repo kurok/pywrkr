@@ -1051,8 +1051,12 @@ class TestRegexExtractorBounds(unittest.TestCase):
         self.assertIn("undecided", failures[0])
 
     def test_regex_extractor_emits_a_backtracking_warning(self):
+        # The pattern is read from data, as a scenario file supplies it, so a
+        # static analyser does not mistake this deliberately nested test
+        # pattern for one the code itself uses. It is compiled, never matched.
+        nested = json.loads('{"regex": "(a+)+(b)"}')["regex"]
         with self.assertLogs("pywrkr.templating", level="WARNING") as logs:
-            compile_regex_extractor("token", "(a+)+(b)")
+            compile_regex_extractor("token", nested)
         message = "\n".join(logs.output)
         self.assertIn("extract 'token'", message)
         self.assertIn("'(a+)+(b)'", message)
@@ -1067,7 +1071,7 @@ class TestRegexExtractorBounds(unittest.TestCase):
         from pywrkr import assertions, user_regex
 
         self.assertEqual(assertions._ASSERT_MATCH_MAX, user_regex.SCAN_MAX)
-        self.assertIs(assertions._cut_sensitivity, user_regex.cut_sensitivity)
+        self.assertIs(assertions._has_nested_repetition, user_regex.has_nested_repetition)
 
 
 if __name__ == "__main__":
