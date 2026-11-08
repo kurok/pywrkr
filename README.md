@@ -631,11 +631,15 @@ Non-string JSON values keep their JSON spelling (`true`, not `True`); objects an
 re-serialized compactly, so a whole sub-document can be carried between steps.
 
 A `regex` rule is matched against text the server under test chooses, so it gets the same bound as
-the [assertion regexes](#scripted-scenarios): only the first 8,192 characters are searched, a pattern
-whose capture could depend on where a longer body was cut (a match running up to the cut, or a
-lookahead that reads to the end) fails as *undecided* rather than yielding a truncated value, and a
-nested-repetition pattern such as `(a+)+` logs a warning when the scenario loads. Use a `json` rule
-for values deep in a large JSON response.
+the [assertion regexes](#scripted-scenarios): only the first 8,192 characters are searched, and a
+nested-repetition pattern such as `(a+)+` logs a warning when the scenario loads. On a longer body
+the rule fails as *undecided* rather than extracting a value that could be wrong: when the pattern
+uses a lookahead that reads to the end, a backreference, conditional, atomic group, possessive repeat
+or lookahead inside a lookbehind (as for assertions), and when the match found in the first 8,192
+characters is not also the match found in the first 16,384, which catches a capture cut short at the
+window's end or a greedy one such as `src="(.*)"` that backtracked onto an earlier match. That check
+is bounded: a greedy match spanning more than 16 KiB can still differ from the whole-body one. Use a
+`json` rule for values deep in a large JSON response.
 
 **Where `${var}` works:** the step `path`, header names and values, and the `body` — including
 inside nested JSON object/array bodies. Values are inserted verbatim, so URL-encode anything that

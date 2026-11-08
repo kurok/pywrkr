@@ -209,15 +209,22 @@ def bounded_search(
         pattern: The compiled user pattern.
         text: The server-supplied text.
         whole_match: The caller uses the matched text (an extract rule reads
-            a capture group), not just whether there is a match. A match that
-            runs up to the cut may then be a truncated value, so it is
-            undecided too.
+            a capture group), not just whether there is a match. Then a match
+            found in the window must also be the match found in twice the
+            window -- same span, same groups -- or it is undecided. That
+            catches a capture cut short at the window's end
+            (``token=([a-z]+)``) and a greedy one that read past it and
+            backtracked onto an earlier match (``src="(.*)"`` on a long
+            line). It is a bounded check, not a proof: a greedy match
+            spanning more than twice the window can still differ from the
+            whole-text one.
 
     Returns:
-        The match, or None, when the answer is the same as for the whole text
-        within the scanned window; :data:`UNDECIDED` when the text was cut and
-        the answer could depend on where (see :func:`cut_sensitivity`). A match
-        that starts past the window is not found.
+        The match, or None; :data:`UNDECIDED` when the text was cut and the
+        answer could depend on where (see :func:`cut_sensitivity`). A match
+        that starts past the window is not found. Compare the result with
+        ``isinstance(result, Undecided)``: :data:`UNDECIDED` has no truth
+        value, so ``if not result`` raises rather than mistaking it for a miss.
     """
     if len(text) <= SCAN_MAX:
         return pattern.search(text)
@@ -232,6 +239,8 @@ def bounded_search(
     # just before a final newline, which the cut text may end with.
     if end_dependent and match.end() >= len(prefix) - 1:
         return UNDECIDED
-    if whole_match and match.end() >= len(prefix):
-        return UNDECIDED
+    if whole_match:
+        wider = pattern.search(text[: 2 * SCAN_MAX])
+        if wider is None or wider.span() != match.span() or wider.groups() != match.groups():
+            return UNDECIDED
     return match

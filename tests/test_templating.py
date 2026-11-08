@@ -1042,6 +1042,32 @@ class TestRegexExtractorBounds(unittest.TestCase):
         self.assertEqual(values, {})
         self.assertIn("undecided", failures[0])
 
+    def test_a_greedy_capture_that_backtracked_inside_the_window_is_undecided(self):
+        """The engine read past the cut and settled on a shorter value inside the window."""
+        from pywrkr.user_regex import SCAN_MAX
+
+        cases = [
+            (
+                r'src="(.*)"',
+                " " * 7000 + '<img src="a.png" alt="x">' + " " * 2000 + '<b class="z">',
+            ),
+            (r"a(\d+)5", " " * 8000 + "a15" + "1" * 1000 + "5"),
+            (r"(\w+)(?:=.{300}|;)", " " * 7900 + "foo=" + "x" * 96 + " bar;" + "x" * 1000),
+        ]
+        for expr, text in cases:
+            with self.subTest(expr=expr):
+                self.assertGreater(len(text), SCAN_MAX)
+                values, failures = self._extract(expr, text.encode())
+                self.assertEqual(values, {})
+                self.assertIn("undecided", failures[0])
+
+    def test_a_terminated_capture_ending_at_the_cut_is_decided(self):
+        from pywrkr.user_regex import SCAN_MAX
+
+        body = (" " * (SCAN_MAX - 5) + "id=1;" + "x" * 100).encode()
+        values, failures = self._extract(r"id=(\d+);", body)
+        self.assertEqual((values, failures), ({"v": "1"}, []))
+
     def test_a_cut_dependent_pattern_is_undecided(self):
         from pywrkr.user_regex import SCAN_MAX
 
