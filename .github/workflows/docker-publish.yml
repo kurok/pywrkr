@@ -21,21 +21,60 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+# Read-only by default. The write scopes are granted only to the job that
+# pushes, and that job never runs for a pull request, so a pull request's
+# Dockerfile is never built while a write-scoped token is in reach -- whatever
+# the repository's fork-token setting says (#308).
 permissions:
   contents: read
-  packages: write
-  id-token: write
-  attestations: write
 
 jobs:
-  build-and-push:
+  # Pull requests: build the image and check it, with a read-only token.
+  build-pr:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=
+
+      - name: Build Docker image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: The image does not run as root and has a health check
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: .github/scripts/check-image.sh "$(echo "$IMAGE_TAGS" | head -n1)"
+
+  # main and releases: build, push and attest.
+  build-and-push:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -58,45 +97,19 @@ jobs:
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7
         with:
           context: .
-          # Build on PRs to validate the image; only push on main/release.
-          push: ${{ github.event_name != 'pull_request' }}
-          # Loaded into the local daemon as well, so the checks below can run
-          # against the image that was actually built -- on a pull request
-          # nothing is pushed, so there would otherwise be nothing to inspect.
+          push: true
+          # Loaded into the local daemon as well, so the checks below run
+          # against the image that was actually built.
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      # A Dockerfile can say USER and still ship an image that runs as root if
-      # a later layer changes it back, so this asks the built image rather than
-      # reading the source.
       - name: The image does not run as root and has a health check
-        run: |
-          set -euo pipefail
-          image="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
-          echo "inspecting $image"
-
-          uid="$(docker run --rm --entrypoint id "$image" -u)"
-          if [ "$uid" = "0" ]; then
-            echo "::error::the image runs as root (uid 0)"
-            exit 1
-          fi
-          echo "runs as uid $uid"
-
-          health="$(docker inspect --format '{{json .Config.Healthcheck}}' "$image")"
-          if [ "$health" = "null" ]; then
-            echo "::error::the image has no HEALTHCHECK"
-            exit 1
-          fi
-          echo "healthcheck: $health"
-
-          # And the health command has to succeed, or the container is
-          # permanently unhealthy. pywrkr has no --version, which is the
-          # obvious thing to reach for here.
-          docker run --rm "$image" --help > /dev/null
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: .github/scripts/check-image.sh "$(echo "$IMAGE_TAGS" | head -n1)"
 
       - name: Attest build provenance
-        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@b3e506e8c389afc651c5bacf2b8f2a1ea0557215  # v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}

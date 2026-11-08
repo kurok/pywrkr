@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `--worker-wait-timeout SECONDS` (or `PYWRKR_WORKER_WAIT_TIMEOUT`, or `run_master(..., worker_wait_timeout=)`) sets how long a distributed master waits for its `--expect-workers` workers to connect before giving up and exiting 1. The default stays 300 s; the timeout message now names the window it waited. (#322)
 
+### CI
+
+- Pull-request-triggered workflows no longer hold write-scoped tokens. `docker-publish` builds and checks the image on a pull request in a read-only `build-pr` job; only the `build-and-push` job, which never runs for a pull request, gets `packages`, `id-token` and `attestations` write. `sanitize-pr-description` is read-only by default and edits a description only for pull requests from this repository's own branches. The posture is in `SECURITY.md` and enforced by `tests/test_workflow_permissions.py`. (#308)
+
 ### Changed
 
 - An `extract` rule of source `regex` now searches only the first 8,192 characters of the response text, so a value that appears only further into a large body is no longer extracted, and on a body longer than that a pattern with a negative lookahead, backreference, conditional, atomic group or possessive repeat fails as undecided; use a `json` rule there. See **Security**. (#314)

@@ -46,6 +46,7 @@ Alternatively, contact the maintainers directly through GitHub.
 
 - **CI scanning**: CodeQL runs on every push and weekly, covering Python and GitHub Actions
 - **Least-privilege CI**: All workflows use explicit, minimal `GITHUB_TOKEN` permissions
+- **Pull requests get read-only tokens**: every workflow defaults to read-only permissions. A job that can run for a pull request carries no write scope, unless it only runs for branches of this repository (`sanitize-pr-description`). The image build on a pull request runs in its own read-only job, and the job that pushes and attests to GHCR runs only on `main` and releases. This is stated in the workflows themselves, not left to the repository's fork-token setting, and `tests/test_workflow_permissions.py` enforces it. No workflow uses `pull_request_target`
 - **Minimal dependencies**: Only `aiohttp` is required at runtime
 - **No secrets in code**: pywrkr does not store or transmit credentials; `--basic-auth` values are only held in memory during the test run
 - **Trusted publishing**: PyPI releases use OpenID Connect trusted publishing, no long-lived API tokens
