@@ -127,7 +127,21 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' }}
+
+      # The optional extra tag is a step of its own rather than another entry in
+      # the list above: metadata-action evaluates `enable=` with its own
+      # expression parser, which does not understand GitHub's `${{ }}`
+      # expressions. A plain `if:` on the step does.
+      - name: Extract metadata (the extra tag, when one was given)
+        id: meta-extra
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.DOCKERHUB_IMAGE }}
+          tags: |
+            type=raw,value=${{ inputs.tag }}
 
       - name: Build and push Docker image
         id: push
@@ -138,7 +152,9 @@ jobs:
           # Loaded into the local daemon as well, so the checks below run
           # against the image that was actually built.
           load: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ steps.meta-extra.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: The image does not run as root and has a health check
