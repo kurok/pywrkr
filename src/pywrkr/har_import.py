@@ -364,8 +364,6 @@ def _domain_allowed(parsed: ParseResult, allowed: list[tuple[str, int | None]]) 
     host_is_ip = _is_ip_literal(host)
     port = _effective_port(parsed)
     for want_host, want_port in allowed:
-        if not want_host:
-            continue
         # Subdomain matching is for names: an IP address only matches itself,
         # so --domain 0.0.1 does not take in 127.0.0.1.
         if host != want_host and (host_is_ip or not host.endswith("." + want_host)):
@@ -382,7 +380,9 @@ def filter_entries(
     """Apply filters to HAR entries based on HarImportConfig.
 
     Raises:
-        ValueError: If any include or exclude pattern is not a valid regex.
+        ValueError: If any include or exclude pattern is not a valid regex, or
+            an ``allowed_domains`` value is empty, has no host, or has a port
+            that is not a number in 0-65535.
     """
     # Compile user-supplied patterns once up front so an invalid regex fails
     # before we touch any entries, and so each URL is matched against
@@ -517,8 +517,9 @@ def har_to_scenario(
     # http/https mismatch on the same host is caught too. Refuse to produce that
     # silent-wrong-result scenario; surface the mismatch so the user can
     # disambiguate (e.g. --domain filtering).
-    # Keyed on scheme, lower-cased host and effective port, so example.com and
-    # Example.com:80 are one origin -- as --domain treats them.
+    # Keyed on scheme, canonical host and effective port, so example.com,
+    # Example.com.:80 and their IP spellings are one origin -- as --domain
+    # treats them.
     origins = []
     seen_origins: set[tuple[str, str, str, int | str | None]] = set()
     for entry in entries:
@@ -531,7 +532,12 @@ def har_to_scenario(
         port: int | str | None = _effective_port(parsed)
         if port is None and parsed.netloc.rpartition(":")[2] not in ("", parsed.netloc):
             port = parsed.netloc
-        key = (parsed.scheme, parsed.netloc.rpartition("@")[0], parsed.hostname or "", port)
+        key = (
+            parsed.scheme,
+            parsed.netloc.rpartition("@")[0],
+            _canon_host(parsed.hostname or ""),
+            port,
+        )
         if key not in seen_origins:
             seen_origins.add(key)
             origins.append(f"{parsed.scheme}://{parsed.netloc}")

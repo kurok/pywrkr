@@ -1282,6 +1282,21 @@ def test_domain_filter_compares_canonical_hosts(domain, url):
     assert [e.url for e in kept] == [url]
 
 
+@pytest.mark.parametrize(
+    "urls",
+    [
+        ["http://example.com/a", "http://example.com./b"],
+        ["http://[::1]:8080/a", "http://[0:0:0:0:0:0:0:1]:8080/b"],
+    ],
+)
+def test_host_spellings_the_filter_merges_are_one_origin(urls):
+    domain = "example.com" if "example" in urls[0] else "::1"
+    kept = filter_entries([_entry(u) for u in urls], HarImportConfig(allowed_domains=[domain]))
+    assert len(kept) == 2
+    scenario = har_to_scenario(kept, HarImportConfig())
+    assert len(scenario["steps"]) == 2
+
+
 def test_default_port_spelled_out_is_one_origin():
     """--domain example.com:80 keeps both spellings; the scenario must accept them."""
     entries = [_entry("http://example.com/a"), _entry("http://Example.com:80/b")]
