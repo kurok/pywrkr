@@ -52,6 +52,10 @@ logger = logging.getLogger(__name__)
 #: ``\s+$`` is quadratic. Same bound as ``har_import._MATCH_URL_MAX`` on the URL
 #: path. Large JSON is better checked with ``assert_json``.
 _ASSERT_MATCH_MAX = 8192
+#: Bytes decoded when only the regex reads the body. A UTF-8 character is at
+#: most 4 bytes, so this always decodes to more than ``_ASSERT_MATCH_MAX``
+#: characters and a cut is still detected.
+_ASSERT_DECODE_MAX_BYTES = 4 * (_ASSERT_MATCH_MAX + 1)
 
 _BACKTRACKING_WARNING = (
     "%s %s: pattern %r repeats an unbounded repeat. Patterns with "
@@ -159,7 +163,7 @@ def _has_nested_repetition(pattern: str) -> bool:
     r"""Whether a regex nests an unbounded repeat inside a repeat, like ``(a+)+``.
 
     That shape is what drives catastrophic backtracking: the outer repeat must
-    be unbounded or large (``{10,}`` and up, as in ``(.*a){20}``) and the inner
+    repeat more than once (``+``, ``*``, or ``{n}`` with n >= 2, as in ``(.*,){3}``) and the inner
     one unbounded. Bounded shapes such as ``(?:\d{1,3}\.){3}`` are not
     flagged, nor is a repeat of an atomic group or possessive repeat, which is
     never re-split (``(?>a+)+``, ``(a++)+``); a nested pair *inside* one still
@@ -190,7 +194,7 @@ def _has_nested_repetition(pattern: str) -> bool:
                 unbounded = hi == _sre_parse.MAXREPEAT
                 if unbounded and outer_repeats:
                     return True
-                if walk(sub, outer_repeats or unbounded or hi >= 10):
+                if walk(sub, outer_repeats or unbounded or hi >= 2):
                     return True
             else:
                 for child in _subpatterns(av):
@@ -211,13 +215,15 @@ def _cut_sensitivity(pattern: str) -> tuple[bool, bool]:
     Returns:
         ``(lookahead_dependent, end_dependent)``.
 
-        *lookahead_dependent*: a lookahead can read past the match up to the
-        cut, so its answer on the cut text says nothing about the whole one --
-        a negative lookahead (``(?!.*ERROR)``), or a positive one that tests
-        for the end or a word boundary (``(?=[^E]*\Z)``). Lookbehinds read
-        only text before the match and do not count.
+        *lookahead_dependent*: the answer on the cut text says nothing about
+        the whole one, wherever the match ends. A lookahead can read past the
+        match up to the cut -- a negative one (``(?!.*ERROR)``), or a positive
+        one testing the end or a word boundary (``(?=[^E]*\Z)``). A
+        backreference, conditional, atomic group or possessive repeat can
+        settle on a different reading of the cut text. Lookbehinds read only
+        text before the match and do not count.
 
-        *end_dependent*: an end anchor or word boundary (``$``, ``\Z``, ````)
+        *end_dependent*: an end anchor or word boundary (``$``, ``\Z``, ``\b``)
         outside such a lookahead can match at the cut, where the whole text
         continues.
     """
@@ -246,9 +252,22 @@ def _cut_sensitivity(pattern: str) -> tuple[bool, bool]:
                 return True
         return False
 
+    # Constructs that settle on what they first read and never give it back
+    # (atomic groups, possessive repeats), or that test what an earlier part
+    # captured (backreferences, conditionals). Cut short, they can settle on
+    # a different reading and so reach a different answer than on the whole
+    # text, wherever the match ends.
+    committing = {
+        getattr(_sre_parse, name)
+        for name in ("GROUPREF", "GROUPREF_EXISTS", "ATOMIC_GROUP", "POSSESSIVE_REPEAT")
+        if hasattr(_sre_parse, name)
+    }
+
     def walk(items: Any) -> None:
         nonlocal lookahead_dependent
         for op, av in items:
+            if op in committing:
+                lookahead_dependent = True
             if op in (_sre_parse.ASSERT, _sre_parse.ASSERT_NOT):
                 direction, sub = av
                 if direction == 1 and (op == _sre_parse.ASSERT_NOT or has_end(sub)):
@@ -509,13 +528,11 @@ def evaluate_assertions(
         if (
             rules.body_contains is None
             and not rules.json_rules
-            and len(body) > 4 * (_ASSERT_MATCH_MAX + 1)
+            and len(body) > _ASSERT_DECODE_MAX_BYTES
         ):
             # Only the regex looks at the body and it scans a bounded prefix,
-            # so decoding a large body in full on the event loop is waste. A
-            # UTF-8 character is at most 4 bytes, so this prefix still decodes
-            # to more than the scan limit and the cut is still detected.
-            body = body[: 4 * (_ASSERT_MATCH_MAX + 1)]
+            # so decoding a large body in full on the event loop is waste.
+            body = body[:_ASSERT_DECODE_MAX_BYTES]
         text = body.decode("utf-8", errors="replace")
 
     if rules.body_contains is not None:

@@ -887,6 +887,46 @@ class TestAssertionRegexBounds(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("scan limit", failures[0].key)
 
+    def test_backreferences_and_conditionals_are_undecided_on_a_cut_body(self):
+        """They settle on what the cut text holds and need not match the whole."""
+        from pywrkr.assertions import _ASSERT_MATCH_MAX as n
+
+        pad = '{"x":"' + "p" * (n - 15) + '","id":12347'
+        cases = [
+            (r"(?=\w+,(\w+))\1", " " * (n - 4) + "ac,a" + "b"),
+            (r"(?=\w+(,)?)(?(1)Z|a)", " " * (n - 1) + "a" + "b,"),
+            (r"(?=(\w+))\1(?<=a)", " " * (n - 1) + "a" + "b"),
+            (r"(?=(?=(\w+))\1(?<=a))", " " * (n - 100) + "x" * 99 + "a" + "b"),
+            (r'"id":(?=(\d+))\1(?<=7)', pad[:n] + "8}"),
+        ]
+        for pattern, text in cases:
+            with self.subTest(pattern=pattern):
+                failures = self._evaluate({"assert_body_regex": pattern}, body=text.encode())
+                self.assertEqual(len(failures), 1)
+                self.assertIn("scan limit", failures[0].key)
+
+    @unittest.skipIf(sys.version_info < (3, 11), "atomic groups and possessive repeats are 3.11+")
+    def test_atomic_and_possessive_constructs_are_undecided_on_a_cut_body(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX as n
+
+        cases = [
+            (r"(?>\w+)(?<=a)", " " * (n - 1) + "a" + "b"),
+            (r"\w++(?<=a)", " " * (n - 1) + "a" + "b"),
+            (r"(?=(?>\w+)(?<=a))", " " * (n - 100) + "x" * 99 + "a" + "b"),
+        ]
+        for pattern, text in cases:
+            with self.subTest(pattern=pattern):
+                failures = self._evaluate({"assert_body_regex": pattern}, body=text.encode())
+                self.assertEqual(len(failures), 1)
+                self.assertIn("scan limit", failures[0].key)
+
+    def test_small_bounded_outer_repeats_are_flagged(self):
+        from pywrkr.assertions import _has_nested_repetition
+
+        for pattern in (r"(\w+,){3}", "(.*a){9}"):
+            with self.subTest(pattern=pattern):
+                self.assertTrue(_has_nested_repetition(pattern))
+
     def test_a_negative_lookbehind_does_not_make_a_long_body_undecided(self):
         """A lookbehind reads only text before the match, never the cut."""
         self.assertEqual(

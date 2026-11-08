@@ -540,8 +540,9 @@ Assertion regexes run against text the server under test chooses, on the event l
 `re` has no timeout. So `assert_body_regex` and the `assert_header` regex form search only the first
 8,192 characters of that text (the same bound `har-import` puts on URLs), and a match further in does
 not count. When the text is longer and the answer could depend on where it was cut, such as a
-lookahead that reads to the end like `(?!.*ERROR)` or `(?=[^E]*\Z)`, or an end anchor matching
-right at the cut, the assertion fails as *undecided* rather than passing. A pattern that nests an unbounded repeat inside a repeat,
+lookahead that reads to the end like `(?!.*ERROR)` or `(?=[^E]*\Z)`; a backreference, conditional,
+atomic group or possessive repeat; or an end anchor or word boundary in a match running up to the
+cut, the assertion fails as *undecided* rather than passing. A pattern that nests an unbounded repeat inside a repeat,
 the `(a+)+` shape behind catastrophic backtracking, logs a warning when the scenario loads. That
 check is a heuristic and misses some shapes, such as overlapping alternation like `(a|ab)*` and
 adjacent repeats like `\s*\s*$`. The limit bounds linear and quadratic patterns; cubic or
