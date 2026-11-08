@@ -1882,7 +1882,9 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
                 args.port,
                 args.expect_workers,
                 worker_secret=worker_secret,
-                worker_wait_timeout=args.worker_wait_timeout,
+                # Resolved during validation; a hand-built Namespace may lack it.
+                worker_wait_timeout=getattr(args, "worker_wait_timeout", None)
+                or DEFAULT_WORKER_WAIT_TIMEOUT,
             )
         )
         if result:
