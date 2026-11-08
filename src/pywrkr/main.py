@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import sys
+from urllib.parse import urlparse
 
 from pywrkr import ci
 from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
@@ -1693,6 +1694,15 @@ def _apply_data_options(
         parser.error(str(e))
 
 
+_CREDENTIAL_HEADER_WORDS = ("auth", "token", "api-key", "apikey", "api_key", "secret", "cookie")
+
+
+def _is_credential_header(name: str) -> bool:
+    """Whether a request header name usually carries a credential."""
+    lowered = name.strip().lower()
+    return any(word in lowered for word in _CREDENTIAL_HEADER_WORDS)
+
+
 def _parse_and_validate_args(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -1743,13 +1753,35 @@ def _parse_and_validate_args(
         ca_bundle=args.ca_bundle or env_ssl.ca_bundle,
     )
 
-    credentials_in_use = bool(args.basic_auth or args.cookies)
-    url_is_https = (args.url or "").startswith("https://")
-    if credentials_in_use and url_is_https and not ssl_config.verify:
+    # Every target this run will reach: the URL (or scenario base_url) and
+    # each --url-file entry.
+    targets = [args.url] if args.url else []
+    targets += [entry.url for entry in getattr(args, "url_entries", None) or []]
+    schemes = {urlparse(t).scheme.lower() for t in targets}
+    tls_unverified = bool(schemes & {"https", "wss"}) and not ssl_config.verify
+
+    header_names = [name for name, _ in args.headers]
+    if scenario is not None:
+        header_names += [name for step in scenario.steps for name in (step.headers or {})]
+    credentials_in_use = bool(
+        args.basic_auth
+        or args.cookies
+        or any(_is_credential_header(name) for name in header_names)
+        or any(urlparse(t).username for t in targets)
+    )
+    if credentials_in_use and tls_unverified:
         print(
             "WARNING: SSL verification is disabled while credentials are in use. "
             "Your credentials may be exposed to a man-in-the-middle attack. "
-            "Use --ssl-verify to enable certificate validation.",
+            "Use --ssl-verify, or PYWRKR_SSL_VERIFY=1, to enable certificate validation.",
+            file=sys.stderr,
+        )
+    elif tls_unverified:
+        # Off by default for compatibility (#309); say so once, so an https://
+        # run is not mistaken for one that checked who it was talking to.
+        print(
+            "NOTE: the target's TLS certificate is not verified (the default). "
+            "Use --ssl-verify, or PYWRKR_SSL_VERIFY=1, to verify it.",
             file=sys.stderr,
         )
 
