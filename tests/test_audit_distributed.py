@@ -6,9 +6,12 @@ FAIL on the pre-fix code and PASS after the fix.
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import os
 import socket
+import struct
 import time
 import unittest
 from io import StringIO
@@ -1160,10 +1163,6 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
                     check_worker_target(pywrkr.BenchmarkConfig(url=url, _quiet=True))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ---------------------------------------------------------------------------
 # #322: the master's worker-wait window is configurable
 # ---------------------------------------------------------------------------
@@ -1194,21 +1193,85 @@ class TestWorkerWaitTimeout(unittest.IsolatedAsyncioTestCase):
             port_holder[0] = server.sockets[0].getsockname()[1]
             return server
 
-        async def _short_lived_worker():
+        async def _short_lived_worker(reset: bool):
             _, writer = await asyncio.open_connection("127.0.0.1", await _bound_port(port_holder))
+            # Wait until the master has admitted this worker, then die.
+            while "(1/2)" not in "\n".join(logs.output):
+                await asyncio.sleep(0.01)
+            if reset:
+                # A killed process: RST instead of FIN.
+                sock = writer.get_extra_info("socket")
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            writer.close()
+            with contextlib.suppress(OSError, ConnectionError):
+                await writer.wait_closed()
+
+        for reset in (False, True):
+            with self.subTest(reset=reset):
+                with patch("pywrkr.distributed.asyncio.start_server", side_effect=_patched_start):
+                    with self.assertLogs("pywrkr.distributed", level="INFO") as logs:
+                        worker = asyncio.create_task(_short_lived_worker(reset))
+                        result = await asyncio.wait_for(
+                            run_master(
+                                config, "127.0.0.1", 0, expect_workers=2, worker_wait_timeout=2
+                            ),
+                            timeout=15,
+                        )
+                        _ = await worker
+                # A reset connection used to escape the cleanup as a traceback.
+                self.assertIsNone(result)
+                self.assertIn("(1/2 connected)", "\n".join(logs.output))
+                port_holder[0] = 0
+
+    async def test_a_worker_authenticating_past_the_window_is_not_admitted(self):
+        """A slow HMAC exchange that ends after the window is closed, not admitted."""
+        config = pywrkr.BenchmarkConfig(url="http://example.com", duration=1, _quiet=True)
+        port_holder = [0]
+        orig_start = asyncio.start_server
+        secret = "s3cret"
+
+        async def _patched_start(cb, host, port):
+            server = await orig_start(cb, host, 0)
+            port_holder[0] = server.sockets[0].getsockname()[1]
+            return server
+
+        async def _slow_worker():
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", await _bound_port(port_holder)
+            )
+            challenge = await _recv_msg(reader)
+            await asyncio.sleep(0.8)  # past the 0.3 s window, inside the auth timeout
+            proof = hmac.new(
+                secret.encode(), bytes.fromhex(challenge["nonce"]), digestmod=hashlib.sha256
+            ).hexdigest()
+            await _send_msg(writer, {"type": "auth", "hmac": proof})
+            # The master may still prove itself; after that it closes us.
+            with contextlib.suppress(OSError, ConnectionError, asyncio.IncompleteReadError):
+                while await reader.read(65536):
+                    pass
             writer.close()
             with contextlib.suppress(OSError, ConnectionError):
                 await writer.wait_closed()
 
         with patch("pywrkr.distributed.asyncio.start_server", side_effect=_patched_start):
-            worker = asyncio.create_task(_short_lived_worker())
-            with self.assertLogs("pywrkr.distributed", level="ERROR"):
+            with self.assertLogs("pywrkr.distributed", level="INFO") as logs:
+                worker = asyncio.create_task(_slow_worker())
                 result = await asyncio.wait_for(
-                    run_master(config, "127.0.0.1", 0, expect_workers=2, worker_wait_timeout=0.5),
+                    run_master(
+                        config,
+                        "127.0.0.1",
+                        0,
+                        expect_workers=1,
+                        worker_secret=secret,
+                        worker_wait_timeout=0.3,
+                    ),
                     timeout=10,
                 )
-            _ = await worker
+                _ = await asyncio.wait_for(worker, timeout=10)
         self.assertIsNone(result)
+        output = "\n".join(logs.output)
+        self.assertIn("after the wait window; closing it", output)
+        self.assertNotIn("(1/1)", output)
 
     async def test_an_invalid_timeout_is_refused_before_binding(self):
         config = pywrkr.BenchmarkConfig(url="http://example.com", duration=1, _quiet=True)
@@ -1269,5 +1332,15 @@ class TestWorkerWaitTimeoutCli(unittest.TestCase):
                     self._parse(argv, env)
 
     def test_only_for_the_master(self):
-        with patch("sys.stderr", new_callable=StringIO), self.assertRaises(SystemExit):
-            self._parse(["--worker-wait-timeout", "5", "http://example.com/"])
+        for argv in (
+            ["--worker-wait-timeout", "5", "http://example.com/"],
+            ["--worker", "127.0.0.1:1", "--worker-wait-timeout", "5"],
+        ):
+            with self.subTest(argv=argv), patch("sys.stderr", new_callable=StringIO):
+                with self.assertRaises(SystemExit) as ctx:
+                    self._parse(argv)
+                self.assertEqual(ctx.exception.code, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

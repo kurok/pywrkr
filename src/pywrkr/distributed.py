@@ -1117,7 +1117,9 @@ async def run_master(
 
     The master waits up to *worker_wait_timeout* seconds for all
     *expect_workers* workers to connect and authenticate; if they have not by
-    then, it logs the window it waited and returns None.
+    then, it logs the window it waited, closes the workers that did connect,
+    and returns None. A worker still authenticating then is closed, not
+    admitted.
 
     If *worker_secret* is set, each connecting worker must complete an
     HMAC-SHA256 challenge-response before it is admitted.  Workers that fail
@@ -1229,6 +1231,8 @@ async def run_master(
                 return False
         return True
 
+    wait_over = asyncio.Event()
+
     async def handle_worker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         # Reject any connection beyond expect_workers so a late/stale/retrying
         # peer that lands in the race window cannot linger in the connection
@@ -1242,6 +1246,16 @@ async def run_master(
             if not await _authenticate_worker(reader, writer):
                 writer.close()
                 return
+        if wait_over.is_set():
+            # The wait window closed while this worker was authenticating: the
+            # run has been given up, so do not admit it and leave it waiting
+            # for a config that never comes.
+            logger.warning(
+                "  Worker %s finished authenticating after the wait window; closing it",
+                writer.get_extra_info("peername"),
+            )
+            writer.close()
+            return
         addr = writer.get_extra_info("peername")
         worker_connections.append((reader, writer))
         logger.info(
@@ -1264,16 +1278,21 @@ async def run_master(
         try:
             await asyncio.wait_for(ready_event.wait(), timeout=worker_wait_timeout)
         except asyncio.TimeoutError:
+            wait_over.set()
             logger.error(
                 "Master: timed out after %ss waiting for workers (%s/%s connected); "
-                "--worker-wait-timeout or PYWRKR_WORKER_WAIT_TIMEOUT sets the window",
+                "the window is set by --worker-wait-timeout, PYWRKR_WORKER_WAIT_TIMEOUT "
+                "or run_master(worker_wait_timeout=)",
                 f"{worker_wait_timeout:g}",
                 len(worker_connections),
                 expect_workers,
             )
             for _, w in worker_connections:
                 w.close()
-                await w.wait_closed()
+                # A worker that died may have reset the connection already;
+                # closing it must not turn a clean exit 1 into a traceback.
+                with contextlib.suppress(OSError, ConnectionError):
+                    await w.wait_closed()
             return None
 
         # Snapshot the first expect_workers connections and stop accepting more

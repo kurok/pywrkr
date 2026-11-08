@@ -1784,7 +1784,7 @@ pywrkr --worker master-host:9220
 | `--worker HOST:PORT` | Run as distributed worker, connecting to master at HOST:PORT. A non-loopback master requires `--worker-secret` |
 | `--worker-secret SECRET` | Shared secret authenticating the master/worker channel (HMAC-SHA256). Also read from `PYWRKR_WORKER_SECRET` |
 | `--expect-workers` | Number of workers the master should wait for before starting |
-| `--worker-wait-timeout SECONDS` | How long the master waits for all `--expect-workers` workers to connect before giving up and exiting 1 (default: `300`). Also read from `PYWRKR_WORKER_WAIT_TIMEOUT` |
+| `--worker-wait-timeout SECONDS` | How long the master waits for all `--expect-workers` workers to connect and authenticate before giving up and exiting 1 (default: `300`). Also read from `PYWRKR_WORKER_WAIT_TIMEOUT` |
 | `--bind` | Master bind address (default: `0.0.0.0`). Any non-loopback address requires `--worker-secret` |
 | `--port` | Master listen port (default: `9220`) |
 | `--allow-partial` | Accept a run in which some workers never reported (default: off — see below) |

@@ -539,7 +539,8 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
         metavar="SECONDS",
         help=(
             "Distributed master: how long to wait for all --expect-workers workers "
-            "to connect before giving up (default: 300). Also read from "
+            "to connect and authenticate before giving up "
+            f"(default: {DEFAULT_WORKER_WAIT_TIMEOUT:g}). Also read from "
             "PYWRKR_WORKER_WAIT_TIMEOUT"
         ),
     )
@@ -1286,19 +1287,19 @@ def _resolve_worker_wait_timeout(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> float:
     """--worker-wait-timeout, else PYWRKR_WORKER_WAIT_TIMEOUT, else the default."""
-    raw: object = args.worker_wait_timeout
+    value: float | None = args.worker_wait_timeout
     source = "--worker-wait-timeout"
-    if raw is None:
+    if value is None:
         raw = os.environ.get("PYWRKR_WORKER_WAIT_TIMEOUT") or None
+        if raw is None:
+            return DEFAULT_WORKER_WAIT_TIMEOUT
         source = "PYWRKR_WORKER_WAIT_TIMEOUT"
-    if raw is None:
-        return DEFAULT_WORKER_WAIT_TIMEOUT
-    try:
-        value = float(raw)  # type: ignore[arg-type]
-    except ValueError:
-        parser.error(f"{source} must be a number of seconds, got {raw!r}")
+        try:
+            value = float(raw)
+        except ValueError:
+            parser.error(f"{source} must be a number of seconds, got {raw!r}")
     if not (value > 0 and math.isfinite(value)):
-        parser.error(f"{source} must be a positive number of seconds, got {raw!r}")
+        parser.error(f"{source} must be a positive number of seconds, got {value!r}")
     return value
 
 
@@ -1312,6 +1313,11 @@ def _validate_url_and_mode(
     args: argparse.Namespace,
 ) -> None:
     """Validate URL, worker/master mode, and mutually exclusive options."""
+    # Checked before the worker branch, which exits early: a worker has its
+    # own receive timeout, and this flag would silently do nothing there.
+    if args.worker_wait_timeout is not None and not args.master:
+        parser.error("--worker-wait-timeout only applies to --master")
+
     # Early exit: worker mode connects to a master and needs no URL
     if args.worker is not None:
         if ":" not in args.worker:
@@ -1360,8 +1366,6 @@ def _validate_url_and_mode(
         if args.url is None:
             parser.error("--master requires a target URL")
         args.worker_wait_timeout = _resolve_worker_wait_timeout(parser, args)
-    elif args.worker_wait_timeout is not None:
-        parser.error("--worker-wait-timeout only applies to --master")
 
     # URL is required for all remaining modes
     if args.url is None and args.url_file is None and not args.scenario:
@@ -1883,8 +1887,11 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
                 args.expect_workers,
                 worker_secret=worker_secret,
                 # Resolved during validation; a hand-built Namespace may lack it.
-                worker_wait_timeout=getattr(args, "worker_wait_timeout", None)
-                or DEFAULT_WORKER_WAIT_TIMEOUT,
+                worker_wait_timeout=(
+                    DEFAULT_WORKER_WAIT_TIMEOUT
+                    if getattr(args, "worker_wait_timeout", None) is None
+                    else args.worker_wait_timeout
+                ),
             )
         )
         if result:
