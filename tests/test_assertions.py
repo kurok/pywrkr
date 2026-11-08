@@ -744,3 +744,66 @@ class TestAssertionsIntegration(AioHTTPTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# A user regex against server-supplied text (#306)
+# ---------------------------------------------------------------------------
+
+
+class TestAssertionRegexBounds(unittest.TestCase):
+    """Test the bounds and the warning, never a catastrophic match itself."""
+
+    def _evaluate(self, spec, body=b"", headers=None):
+        rules = parse_step_assertions(spec, "Step 3")
+        return evaluate_assertions(rules, 200, body, headers or {}, 0.01)
+
+    def test_assert_body_regex_is_not_matched_beyond_the_cap(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"x" * _ASSERT_MATCH_MAX + b"NEEDLE"
+        failures = self._evaluate({"assert_body_regex": "NEEDLE"}, body=body)
+        self.assertEqual(keys(failures), ["AssertBodyRegex: 'NEEDLE' did not match"])
+
+    def test_assert_body_regex_still_matches_within_the_cap(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"x" * (_ASSERT_MATCH_MAX - 6) + b"NEEDLE"
+        self.assertEqual(self._evaluate({"assert_body_regex": "NEEDLE"}, body=body), [])
+        self.assertEqual(self._evaluate({"assert_body_regex": r'"id":\s*42'}, body=OK_BODY), [])
+
+    def test_assert_header_regex_is_not_matched_beyond_the_cap(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        value = "x" * _ASSERT_MATCH_MAX + "NEEDLE"
+        failures = self._evaluate(
+            {"assert_header": {"X-Long": {"regex": "NEEDLE"}}}, headers={"X-Long": value}
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0].key.startswith("AssertHeader: X-Long"))
+
+    def test_assert_body_regex_emits_a_backtracking_warning(self):
+        with self.assertLogs("pywrkr.assertions", level="WARNING") as logs:
+            parse_step_assertions({"assert_body_regex": "(a+)+b"}, "Step 3")
+        message = "\n".join(logs.output)
+        self.assertIn("Step 3", message)
+        self.assertIn("'(a+)+b'", message)
+        self.assertIn("catastrophic backtracking (e.g. '(a+)+')", message)
+
+    def test_assert_header_regex_emits_a_backtracking_warning(self):
+        with self.assertLogs("pywrkr.assertions", level="WARNING") as logs:
+            parse_step_assertions({"assert_header": {"X-Id": {"regex": r"(\w+\s?)*$"}}}, "Step 1")
+        message = "\n".join(logs.output)
+        self.assertIn("Step 1 assert_header 'X-Id'", message)
+
+    def test_ordinary_patterns_do_not_warn(self):
+        for pattern in (r'"id":\s*42', "(ab)+", "a+b+", "(?:foo|bar)+", r"(\d{3})?", "^ok$"):
+            with self.subTest(pattern=pattern), self.assertNoLogs("pywrkr.assertions", "WARNING"):
+                parse_step_assertions({"assert_body_regex": pattern}, "Step 0")
+
+    def test_nested_repetition_shapes_are_flagged(self):
+        from pywrkr.assertions import _has_nested_repetition
+
+        for pattern in ("(a+)+b", "(a*)*", "(.*a){20}", r"(\w+\s?)*$", "(?:x+y?)+"):
+            with self.subTest(pattern=pattern):
+                self.assertTrue(_has_nested_repetition(pattern))

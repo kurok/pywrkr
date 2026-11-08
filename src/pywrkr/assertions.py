@@ -15,9 +15,15 @@ assertions never disagree about what ``$.a.b[0]`` means.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
+
+try:  # Python 3.11+
+    import re._parser as _sre_parse  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - Python 3.10
+    import sre_parse as _sre_parse  # type: ignore[no-redef]
 
 from pywrkr.templating import ExtractError, parse_json_path, resolve_json_path, stringify
 
@@ -34,6 +40,24 @@ __all__ = [
 
 #: ``assert_json`` value meaning "this path must exist, any value will do".
 ANY_VALUE = "*"
+
+logger = logging.getLogger(__name__)
+
+#: Cap on the response text a user-supplied assertion regex may scan. The body
+#: and headers come from the server under test, ``re`` has no per-match
+#: timeout, and the match runs on the event loop, so an unbounded scan lets the
+#: target stall the worker. Text past the cap is not searched; 64 KiB keeps
+#: ordinary API responses whole. (``har_import._MATCH_URL_MAX`` is the same
+#: guard on the URL path.)
+_ASSERT_MATCH_MAX = 64 * 1024
+
+_BACKTRACKING_WARNING = (
+    "%s %s: pattern %r repeats a group that itself repeats. Patterns with "
+    "catastrophic backtracking (e.g. '(a+)+') matched against a server's "
+    "response can hang the worker, since the server chooses the text; only the "
+    "first %d characters are searched. Prefer a pattern without nested "
+    "repetition, or assert_body_contains / assert_json."
+)
 
 _DURATION_PATTERN = re.compile(r"\A\s*([0-9]*\.?[0-9]+)\s*(ms|us|s)?\s*\Z")
 
@@ -120,6 +144,54 @@ class StepAssertions:
 # ---------------------------------------------------------------------------
 
 
+def _subpatterns(value: object) -> Iterator[Any]:
+    """Every parsed sub-pattern nested anywhere inside one opcode argument."""
+    if isinstance(value, _sre_parse.SubPattern):
+        yield value
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            yield from _subpatterns(item)
+
+
+def _has_nested_repetition(pattern: str) -> bool:
+    """Whether a regex repeats something that itself repeats, like ``(a+)+``.
+
+    That shape is what drives catastrophic backtracking. It is a heuristic for
+    a warning, not a proof of safety; a pattern the parser cannot read is
+    simply not flagged (it has already compiled, so this does not happen in
+    practice).
+    """
+    repeat_ops = {_sre_parse.MAX_REPEAT, _sre_parse.MIN_REPEAT}
+
+    def walk(items: Any, inside_repeat: bool) -> bool:
+        for op, av in items:
+            if op in repeat_ops:
+                _lo, hi, sub = av
+                repeats = hi == _sre_parse.MAXREPEAT or hi > 1
+                if repeats and inside_repeat:
+                    return True
+                if walk(sub, inside_repeat or repeats):
+                    return True
+            else:
+                for child in _subpatterns(av):
+                    if walk(child, inside_repeat):
+                        return True
+        return False
+
+    try:
+        return walk(_sre_parse.parse(pattern), False)
+    except Exception:  # pragma: no cover - parser internals vary by version
+        return False
+
+
+def _compile_user_regex(pattern: str, where: str, field: str) -> "re.Pattern[str]":
+    """Compile an assertion regex, warning when it is prone to backtracking."""
+    compiled = re.compile(pattern)
+    if _has_nested_repetition(pattern):
+        logger.warning(_BACKTRACKING_WARNING, where, field, pattern, _ASSERT_MATCH_MAX)
+    return compiled
+
+
 def _parse_json_rules(raw: object, where: str) -> tuple[JsonAssertion, ...]:
     if raw is None:
         return ()
@@ -162,7 +234,7 @@ def _parse_header_rules(raw: object, where: str) -> tuple[HeaderAssertion, ...]:
             if not isinstance(pattern_text, str):
                 raise ValueError(f"{where} assert_header {name!r}: 'regex' must be a string")
             try:
-                pattern = re.compile(pattern_text)
+                pattern = _compile_user_regex(pattern_text, where, f"assert_header {name!r}")
             except re.error as exc:
                 raise ValueError(
                     f"{where} assert_header {name!r}: invalid regex {pattern_text!r}: {exc}"
@@ -202,7 +274,7 @@ def parse_step_assertions(step_data: Mapping[str, Any], where: str) -> StepAsser
                 f"{where} 'assert_body_regex' must be a string, got {type(raw_regex).__name__}"
             )
         try:
-            body_regex = re.compile(raw_regex)
+            body_regex = _compile_user_regex(raw_regex, where, "'assert_body_regex'")
         except re.error as exc:
             raise ValueError(
                 f"{where} 'assert_body_regex': invalid regex {raw_regex!r}: {exc}"
@@ -305,7 +377,7 @@ def evaluate_assertions(
         if value is None:
             failures.append(AssertionFailure(f"AssertHeader: {header_rule.name} missing"))
         elif (
-            (header_rule.pattern.search(value) is None)
+            (header_rule.pattern.search(value[:_ASSERT_MATCH_MAX]) is None)
             if header_rule.pattern
             else (value != header_rule.expected)
         ):
@@ -328,7 +400,7 @@ def evaluate_assertions(
             failures.append(AssertionFailure(f"AssertBody: '{rules.body_contains}' not found"))
 
     if rules.body_regex is not None:
-        if text is None or not rules.body_regex.search(text):
+        if text is None or not rules.body_regex.search(text[:_ASSERT_MATCH_MAX]):
             failures.append(
                 AssertionFailure(f"AssertBodyRegex: {rules.body_regex.pattern!r} did not match")
             )

@@ -524,7 +524,7 @@ steps:
 |-----------|--------|
 | `assert_status` | Exact status code |
 | `assert_body_contains` | Substring is present in the body |
-| `assert_body_regex` | Regex matches somewhere in the body |
+| `assert_body_regex` | Regex matches somewhere in the first 64 KiB of the body |
 | `assert_json` | JSONPath → expected value, or `"*"` for "must exist" |
 | `assert_header` | Header equals a string, or matches `{regex: "..."}` |
 | `assert_max_latency` | This request took no longer than `500ms` / `1.5s` / `250us` |
@@ -535,6 +535,12 @@ not satisfy an expected `1`.
 
 Exact `assert_header` matches are exact: a server sending `application/json; charset=utf-8` will
 *not* match `"application/json"`. Use the regex form for prefixes.
+
+Assertion regexes run against text the server under test chooses, on the event loop, and Python's
+`re` has no timeout. So `assert_body_regex` and the `assert_header` regex form search only the first
+64 KiB, and a pattern that repeats a group which itself repeats — the `(a+)+` shape behind
+catastrophic backtracking — logs a warning when the scenario loads. Prefer `assert_body_contains`
+or `assert_json` where they will do.
 
 A failed assertion counts the request as **one** error however many rules broke, and each broken
 rule gets its own key in the error distribution. Those keys name the *rule*, never the observed
