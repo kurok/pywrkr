@@ -34,6 +34,7 @@ from pywrkr.config import (
     Threshold,
     WorkerStats,
     check_url_scheme,
+    loggable_url,
     merge_stats,
     parse_extract_spec,
 )
@@ -221,7 +222,9 @@ def _is_metadata_or_link_local(host: str | None) -> bool:
 
 def _warn_if_link_local(url: str, what: str) -> None:
     if _is_metadata_or_link_local(urlparse(url).hostname):
-        logger.warning("Worker: the master sent a link-local or metadata %s: %s", what, url)
+        logger.warning(
+            "Worker: the master sent a link-local or metadata %s: %s", what, loggable_url(url)
+        )
 
 
 def check_worker_target(config: BenchmarkConfig) -> None:
@@ -1696,7 +1699,7 @@ async def run_worker_node(
             with contextlib.suppress(OSError, ConnectionError):
                 await _send_msg(writer, {"type": "error", "error": refusal})
             return 1
-        logger.info("Worker: received config. Target: %s", config.url)
+        logger.info("Worker: received config. Target: %s", loggable_url(config.url))
 
         # The master decides the protocol, but each worker needs the backend
         # installed locally. Fail here with the fix, rather than silently
