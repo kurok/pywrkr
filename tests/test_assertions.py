@@ -3,6 +3,7 @@
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from io import StringIO
@@ -838,8 +839,13 @@ class TestAssertionRegexBounds(unittest.TestCase):
         """\\s+$ is quadratic and not flagged; the cap is what bounds it."""
         import time
 
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        # The worst case has to fall inside the cap: all spaces, then a
+        # non-space at the last scanned position.
+        body = b" " * (_ASSERT_MATCH_MAX - 1) + b"x" + b" " * 200_000
         start = time.perf_counter()
-        self._evaluate({"assert_body_regex": r"\s+$"}, body=b" " * 200_000 + b"x")
+        self._evaluate({"assert_body_regex": r"\s+$"}, body=body)
         self.assertLess(time.perf_counter() - start, 2.0)
 
     def test_bounded_and_atomic_shapes_are_not_flagged(self):
@@ -848,6 +854,72 @@ class TestAssertionRegexBounds(unittest.TestCase):
         for pattern in (r"(?:\d{1,3}\.){3}\d{1,3}", "(a{1,2}){3}", "(ab)+", "(?:foo|bar)+"):
             with self.subTest(pattern=pattern):
                 self.assertFalse(_has_nested_repetition(pattern))
+
+    @unittest.skipIf(sys.version_info < (3, 11), "atomic groups and possessive repeats are 3.11+")
+    def test_atomic_and_possessive_shapes(self):
+        from pywrkr.assertions import _has_nested_repetition
+
+        for pattern in ("(?>a+)+", "(a++)+", "(a+)++"):
+            with self.subTest(pattern=pattern):
+                self.assertFalse(_has_nested_repetition(pattern))
+        # Backtracking still happens inside an atomic group.
+        self.assertTrue(_has_nested_repetition("(?>(a+)+b)"))
+
+    def test_a_positive_lookahead_testing_the_end_is_undecided_on_a_cut_body(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        cases = [
+            (r"\A(?=[^E]*\Z)", "a" * (_ASSERT_MATCH_MAX + 800) + "E"),
+            (r"a(?=b*\Z)", "a" + "b" * (_ASSERT_MATCH_MAX + 800) + "c"),
+            (r"x(?=y*\b)", "x" + "y" * (_ASSERT_MATCH_MAX + 800) + "z"),
+        ]
+        for pattern, text in cases:
+            with self.subTest(pattern=pattern):
+                failures = self._evaluate({"assert_body_regex": pattern}, body=text.encode())
+                self.assertEqual(len(failures), 1)
+                self.assertIn("scan limit", failures[0].key)
+
+    def test_dollar_before_a_newline_at_the_cut_is_undecided(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"a" * (_ASSERT_MATCH_MAX - 2) + b"x\nmore"
+        failures = self._evaluate({"assert_body_regex": "x$"}, body=body)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_a_negative_lookbehind_does_not_make_a_long_body_undecided(self):
+        """A lookbehind reads only text before the match, never the cut."""
+        self.assertEqual(
+            self._evaluate({"assert_body_regex": "(?<!x)id"}, body=b"id" + b"a" * 20000), []
+        )
+
+    def test_a_header_regex_that_depends_on_the_cut_is_undecided(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        failures = self._evaluate(
+            {"assert_header": {"X-Long": {"regex": r"\A(?=[^E]*\Z)"}}},
+            headers={"X-Long": "a" * (_ASSERT_MATCH_MAX + 1) + "E"},
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_a_four_byte_utf8_body_is_still_detected_as_cut(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = ("\U0001f600" * (_ASSERT_MATCH_MAX + 10)).encode() + b"ERROR"
+        failures = self._evaluate({"assert_body_regex": r"(?s)\A(?!.*ERROR)"}, body=body)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_contains_and_json_rules_still_see_the_whole_body(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = json.dumps({"pad": "x" * (_ASSERT_MATCH_MAX * 4), "id": 42}).encode()
+        spec = {
+            "assert_body_regex": '"pad"',
+            "assert_body_contains": '"id": 42',
+            "assert_json": {"$.id": 42},
+        }
+        self.assertEqual(self._evaluate(spec, body=body), [])
 
 
 if __name__ == "__main__":

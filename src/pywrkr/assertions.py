@@ -160,10 +160,12 @@ def _has_nested_repetition(pattern: str) -> bool:
 
     That shape is what drives catastrophic backtracking: the outer repeat must
     be unbounded or large (``{10,}`` and up, as in ``(.*a){20}``) and the inner
-    one unbounded. Bounded shapes such as ``(?:\d{1,3}\.){3}``, and atomic or
-    possessive groups, which cannot backtrack, are not flagged. It is a
-    heuristic for a warning, not a proof of safety: overlapping alternation
-    such as ``(a|ab)*`` is not detected.
+    one unbounded. Bounded shapes such as ``(?:\d{1,3}\.){3}`` are not
+    flagged, nor is a repeat of an atomic group or possessive repeat, which is
+    never re-split (``(?>a+)+``, ``(a++)+``); a nested pair *inside* one still
+    is. It is a heuristic for a warning, not a proof of safety: overlapping
+    alternation such as ``(a|ab)*`` and adjacent repeats such as ``\s*\s*$``
+    are not detected.
     """
     repeat_ops = {_sre_parse.MAX_REPEAT, _sre_parse.MIN_REPEAT}
     no_backtrack_ops = {
@@ -175,6 +177,13 @@ def _has_nested_repetition(pattern: str) -> bool:
     def walk(items: Any, outer_repeats: bool) -> bool:
         for op, av in items:
             if op in no_backtrack_ops:
+                # Once an atomic group or possessive repeat is left it is never
+                # re-entered to try another split, so it ends the outer
+                # context -- but backtracking still happens inside it, so a
+                # nested pair within it, as in (?>(a+)+b), still counts.
+                for child in _subpatterns(av):
+                    if walk(child, False):
+                        return True
                 continue
             if op in repeat_ops:
                 _lo, hi, sub = av
@@ -200,12 +209,18 @@ def _cut_sensitivity(pattern: str) -> tuple[bool, bool]:
     r"""How a pattern's result can change when the text is cut short.
 
     Returns:
-        ``(negative_lookaround, end_dependent)``. A negative lookaround such as
-        ``(?!.*ERROR)`` can succeed on the cut text and fail on the whole one.
-        An end anchor or word boundary (``$``, ``\Z``, ``\b``) can match at
-        the cut, where the whole text continues.
+        ``(lookahead_dependent, end_dependent)``.
+
+        *lookahead_dependent*: a lookahead can read past the match up to the
+        cut, so its answer on the cut text says nothing about the whole one --
+        a negative lookahead (``(?!.*ERROR)``), or a positive one that tests
+        for the end or a word boundary (``(?=[^E]*\Z)``). Lookbehinds read
+        only text before the match and do not count.
+
+        *end_dependent*: an end anchor or word boundary (``$``, ``\Z``, ````)
+        outside such a lookahead can match at the cut, where the whole text
+        continues.
     """
-    neg = {_sre_parse.ASSERT_NOT}
     end_codes = {
         getattr(_sre_parse, name)
         for name in (
@@ -221,22 +236,32 @@ def _cut_sensitivity(pattern: str) -> tuple[bool, bool]:
         )
         if hasattr(_sre_parse, name)
     }
-    found = [False, False]
+    lookahead_dependent = False
+
+    def has_end(items: Any) -> bool:
+        for op, av in items:
+            if op == _sre_parse.AT and av in end_codes:
+                return True
+            if any(has_end(child) for child in _subpatterns(av)):
+                return True
+        return False
 
     def walk(items: Any) -> None:
+        nonlocal lookahead_dependent
         for op, av in items:
-            if op in neg:
-                found[0] = True
-            if op == _sre_parse.AT and av in end_codes:
-                found[1] = True
+            if op in (_sre_parse.ASSERT, _sre_parse.ASSERT_NOT):
+                direction, sub = av
+                if direction == 1 and (op == _sre_parse.ASSERT_NOT or has_end(sub)):
+                    lookahead_dependent = True
             for child in _subpatterns(av):
                 walk(child)
 
     try:
-        walk(_sre_parse.parse(pattern))
+        parsed = _sre_parse.parse(pattern)
+        walk(parsed)
+        return lookahead_dependent, has_end(parsed)
     except Exception:  # pragma: no cover - parser internals vary by version
         return True, True
-    return found[0], found[1]
 
 
 def _bounded_search(pattern: "re.Pattern[str]", text: str) -> "bool | None":
@@ -249,14 +274,16 @@ def _bounded_search(pattern: "re.Pattern[str]", text: str) -> "bool | None":
     """
     if len(text) <= _ASSERT_MATCH_MAX:
         return pattern.search(text) is not None
-    negative_lookaround, end_dependent = _cut_sensitivity(pattern.pattern)
-    if negative_lookaround:
+    lookahead_dependent, end_dependent = _cut_sensitivity(pattern.pattern)
+    if lookahead_dependent:
         return None
     prefix = text[:_ASSERT_MATCH_MAX]
     match = pattern.search(prefix)
     if match is None:
         return False
-    if end_dependent and match.end() == len(prefix):
+    # "At the cut" includes one character short of it: a plain $ also matches
+    # just before a final newline, which the cut text may end with.
+    if end_dependent and match.end() >= len(prefix) - 1:
         return None
     return True
 
@@ -453,18 +480,20 @@ def evaluate_assertions(
         value = headers.get(header_rule.name) if headers is not None else None
         if value is None:
             failures.append(AssertionFailure(f"AssertHeader: {header_rule.name} missing"))
-        elif header_rule.pattern and _bounded_search(header_rule.pattern, value) is None:
+            continue
+        found = (
+            _bounded_search(header_rule.pattern, value)
+            if header_rule.pattern
+            else value == header_rule.expected
+        )
+        if found is None:
             failures.append(
                 AssertionFailure(
                     f"AssertHeader: {header_rule.name} {header_rule.describe()}"
                     f" (longer than the {_ASSERT_MATCH_MAX}-char scan limit)"
                 )
             )
-        elif (
-            (not _bounded_search(header_rule.pattern, value))
-            if header_rule.pattern
-            else (value != header_rule.expected)
-        ):
+        elif not found:
             failures.append(
                 AssertionFailure(
                     f"AssertHeader: {header_rule.name} {header_rule.describe()}",

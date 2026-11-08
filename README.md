@@ -540,11 +540,13 @@ Assertion regexes run against text the server under test chooses, on the event l
 `re` has no timeout. So `assert_body_regex` and the `assert_header` regex form search only the first
 8,192 characters of that text (the same bound `har-import` puts on URLs), and a match further in does
 not count. When the text is longer and the answer could depend on where it was cut, such as a
-negative lookahead like `(?!.*ERROR)` or an end anchor matching right at the cut, the assertion
-fails as *undecided* rather than passing. A pattern that nests an unbounded repeat inside a repeat,
+lookahead that reads to the end like `(?!.*ERROR)` or `(?=[^E]*\Z)`, or an end anchor matching
+right at the cut, the assertion fails as *undecided* rather than passing. A pattern that nests an unbounded repeat inside a repeat,
 the `(a+)+` shape behind catastrophic backtracking, logs a warning when the scenario loads. That
-check is a heuristic and misses some shapes, such as overlapping alternation like `(a|ab)*`. For
-large JSON responses, prefer `assert_json` or `assert_body_contains`.
+check is a heuristic and misses some shapes, such as overlapping alternation like `(a|ab)*` and
+adjacent repeats like `\s*\s*$`. The limit bounds linear and quadratic patterns; cubic or
+exponential ones can still take a long time within it. For large JSON responses, prefer
+`assert_json` or `assert_body_contains`.
 
 A failed assertion counts the request as **one** error however many rules broke, and each broken
 rule gets its own key in the error distribution. Those keys name the *rule*, never the observed
