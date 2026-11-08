@@ -3550,7 +3550,7 @@ class TestOtelExport(unittest.TestCase):
 
             pywrkr.export_to_otel(results, "http://localhost:4318", tags)
 
-            mock_exporter.assert_called_once_with(endpoint="http://localhost:4318")
+            mock_exporter.assert_called_once_with(endpoint="http://localhost:4318/v1/metrics")
             mock_provider.get_meter.assert_called_once_with("pywrkr")
             # Should create 2 counters (requests.total, errors.total)
             self.assertEqual(mock_meter.create_counter.call_count, 2)
@@ -3591,6 +3591,186 @@ class TestOtelExport(unittest.TestCase):
                 self.assertEqual(call[1]["attributes"], tags)
             for call in mock_gauge.add.call_args_list:
                 self.assertEqual(call[1]["attributes"], tags)
+
+    # --- #318: the export-result bookkeeping, without the OTel SDK ------------
+    # These run everywhere (the SDK is an optional extra), with stand-ins that
+    # drive the exporter the way the SDK's reader does on force_flush().
+
+    def _fake_sdk(self, outcomes):
+        """Patch the SDK names in pywrkr.reporting; force_flush exports each outcome."""
+        success, failure = object(), object()
+        result_enum = MagicMock(SUCCESS=success, FAILURE=failure)
+        exporter = MagicMock()
+        exporter.export.side_effect = [success if ok else failure for ok in outcomes]
+
+        class Reader:
+            def __init__(self, exp, **kwargs):
+                self.exporter = exp
+
+        class Provider:
+            def __init__(self, resource=None, metric_readers=()):
+                self.readers = list(metric_readers)
+
+            def get_meter(self, name):
+                return MagicMock()
+
+            def force_flush(self):
+                for reader in self.readers:
+                    for _ in outcomes:
+                        # Like the SDK's reader: an exception from export()
+                        # is logged and swallowed, never raised to the caller.
+                        with contextlib.suppress(Exception):
+                            reader.exporter.export("batch")
+
+            def shutdown(self):
+                pass
+
+        exporter_cls = MagicMock(return_value=exporter)
+        patches = [
+            patch("pywrkr.reporting.OTEL_AVAILABLE", True),
+            patch("pywrkr.reporting.OTLPMetricExporter", exporter_cls, create=True),
+            patch("pywrkr.reporting.PeriodicExportingMetricReader", Reader, create=True),
+            patch("pywrkr.reporting.MeterProvider", Provider, create=True),
+            patch("pywrkr.reporting.Resource", MagicMock(), create=True),
+            patch("pywrkr.reporting.MetricExportResult", result_enum, create=True),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return exporter_cls
+
+    def test_export_result_all_delivered_is_success(self):
+        exporter_cls = self._fake_sdk([True, True])
+        self.assertTrue(pywrkr.export_to_otel(self._make_results(), "http://c:4318", {}))
+        exporter_cls.assert_called_once_with(endpoint="http://c:4318/v1/metrics")
+
+    def test_export_result_a_refused_batch_is_failure(self):
+        self._fake_sdk([True, False])
+        with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+            ok = pywrkr.export_to_otel(self._make_results(), "http://c:4318/x", {})
+        self.assertFalse(ok)
+        self.assertTrue(any("1 of 2 metric batches" in line for line in cm.output))
+
+    def test_export_result_a_raising_export_is_failure(self):
+        """The SDK's reader swallows an exception from export(); it must still count."""
+        exporter_cls = self._fake_sdk([True])
+        exporter_cls.return_value.export.side_effect = RuntimeError("boom")
+        with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+            ok = pywrkr.export_to_otel(self._make_results(), "http://c:4318", {})
+        self.assertFalse(ok)
+        self.assertTrue(any("1 of 1 metric batches" in line for line in cm.output))
+
+    def test_export_result_nothing_exported_is_failure(self):
+        self._fake_sdk([])
+        with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+            ok = pywrkr.export_to_otel(self._make_results(), "http://c:4318", {})
+        self.assertFalse(ok)
+        self.assertTrue(any("no metric batch" in line for line in cm.output))
+
+    def test_export_result_a_malformed_endpoint_is_failure_not_a_crash(self):
+        self._fake_sdk([True])
+        for endpoint in ("http://[::1:4318", "localhost:4318", "ftp://c:4318", "http://:4318"):
+            with self.subTest(endpoint=endpoint):
+                with self.assertLogs("pywrkr.reporting", level="ERROR"):
+                    ok = pywrkr.export_to_otel(self._make_results(), endpoint, {})
+                self.assertFalse(ok)
+
+    def test_export_result_an_exception_is_failure(self):
+        exporter_cls = self._fake_sdk([])
+        exporter_cls.side_effect = RuntimeError("boom")
+        with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+            ok = pywrkr.export_to_otel(self._make_results(), "http://c:4318", {})
+        self.assertFalse(ok)
+        self.assertTrue(any("http://c:4318/v1/metrics" in line for line in cm.output))
+
+    # --- #318: a collector-shaped receiver ---------------------------------
+    # Serves POST /v1/metrics and 404s everything else, as an OTLP/HTTP
+    # collector does: a mock that accepts any path cannot catch a wrong path.
+
+    def _start_collector(self, refuse: bool = False):
+        """A collector-shaped receiver (tests/collector_fixture.py): /v1/metrics only."""
+        from tests.collector_fixture import CollectorReceiver
+
+        receiver = CollectorReceiver(refuse=refuse).start()
+        self.addCleanup(receiver.stop)
+        return receiver
+
+    def test_otel_metrics_endpoint(self):
+        from pywrkr.reporting import otel_metrics_endpoint
+
+        cases = {
+            "http://collector:4318": "http://collector:4318/v1/metrics",
+            "http://collector:4318/": "http://collector:4318/v1/metrics",
+            "https://otel.example": "https://otel.example/v1/metrics",
+            "http://collector:4318/v1/metrics": "http://collector:4318/v1/metrics",
+            "http://gw.example/otlp/v1/metrics": "http://gw.example/otlp/v1/metrics",
+        }
+        for given, expected in cases.items():
+            with self.subTest(given=given):
+                self.assertEqual(otel_metrics_endpoint(given), expected)
+
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
+    def test_otel_export_appends_the_signal_path_to_a_base_url(self):
+        receiver = self._start_collector()
+        self.assertTrue(pywrkr.export_to_otel(self._make_results(), receiver.url, {"env": "test"}))
+        self.assertTrue(receiver.received("/v1/metrics", status=200))
+        self.assertEqual([r.path for r in receiver.requests if r.status != 200], [])
+
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
+    def test_otel_export_keeps_an_explicit_signal_path(self):
+        receiver = self._start_collector()
+        self.assertTrue(
+            pywrkr.export_to_otel(self._make_results(), f"{receiver.url}/v1/metrics", {})
+        )
+        self.assertTrue(receiver.received("/v1/metrics", status=200))
+
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
+    def test_otel_export_reports_failure_when_the_receiver_404s(self):
+        receiver = self._start_collector(refuse=True)
+        with self.assertLogs("pywrkr.reporting", level="ERROR"):
+            ok = pywrkr.export_to_otel(self._make_results(), receiver.url, {})
+        self.assertFalse(ok)
+        self.assertTrue(receiver.received("/v1/metrics", status=404))
+
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
+    def test_cli_otel_endpoint_base_url_delivers_metrics(self):
+        """The documented shape, end to end: the test that would have caught #318."""
+        from pywrkr.main import main
+
+        receiver = self._start_collector()
+        argv = [
+            "pywrkr",
+            "-n",
+            "3",
+            "-c",
+            "1",
+            "--otel-endpoint",
+            receiver.url,
+            f"{receiver.url}/target",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch("sys.stdout", new_callable=StringIO),
+            patch("sys.stderr", new_callable=StringIO),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            main()
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(len([r for r in receiver.requests if r.method == "GET"]), 3)
+        delivered = receiver.received("/v1/metrics", status=200)
+        self.assertTrue(delivered)
+        self.assertEqual(delivered[0].content_type, "application/x-protobuf")
+
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
+    def test_otel_export_reports_a_refused_batch(self):
+        """A 404 used to be logged by the SDK and reported as success."""
+        receiver = self._start_collector()
+        with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+            ok = pywrkr.export_to_otel(self._make_results(), f"{receiver.url}/wrong/path", {})
+        self.assertFalse(ok)
+        self.assertTrue(receiver.requests)
+        self.assertTrue(all(r.status == 404 for r in receiver.requests))
+        self.assertTrue(any("not delivered" in line for line in cm.output))
 
     @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_graceful_on_connection_error(self):

@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -34,6 +35,7 @@ from pywrkr.config import (
     Threshold,
     WorkerStats,
     check_url_scheme,
+    loggable_url,
     merge_stats,
     parse_extract_spec,
 )
@@ -221,7 +223,9 @@ def _is_metadata_or_link_local(host: str | None) -> bool:
 
 def _warn_if_link_local(url: str, what: str) -> None:
     if _is_metadata_or_link_local(urlparse(url).hostname):
-        logger.warning("Worker: the master sent a link-local or metadata %s: %s", what, url)
+        logger.warning(
+            "Worker: the master sent a link-local or metadata %s: %s", what, loggable_url(url)
+        )
 
 
 def check_worker_target(config: BenchmarkConfig) -> None:
@@ -1097,6 +1101,12 @@ def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
     return merge_stats(stats_list)
 
 
+#: How long a master waits for its workers to connect before giving up, in
+#: seconds, when neither ``--worker-wait-timeout`` nor
+#: ``PYWRKR_WORKER_WAIT_TIMEOUT`` says otherwise.
+DEFAULT_WORKER_WAIT_TIMEOUT = 300.0
+
+
 async def run_master(
     config: BenchmarkConfig,
     host: str | Sequence[str] | None,
@@ -1104,8 +1114,15 @@ async def run_master(
     expect_workers: int,
     worker_secret: str | None = None,
     ready: asyncio.Event | None = None,
+    worker_wait_timeout: float = DEFAULT_WORKER_WAIT_TIMEOUT,
 ) -> tuple[WorkerStats, int] | None:
     """Run in master mode: wait for workers, distribute config, collect results.
+
+    The master waits up to *worker_wait_timeout* seconds for all
+    *expect_workers* workers to connect and authenticate; if they have not by
+    then, it logs the window it waited, closes the workers that did connect,
+    and returns None. A worker still authenticating then is closed, not
+    admitted.
 
     If *worker_secret* is set, each connecting worker must complete an
     HMAC-SHA256 challenge-response before it is admitted.  Workers that fail
@@ -1122,6 +1139,10 @@ async def run_master(
     a task should await the task (or ``asyncio.wait`` on both), not *ready*
     alone.
     """
+    if not (worker_wait_timeout > 0 and math.isfinite(worker_wait_timeout)):
+        raise ValueError(
+            f"worker_wait_timeout must be a positive number of seconds, got {worker_wait_timeout!r}"
+        )
     # In a thread: resolving ``localhost`` is a blocking getaddrinfo call.
     await asyncio.to_thread(check_master_auth, host, worker_secret)
     logger.info(
@@ -1213,6 +1234,8 @@ async def run_master(
                 return False
         return True
 
+    wait_over = asyncio.Event()
+
     async def handle_worker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         # Reject any connection beyond expect_workers so a late/stale/retrying
         # peer that lands in the race window cannot linger in the connection
@@ -1226,6 +1249,16 @@ async def run_master(
             if not await _authenticate_worker(reader, writer):
                 writer.close()
                 return
+        if wait_over.is_set():
+            # The wait window closed while this worker was authenticating: the
+            # run has been given up, so do not admit it and leave it waiting
+            # for a config that never comes.
+            logger.warning(
+                "  Worker %s finished authenticating after the wait window; closing it",
+                writer.get_extra_info("peername"),
+            )
+            writer.close()
+            return
         addr = writer.get_extra_info("peername")
         worker_connections.append((reader, writer))
         logger.info(
@@ -1246,16 +1279,23 @@ async def run_master(
     try:
         # Wait for all workers with a timeout
         try:
-            await asyncio.wait_for(ready_event.wait(), timeout=300)
+            await asyncio.wait_for(ready_event.wait(), timeout=worker_wait_timeout)
         except asyncio.TimeoutError:
+            wait_over.set()
             logger.error(
-                "Master: timed out waiting for workers (%s/%s connected)",
+                "Master: timed out after %ss waiting for workers (%s/%s connected); "
+                "the window is set by --worker-wait-timeout, PYWRKR_WORKER_WAIT_TIMEOUT "
+                "or run_master(worker_wait_timeout=)",
+                f"{worker_wait_timeout:g}",
                 len(worker_connections),
                 expect_workers,
             )
             for _, w in worker_connections:
                 w.close()
-                await w.wait_closed()
+                # A worker that died may have reset the connection already;
+                # closing it must not turn a clean exit 1 into a traceback.
+                with contextlib.suppress(OSError, ConnectionError):
+                    await w.wait_closed()
             return None
 
         # Snapshot the first expect_workers connections and stop accepting more
@@ -1696,7 +1736,7 @@ async def run_worker_node(
             with contextlib.suppress(OSError, ConnectionError):
                 await _send_msg(writer, {"type": "error", "error": refusal})
             return 1
-        logger.info("Worker: received config. Target: %s", config.url)
+        logger.info("Worker: received config. Target: %s", loggable_url(config.url))
 
         # The master decides the protocol, but each worker needs the backend
         # installed locally. Fail here with the fix, rather than silently

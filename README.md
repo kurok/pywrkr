@@ -330,7 +330,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
               [--max-users MAX_USERS] [--step-multiplier STEP_MULTIPLIER]
               [--url-file FILE] [--master] [--worker HOST:PORT]
               [--worker-secret SECRET] [--expect-workers N] [--bind ADDR]
-              [--port PORT]
+              [--port PORT] [--worker-wait-timeout SECONDS]
               [url]
 ```
 
@@ -377,7 +377,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--follow-redirects` | Follow 3xx responses instead of measuring them (default: off, as in wrk/ab) |
 | | `--threshold` / `--th` | SLO threshold (repeatable), e.g. `--threshold "p95 < 300ms"`. Exit code 2 on breach |
 | | `--tag` | Metadata tag as `key=value` (repeatable), e.g. `--tag environment=staging` |
-| | `--otel-endpoint` | Export metrics to OpenTelemetry collector (OTLP/HTTP) |
+| | `--otel-endpoint` | Export metrics to an OpenTelemetry collector (OTLP/HTTP): its base URL (`/v1/metrics` is added when the URL has no path) or the full metrics endpoint |
 | | `--prom-remote-write` | Push metrics to Prometheus Pushgateway endpoint |
 | | `--export-interval` | Stream metric snapshots every N seconds instead of only at the end (needs an export endpoint) |
 | | `--ssl-verify` / `PYWRKR_SSL_VERIFY` | Enable TLS certificate verification (default: disabled). Recommended when using `--basic-auth` or `--cookie` against `https://` targets |
@@ -547,10 +547,11 @@ Assertion regexes run against text the server under test chooses, on the event l
 `re` has no timeout. So `assert_body_regex` and the `assert_header` regex form search only the first
 8,192 characters of that text (the same bound `har-import` puts on URLs), and a match further in does
 not count. When the text is longer and the answer could depend on where it was cut, such as a
-lookahead that reads to the end like `(?!.*ERROR)` or `(?=[^E]*\Z)`; a backreference, conditional,
-atomic group, possessive repeat or lookahead inside a lookbehind; or an end anchor or word boundary in a match running up to the
-cut, the assertion fails as *undecided* rather than passing. A pattern that nests an unbounded repeat inside a repeat,
-the `(a+)+` shape behind catastrophic backtracking, logs a warning when the scenario loads. That
+lookahead that reads to the end like `(?!.*ERROR)` or `(?=[^E]*\Z)`; a backreference,
+conditional, atomic group, possessive repeat or lookahead inside a lookbehind; or an end anchor or
+word boundary in a match running up to the cut, the assertion fails as *undecided* rather than
+passing. A pattern that nests an unbounded repeat inside a repeat, the `(a+)+` shape behind
+catastrophic backtracking, logs a warning when the scenario loads. That
 check is a heuristic and misses some shapes, such as overlapping alternation like `(a|ab)*` and
 adjacent repeats like `\s*\s*$`. The limit bounds linear and quadratic patterns; cubic or
 exponential ones can still take a long time within it. For large JSON responses, prefer
@@ -624,10 +625,23 @@ steps:
 |--------|-----------|-------|
 | `json` | `$.a.b[0].c` | Dotted JSONPath subset: object keys, array indices (negative allowed), and `["quoted keys"]`. Wildcards, slices, filters, and recursive descent are not supported. `$` selects the whole document. |
 | `header` | `X-Session-Id` | Response header, matched case-insensitively. |
-| `regex` | `value="([^"]+)"` | Searched against the response body; capture group 1 is used. The pattern must have at least one group. |
+| `regex` | `value="([^"]+)"` | Searched against the first 8,192 characters of the response body (up to 16,384 are read to confirm a match); capture group 1 is used. The pattern must have at least one group. |
 
 Non-string JSON values keep their JSON spelling (`true`, not `True`); objects and arrays are
 re-serialized compactly, so a whole sub-document can be carried between steps.
+
+A `regex` rule is matched against text the server under test chooses, so it gets the same bound as
+the [assertion regexes](#scripted-scenarios): only the first 8,192 characters are searched, and a
+nested-repetition pattern such as `(a+)+` logs a warning when the scenario loads. On a longer body
+the rule fails as *undecided* rather than extracting a value that could be wrong: when the pattern
+uses a lookahead that reads to the end, a backreference, conditional, atomic group, possessive repeat
+or lookahead inside a lookbehind (as for assertions), and when the match found in the first 8,192
+characters is not also the match found in the first 16,384, which catches a capture cut short at the
+window's end or a greedy one such as `src="(.*)"` that backtracked onto an earlier match; confirming
+a match reads up to 16,384 characters. That check is bounded: if matching reads past the first
+16,384 characters (a greedy repeat or a lookahead that runs that far, even from a match starting near
+the 8,192 mark), the value can still differ from the whole-body one. Use a `json` rule for values
+deep in a large JSON response.
 
 **Where `${var}` works:** the step `path`, header names and values, and the `body` — including
 inside nested JSON object/array bodies. Values are inserted verbatim, so URL-encode anything that
@@ -1322,6 +1336,10 @@ session state between worker nodes, so a session started on one node is never co
 `--no-read-body` releases the connection instead of reading the response body, for runs where
 nothing looks at it.
 
+By default each response body is read in full and held in memory until the request is done, with
+no size cap, so a target that returns very large bodies makes the client hold them. Use
+`--no-read-body` when nothing needs the body.
+
 ```bash
 pywrkr --no-read-body -c 100 -d 30 http://localhost:8080/large.json
 ```
@@ -1638,6 +1656,11 @@ pywrkr --otel-endpoint http://localhost:4318 \
     -c 100 -d 30 http://localhost:8080/
 ```
 
+`--otel-endpoint` takes the collector's base URL (`http://localhost:4318`), and pywrkr posts to its
+`/v1/metrics` signal path; a URL that already has a path, such as `http://collector:4318/v1/metrics`
+or a gateway's own route, is used as given. If the collector refuses a batch (a wrong path, for
+example, answers 404), the export is reported as failed rather than silently dropped.
+
 Exports gauges and counters: `pywrkr.requests.total`, `pywrkr.errors.total`, `pywrkr.requests_per_sec`, `pywrkr.latency.p50/p95/p99/mean/max`, `pywrkr.transfer_bytes_per_sec`, `pywrkr.duration_sec`.
 
 #### Prometheus Remote Write (Pushgateway)
@@ -1784,6 +1807,7 @@ pywrkr --worker master-host:9220
 | `--worker HOST:PORT` | Run as distributed worker, connecting to master at HOST:PORT. A non-loopback master requires `--worker-secret` |
 | `--worker-secret SECRET` | Shared secret authenticating the master/worker channel (HMAC-SHA256). Also read from `PYWRKR_WORKER_SECRET` |
 | `--expect-workers` | Number of workers the master should wait for before starting |
+| `--worker-wait-timeout SECONDS` | How long the master waits for all `--expect-workers` workers to connect and authenticate before giving up and exiting 1 (default: `300`). Also read from `PYWRKR_WORKER_WAIT_TIMEOUT` |
 | `--bind` | Master bind address (default: `0.0.0.0`). Any non-loopback address requires `--worker-secret` |
 | `--port` | Master listen port (default: `9220`) |
 | `--allow-partial` | Accept a run in which some workers never reported (default: off — see below) |
@@ -1814,7 +1838,10 @@ a worker can hand it a config and make it generate traffic. A master therefore *
 on a non-loopback `--bind` — including the default `0.0.0.0` — without a secret, and a worker
 refuses to connect to a non-loopback master without one; for a local run use `--bind 127.0.0.1` and
 `--worker 127.0.0.1:9220`. The master and every worker must use the same value, and passing it through the
-environment keeps it out of the process table:
+environment keeps it out of the process table. The secret **authenticates** the two ends; it does not
+**encrypt** anything. The channel is plain TCP, so the config (credentials included) and the results
+still cross the network in clear text: run it on a trusted network, or tunnel it (SSH, WireGuard, a
+service mesh). pywrkr has no TLS for this channel.
 
 ```bash
 export PYWRKR_WORKER_SECRET='<shared secret>'  # same value on master and every worker

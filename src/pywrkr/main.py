@@ -13,8 +13,10 @@ import asyncio
 import dataclasses
 import json
 import logging
+import math
 import os
 import sys
+from urllib.parse import urlparse
 
 from pywrkr import ci
 from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
@@ -50,6 +52,7 @@ from pywrkr.config import (
     validate_scenario_templates,
 )
 from pywrkr.distributed import (
+    DEFAULT_WORKER_WAIT_TIMEOUT,
     check_master_auth,
     check_worker_auth,
     normalize_host,
@@ -297,7 +300,11 @@ def _add_output_options(parser: argparse.ArgumentParser) -> None:
         "--otel-endpoint",
         default=None,
         metavar="URL",
-        help="Export metrics to an OpenTelemetry collector via OTLP/HTTP",
+        help=(
+            "Export metrics to an OpenTelemetry collector via OTLP/HTTP: the collector's "
+            "base URL (http://collector:4318; /v1/metrics is added when the URL has no "
+            "path) or the full metrics endpoint"
+        ),
     )
     parser.add_argument(
         "--prom-remote-write",
@@ -528,6 +535,18 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
         help=(
             "Run as worker node, connecting to master at HOST:PORT. A non-loopback "
             "master requires --worker-secret."
+        ),
+    )
+    parser.add_argument(
+        "--worker-wait-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Distributed master: how long to wait for all --expect-workers workers "
+            "to connect and authenticate before giving up "
+            f"(default: {DEFAULT_WORKER_WAIT_TIMEOUT:g}). Also read from "
+            "PYWRKR_WORKER_WAIT_TIMEOUT"
         ),
     )
     parser.add_argument(
@@ -1272,6 +1291,26 @@ def _validate_mode_conflicts(
         parser.error("--allow-partial only applies to a distributed master (--master)")
 
 
+def _resolve_worker_wait_timeout(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> float:
+    """--worker-wait-timeout, else PYWRKR_WORKER_WAIT_TIMEOUT, else the default."""
+    value: float | None = args.worker_wait_timeout
+    source = "--worker-wait-timeout"
+    if value is None:
+        raw = os.environ.get("PYWRKR_WORKER_WAIT_TIMEOUT") or None
+        if raw is None:
+            return DEFAULT_WORKER_WAIT_TIMEOUT
+        source = "PYWRKR_WORKER_WAIT_TIMEOUT"
+        try:
+            value = float(raw)
+        except ValueError:
+            parser.error(f"{source} must be a number of seconds, got {raw!r}")
+    if not (value > 0 and math.isfinite(value)):
+        parser.error(f"{source} must be a positive number of seconds, got {value!r}")
+    return value
+
+
 def _resolve_worker_secret(args: argparse.Namespace) -> str | None:
     """Return the distributed secret from --worker-secret or PYWRKR_WORKER_SECRET."""
     return args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET") or None
@@ -1282,6 +1321,11 @@ def _validate_url_and_mode(
     args: argparse.Namespace,
 ) -> None:
     """Validate URL, worker/master mode, and mutually exclusive options."""
+    # Checked before the worker branch, which exits early: a worker has its
+    # own receive timeout, and this flag would silently do nothing there.
+    if args.worker_wait_timeout is not None and not args.master:
+        parser.error("--worker-wait-timeout only applies to --master")
+
     # Early exit: worker mode connects to a master and needs no URL
     if args.worker is not None:
         if ":" not in args.worker:
@@ -1329,6 +1373,7 @@ def _validate_url_and_mode(
             parser.error("--master requires --expect-workers N (N >= 1)")
         if args.url is None:
             parser.error("--master requires a target URL")
+        args.worker_wait_timeout = _resolve_worker_wait_timeout(parser, args)
 
     # URL is required for all remaining modes
     if args.url is None and args.url_file is None and not args.scenario:
@@ -1656,6 +1701,15 @@ def _apply_data_options(
         parser.error(str(e))
 
 
+_CREDENTIAL_HEADER_WORDS = ("auth", "token", "api-key", "apikey", "api_key", "secret", "cookie")
+
+
+def _is_credential_header(name: str) -> bool:
+    """Whether a request header name usually carries a credential."""
+    lowered = name.strip().lower()
+    return any(word in lowered for word in _CREDENTIAL_HEADER_WORDS)
+
+
 def _parse_and_validate_args(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -1706,13 +1760,35 @@ def _parse_and_validate_args(
         ca_bundle=args.ca_bundle or env_ssl.ca_bundle,
     )
 
-    credentials_in_use = bool(args.basic_auth or args.cookies)
-    url_is_https = (args.url or "").startswith("https://")
-    if credentials_in_use and url_is_https and not ssl_config.verify:
+    # Every target this run will reach: the URL (or scenario base_url) and
+    # each --url-file entry.
+    targets = [args.url] if args.url else []
+    targets += [entry.url for entry in getattr(args, "url_entries", None) or []]
+    schemes = {urlparse(t).scheme.lower() for t in targets}
+    tls_unverified = bool(schemes & {"https", "wss"}) and not ssl_config.verify
+
+    header_names = [name for name, _ in args.headers]
+    if scenario is not None:
+        header_names += [name for step in scenario.steps for name in (step.headers or {})]
+    credentials_in_use = bool(
+        args.basic_auth
+        or args.cookies
+        or any(_is_credential_header(name) for name in header_names)
+        or any(urlparse(t).username for t in targets)
+    )
+    if credentials_in_use and tls_unverified:
         print(
             "WARNING: SSL verification is disabled while credentials are in use. "
             "Your credentials may be exposed to a man-in-the-middle attack. "
-            "Use --ssl-verify to enable certificate validation.",
+            "Use --ssl-verify, or PYWRKR_SSL_VERIFY=1, to enable certificate validation.",
+            file=sys.stderr,
+        )
+    elif tls_unverified:
+        # Off by default for compatibility (#309); say so once, so an https://
+        # run is not mistaken for one that checked who it was talking to.
+        print(
+            "NOTE: the target's TLS certificate is not verified (the default). "
+            "Use --ssl-verify, or PYWRKR_SSL_VERIFY=1, to verify it.",
             file=sys.stderr,
         )
 
@@ -1844,7 +1920,17 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
         worker_secret = _resolve_worker_secret(args)
         result = asyncio.run(
             run_master(
-                config, args.bind, args.port, args.expect_workers, worker_secret=worker_secret
+                config,
+                args.bind,
+                args.port,
+                args.expect_workers,
+                worker_secret=worker_secret,
+                # Resolved during validation; a hand-built Namespace may lack it.
+                worker_wait_timeout=(
+                    DEFAULT_WORKER_WAIT_TIMEOUT
+                    if getattr(args, "worker_wait_timeout", None) is None
+                    else args.worker_wait_timeout
+                ),
             )
         )
         if result:
