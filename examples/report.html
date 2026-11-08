@@ -49,7 +49,7 @@
   <h1><span>pywrkr</span> Benchmark Report</h1>
   <div class="meta">
     GET http://127.0.0.1:8080/ &bull; Duration mode &bull;
-    10 connections &bull; 2026-11-08 19:04:18
+    10 connections &bull; 2026-11-08 19:12:48
   </div>
 </div>
 <div class="container">
@@ -58,7 +58,7 @@
 <div class="indicators">
   <div class="indicator">
     <div class="label">Total Requests</div>
-    <div class="value">2,718</div>
+    <div class="value">2,757</div>
   </div>
   <div class="indicator">
     <div class="label">Duration</div>
@@ -66,7 +66,7 @@
   </div>
   <div class="indicator">
     <div class="label">Requests/sec</div>
-    <div class="value green">541.4</div>
+    <div class="value green">548.2</div>
   </div>
   <div class="indicator">
     <div class="label">Errors</div>
@@ -74,19 +74,19 @@
   </div>
   <div class="indicator">
     <div class="label">Mean Latency</div>
-    <div class="value">18.41ms</div>
+    <div class="value">18.18ms</div>
   </div>
   <div class="indicator">
     <div class="label">p95 Latency</div>
-    <div class="value ">29.48ms</div>
+    <div class="value ">29.56ms</div>
   </div>
   <div class="indicator">
     <div class="label">p99 Latency</div>
-    <div class="value ">30.46ms</div>
+    <div class="value ">30.51ms</div>
   </div>
   <div class="indicator">
     <div class="label">Transfer</div>
-    <div class="value">310.85KB/s</div>
+    <div class="value">314.80KB/s</div>
   </div>
 </div>
 
@@ -141,10 +141,10 @@ Chart.defaults.borderColor = chartDefaults.borderColor;
 new Chart(document.getElementById('histChart'), {
   type: 'bar',
   data: {
-    labels: ["5", "6", "7", "8", "9", "10", "11", "12", "12", "13", "14", "15", "16", "17", "18", "18", "19", "20", "21", "22", "23", "24", "24", "25", "26", "27", "28", "29", "30", "31"],
+    labels: ["5", "6", "7", "8", "9", "10", "11", "11", "12", "13", "14", "15", "16", "17", "18", "18", "19", "20", "21", "22", "23", "24", "25", "25", "26", "27", "28", "29", "30", "31"],
     datasets: [{
       label: 'Requests',
-      data: [54, 91, 90, 84, 89, 86, 99, 88, 90, 107, 91, 83, 89, 120, 108, 110, 98, 83, 86, 83, 93, 94, 115, 96, 85, 97, 95, 100, 89, 25],
+      data: [52, 90, 94, 109, 111, 91, 102, 93, 101, 103, 106, 94, 71, 94, 97, 95, 95, 98, 89, 91, 81, 100, 92, 108, 110, 104, 94, 90, 87, 15],
       backgroundColor: ["rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(76, 175, 80, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(255, 193, 7, 0.8)", "rgba(244, 67, 54, 0.8)", "rgba(244, 67, 54, 0.8)"],
       borderRadius: 3,
     }]
@@ -170,7 +170,7 @@ new Chart(document.getElementById('pctChart'), {
     labels: ["p50", "p75", "p90", "p95", "p99"],
     datasets: [{
       label: 'Latency (ms)',
-      data: [18.32, 24.64, 28.28, 29.48, 30.46],
+      data: [18.21, 24.69, 28.17, 29.56, 30.51],
       borderColor: '#e94560',
       backgroundColor: 'rgba(233,69,96,0.15)',
       fill: true,
@@ -195,7 +195,7 @@ new Chart(document.getElementById('rpsChart'), {
     labels: ["0s", "1s", "2s", "3s", "4s"],
     datasets: [{
       label: 'Req/s',
-      data: [561.0, 556.0, 540.0, 544.0, 517.0],
+      data: [561.0, 561.0, 552.0, 555.0, 528.0],
       borderColor: '#4caf50',
       backgroundColor: 'rgba(76,175,80,0.12)',
       fill: true,
@@ -220,7 +220,7 @@ new Chart(document.getElementById('scChart'), {
   data: {
     labels: ["200"],
     datasets: [{
-      data: [2718],
+      data: [2757],
       backgroundColor: ["rgba(76, 175, 80, 0.85)"],
       borderWidth: 0,
     }]

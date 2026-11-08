@@ -109,17 +109,23 @@ def main() -> int:
     if not ready.wait(10):
         print(f"the test server did not start on {TARGET}", file=sys.stderr)
         return 1
+    status = 0
     for name, args in RUNS:
         cmd = [sys.executable, "-m", "pywrkr", *args, TARGET]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        (EXAMPLES / f"{name}-output.txt").write_text(proc.stdout + proc.stderr)
+        # One stream, so a warning lands where it was printed.
+        proc = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False
+        )
+        (EXAMPLES / f"{name}-output.txt").write_text(proc.stdout)
         print(f"{name}: exit {proc.returncode}")
-        if proc.returncode != 0:
-            return proc.returncode
         written = [a for a in args if a.startswith("examples/")]
         for path in [EXAMPLES / f"{name}-output.txt", *map(Path, written)]:
-            _tidy(path)
-    return 0
+            if path.exists():
+                _tidy(path)
+        # Keep going, so examples/ is never half fresh and half stale, but
+        # report a run that failed (or breached its thresholds).
+        status = status or proc.returncode
+    return status
 
 
 if __name__ == "__main__":

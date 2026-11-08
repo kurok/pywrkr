@@ -13,9 +13,11 @@ uv run python examples/regenerate.py
 
 `tests/test_examples.py` fails when the JSON keys or the report's sections no longer match these files.
 
-**Where the run configuration is reported.** The terminal output starts with the results; it does
-not repeat the run's settings (connections, duration, method, timeout, rate). Those are in the JSON
-output's `config` object (`mode`, `connections`, `users`, `duration`, `num_requests`, `rate`,
+**Where the run configuration is reported.** The terminal output no longer opens with a preamble
+(`Running benchmark`, `Method`, `Timeout`, `Rate Limit`): it was logged at INFO, and the CLI logs at
+WARNING. The results still show the mode, connections or users, keep-alive and, for a rate-limited
+run, the target RPS; the method and timeout are not printed. The JSON output's `config` object
+records the run's settings (`mode`, `connections`, `users`, `duration`, `num_requests`, `rate`,
 `url_host`, `read_body`), next to `schema_version` and the per-response `http_versions`.
 
 ## Quick Reference

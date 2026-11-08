@@ -27,8 +27,12 @@ RUN_NAMES = [
     "latency-breakdown",
     "threshold-check",
 ]
-# Keys a mode adds on top of a plain run's.
-MODE_KEYS = {"rate_limit_waits", "target_rps", "traffic_profile", "latency_breakdown"}
+# Keys each mode adds on top of a plain run's.
+MODE_KEYS = {
+    "rate-limited": {"rate_limit_waits", "target_rps"},
+    "traffic-profile-sine": {"rate_limit_waits", "target_rps", "traffic_profile"},
+    "latency-breakdown": {"latency_breakdown"},
+}
 
 
 def _sections(text: str) -> list[str]:
@@ -67,9 +71,11 @@ def test_example_json_has_the_current_schema(live_run):
     basic = set(json.loads((EXAMPLES / "basic-benchmark.json").read_text()))
     assert basic == current, "regenerate examples/ with python examples/regenerate.py"
     for name in RUN_NAMES:
-        keys = set(json.loads((EXAMPLES / f"{name}.json").read_text()))
-        assert current <= keys, f"{name}.json lacks {sorted(current - keys)}"
-        assert keys - current <= MODE_KEYS, f"{name}.json has {sorted(keys - current - MODE_KEYS)}"
+        shipped = json.loads((EXAMPLES / f"{name}.json").read_text())
+        assert current <= set(shipped), f"{name}.json lacks {sorted(current - set(shipped))}"
+        assert set(shipped) - current == MODE_KEYS.get(name, set()), name
+        # The nested run configuration drifts too.
+        assert set(shipped["config"]) == set(results["config"]), name
 
 
 def test_example_outputs_match_the_current_report(live_run):
