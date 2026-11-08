@@ -1246,6 +1246,8 @@ def test_split_domain(value, expected):
         "",
         "  ",
         "localhost:+80",
+        "localhost:",
+        "localhost:0",
         "localhost:\u0668\u0660",
     ],
 )
@@ -1266,6 +1268,11 @@ def test_domain_filter_matches_an_ip_address_exactly():
     assert kept == []
     kept = filter_entries(entries, HarImportConfig(allowed_domains=["127.0.0.1"]))
     assert [e.url for e in kept] == ["http://127.0.0.1:8080/a"]
+    # Nor does an IP --domain take in a name ending in it.
+    kept = filter_entries(
+        [_entry("http://foo.10.0.0.1/")], HarImportConfig(allowed_domains=["10.0.0.1"])
+    )
+    assert kept == []
 
 
 @pytest.mark.parametrize(

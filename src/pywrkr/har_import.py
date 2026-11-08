@@ -9,13 +9,12 @@ HAR spec: http://www.softwareishard.com/blog/har-12-spec/
 import base64
 import binascii
 import bisect
-import dataclasses
 import ipaddress
 import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from urllib.parse import ParseResult, parse_qsl, unquote, unquote_plus, urlparse, urlsplit
 
@@ -292,10 +291,10 @@ def _split_domain(value: str) -> tuple[str, int | None]:
 
     Raises:
         ValueError: The value has no host, or a port that is not a number in
-            0-65535.
+            1-65535.
     """
     text = value.strip()
-    bad = ValueError(f"--domain {value!r}: expected host or host:port with a port of 0-65535")
+    bad = ValueError(f"--domain {value!r}: expected host or host:port with a port of 1-65535")
     if not text:
         raise bad
     if "://" not in text and _is_ip_literal(text.split("%", 1)[0]) and ":" in text:
@@ -307,6 +306,9 @@ def _split_domain(value: str) -> tuple[str, int | None]:
         port = parts.port
     except ValueError:
         raise bad from None
+    if parts.netloc.endswith(":") or port == 0:
+        # "localhost:" would otherwise match every port, and port 0 nothing.
+        raise bad
     if port is not None:
         # urllib's port parsing differs across Python versions (``+80``);
         # accept only ASCII digits.
@@ -366,7 +368,9 @@ def _domain_allowed(parsed: ParseResult, allowed: list[tuple[str, int | None]]) 
     for want_host, want_port in allowed:
         # Subdomain matching is for names: an IP address only matches itself,
         # so --domain 0.0.1 does not take in 127.0.0.1.
-        if host != want_host and (host_is_ip or not host.endswith("." + want_host)):
+        if host != want_host and (
+            host_is_ip or _is_ip_literal(want_host) or not host.endswith("." + want_host)
+        ):
             continue
         if want_port is None or want_port == port:
             return True
@@ -382,7 +386,7 @@ def filter_entries(
     Raises:
         ValueError: If any include or exclude pattern is not a valid regex, or
             an ``allowed_domains`` value is empty, has no host, or has a port
-            that is not a number in 0-65535.
+            that is not a number in 1-65535.
     """
     # Compile user-supplied patterns once up front so an invalid regex fails
     # before we touch any entries, and so each URL is matched against
@@ -1044,7 +1048,7 @@ def convert_har(
 
     if not filtered:
         hint = ""
-        unfiltered = dataclasses.replace(config, allowed_domains=[])
+        unfiltered = replace(config, allowed_domains=[])
         if config.allowed_domains and filter_entries(entries, unfiltered):
             # --domain is what emptied the result: say what it was compared to.
             hosts: list[str] = []
