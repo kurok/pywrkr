@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `har-import --domain localhost:8080`, the address a local recording is made against, matched nothing because the filter compared hostnames without the port, so every entry was dropped. A `host:port` value now matches that host on that port (a URL without a port counts as 80 / 443); a bare host still matches any port, as before; hosts compare case-insensitively. When the filters leave nothing, the error now names the `--domain` values and the recording's hosts. (#323)
+- `har-import --domain localhost:8080`, the address a local recording is made against, matched nothing because the filter compared hostnames without the port, so every entry was dropped. A `host:port` value now matches that host on that port (a URL without a port counts as 80 / 443); a bare host still matches any port, as before; a pasted URL such as `http://localhost:8080/` is accepted; hosts compare case-insensitively; an IP address matches only itself, not as a suffix; and an invalid port in `--domain` is an error rather than a silent no-match. `example.com` and `example.com:80` now count as one host for the multi-host check. When `--domain` is what left nothing, the error names its values and the recording's hosts. (#323)
 
 ### Security
 

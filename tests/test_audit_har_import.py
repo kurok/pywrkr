@@ -1211,3 +1211,88 @@ def test_empty_filter_error_names_the_domain_values(tmp_path):
     assert "'127.0.0.1:8080'" in message
     assert "localhost:8080" in message
     assert "a port only when one is given" in message
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("api.example.com", ("api.example.com", None)),
+        (" Localhost:8080 ", ("localhost", 8080)),
+        ("[::1]:8080", ("::1", 8080)),
+        ("::1", ("::1", None)),
+        ("http://localhost:8080/path?q=1", ("localhost", 8080)),
+        ("https://Example.com", ("example.com", None)),
+        ("", ("", None)),
+    ],
+)
+def test_split_domain(value, expected):
+    from pywrkr.har_import import _split_domain
+
+    assert _split_domain(value) == expected
+
+
+@pytest.mark.parametrize("value", ["localhost:99999", "host:abc"])
+def test_split_domain_rejects_a_bad_port(value):
+    from pywrkr.har_import import _split_domain
+
+    with pytest.raises(ValueError, match="expected host or host:port"):
+        _split_domain(value)
+
+
+def test_domain_filter_accepts_a_pasted_url():
+    assert _kept(["http://localhost:8080/"]) == ["http://localhost:8080/x"]
+
+
+def test_domain_filter_matches_an_ip_address_exactly():
+    entries = [_entry("http://127.0.0.1:8080/a"), _entry("http://10.0.0.1/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["0.0.1"]))
+    assert kept == []
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["127.0.0.1"]))
+    assert [e.url for e in kept] == ["http://127.0.0.1:8080/a"]
+
+
+def test_default_port_spelled_out_is_one_origin():
+    """--domain example.com:80 keeps both spellings; the scenario must accept them."""
+    entries = [_entry("http://example.com/a"), _entry("http://Example.com:80/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["example.com:80"]))
+    assert len(kept) == 2
+    scenario = har_to_scenario(kept, HarImportConfig())
+    assert len(scenario["steps"]) == 2
+
+
+def test_empty_filter_hint_strips_userinfo_escapes_and_caps(tmp_path):
+    urls = ["http://user:s3cret@h0.test/x?token=abc", "http://h\x1bx.test/"] + [
+        f"http://h{i}.test/" for i in range(1, 12)
+    ]
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {"request": {"url": u, "method": "GET"}, "response": {"status": 200}} for u in urls
+            ]
+        },
+    )
+    with pytest.raises(ValueError) as exc:
+        convert_har(path, config=HarImportConfig(allowed_domains=["nowhere.test"]))
+    message = str(exc.value)
+    assert "s3cret" not in message and "token" not in message
+    assert "\x1b" not in message
+    assert "h10.test" not in message
+    assert message.endswith(" ....")
+
+
+def test_empty_filter_hint_only_when_domain_emptied_it(tmp_path):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "http://localhost:8080/app.css", "method": "GET"},
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+    with pytest.raises(ValueError) as exc:
+        convert_har(path, config=HarImportConfig(allowed_domains=["localhost"]))
+    assert "--domain was" not in str(exc.value)
