@@ -10,12 +10,14 @@ on:
       - "src/**"
       - "pyproject.toml"
       - ".github/workflows/docker-publish.yml"
+      - ".github/scripts/check-image.sh"
   pull_request:
     paths:
       - "Dockerfile"
       - "src/**"
       - "pyproject.toml"
       - ".github/workflows/docker-publish.yml"
+      - ".github/scripts/check-image.sh"
 
 env:
   REGISTRY: ghcr.io
