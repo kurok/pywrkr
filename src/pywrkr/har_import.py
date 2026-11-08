@@ -8,13 +8,14 @@ HAR spec: http://www.softwareishard.com/blog/har-12-spec/
 
 import base64
 import binascii
+import bisect
 import json
 import logging
 import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, unquote_plus, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -468,12 +469,8 @@ def har_to_scenario(
             # a quoted string) must stay a string: coercing it to int/bool/None
             # makes the scenario serializer emit a raw scalar that aiohttp
             # rejects at request time, silently dropping the recorded body.
-            try:
-                parsed = json.loads(entry.body)
-            except (json.JSONDecodeError, TypeError):
-                step["body"] = entry.body
-            else:
-                step["body"] = parsed if isinstance(parsed, (dict, list)) else entry.body
+            parsed_body = _parse_json_body(entry.body)
+            step["body"] = parsed_body if isinstance(parsed_body, (dict, list)) else entry.body
 
         # Status assertion
         if config.assert_status and isinstance(entry.status, int) and 200 <= entry.status < 400:
@@ -567,8 +564,159 @@ _CREDENTIAL_HEADER_NAMES = frozenset(
         "x-csrf-token",
     }
 )
-_CREDENTIAL_SUBSTRINGS = ("token", "secret", "key", "password")
-_CREDENTIAL_QUERY_RE = re.compile(r"token|key|secret|password|sig", re.IGNORECASE)
+# Which field names look like a credential.
+#
+# The base is the substring rule token|key|secret|password|sig, widened
+# with pass/pwd/session ids, applied to the lower-cased name with separators
+# removed, so "passWord", "x-api-keys" and "apikeyid" all match. The only names
+# it deliberately stops flagging are the ordinary words below: each is cut out
+# of the name before the match, so "monkey" is quiet but "monkey_api_key" is
+# not. Leaning towards warning is intended -- a missed credential is committed
+# silently, a spurious warning costs a glance.
+_ORDINARY_WORDS = tuple(
+    sorted(
+        {
+            # ...key
+            "monkey", "donkey", "turkey", "hockey", "jockey", "whiskey", "turnkey",
+            "keyboard", "keyword", "keynote", "keyframe", "keystroke", "hotkey",
+            "sortkey", "cachekey", "idempotencykey", "partitionkey", "foreignkey",
+            "publickey", "dedupkey",
+            # ...sig
+            "design", "signup", "signin", "signout", "signal", "assign", "assignee",
+            "assigned", "assignment", "consign",
+            "resign", "insight",
+            # ...secret
+            "secretary",
+            # ...pass
+            "passport", "passenger", "passage", "passive", "passed", "passing",
+            "passes", "compass", "bypass", "surpass", "trespass", "overpass",
+            "underpass", "passthrough",
+            # ...token: counts and pagination cursors, not secrets
+            "maxtokens", "maxnewtokens", "prompttokens", "completiontokens",
+            "totaltokens", "inputtokens", "outputtokens", "stoptokens", "numtokens",
+            "tokencount", "tokenizer", "nexttoken", "pagetoken", "nextpagetoken",
+            "continuationtoken",
+        },
+        key=len,
+        reverse=True,
+    )
+)  # fmt: skip
+_CREDENTIAL_COMPACT_RE = re.compile(
+    r"token|key|secret|pass|pwd|sig|credential|sessid|sessionid|jwt"
+)
+_NAME_SEGMENT_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+# Short words that are a credential only as a whole segment ("sid", "otp"), and
+# ones that are only as the last segment ("card_pin", but not "pin_code_hint").
+_CREDENTIAL_NAME_SEGMENTS = frozenset({"sid", "otp", "bearer", "authorization"})
+_CREDENTIAL_LAST_SEGMENTS = frozenset({"pin", "auth"})
+# Free text has no field names, so only whole words count there. The letter
+# boundaries are case-sensitive so "accessToken" matches but "Secretary" and
+# "tokenizer" do not; long base64-like runs are skipped, since random data
+# spells "pwd" now and then.
+_CREDENTIAL_TEXT_RE = re.compile(
+    r"(?-i:(?<![a-z])|(?<=[a-z])(?=[A-Z]))"
+    r"(?:passw(?:or)?ds?|pwd|secrets?|token|api[_-]?key|credential|bearer)"
+    r"(?-i:(?![a-z]))",
+    re.IGNORECASE,
+)
+# Standard and URL-safe base64 alphabets; "=" ends a run so
+# "access_token=<long token>" keeps its name outside it.
+_OPAQUE_RUN_RE = re.compile(r"[A-Za-z0-9+/_-]{64,}={0,2}")
+# A run of these is one word in camelCase or snake/kebab case, the way people
+# write it; random base64 rarely is.
+_WORD_SHAPE_RE = re.compile(r"[A-Z]?[a-z]+(?:[_-]?[A-Z]?[a-z]+)*|[A-Z]+(?:[_-]?[A-Z]+)*")
+# A name is printed in the warning only when it looks like an identifier. A HAR
+# can hold a "field name" that is really a value -- a token used as a JSON key,
+# a form part with no "=" -- or one with control characters that would forge
+# log lines; those print as a placeholder.
+_PRINTABLE_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.\[\]-]{0,63}")
+_ALNUM_RUN_RE = re.compile(r"[A-Za-z0-9]+")
+_UNNAMED = "<unnamed field>"
+_MULTIPART_NAME_RE = re.compile(r'\bname="([^"\r\n]*)"')
+# Field names are short; a 64-256 character base64 blob ending in "=" is not
+# a form with one field.
+_FORM_BODY_RE = re.compile(r"[^=&\s]{1,64}=[^&\s]*(?:&[^=&\s]{1,64}=[^&\s]*)*")
+# Deeper JSON than this is kept as a string: encoding it again recurses once
+# per level and overflows the stack on some Python versions.
+_MAX_JSON_DEPTH = 200
+# Longer field names are treated as values, not judged.
+_MAX_NAME_LENGTH = 256
+
+
+def _is_credential_name(name: str) -> bool:
+    """Whether a header, query, form or JSON field name looks like a credential."""
+    if len(name) > _MAX_NAME_LENGTH:
+        # A "name" this long is a value (a base64 blob posted as a form body,
+        # whose "+" the form parser has already turned into spaces), so it is
+        # not judged; the body's own text check still runs when no field is
+        # found.
+        return False
+    segments = [seg.lower() for seg in _NAME_SEGMENT_RE.findall(name)]
+    compact = "".join(segments)
+    # An ordinary word is cut out only where it lines up with the name's own
+    # segment boundaries: "sortKey" and "max_tokens" go quiet, but "common_key"
+    # (not "monkey"), "presignedUrl" (not "resign") and "login_by_password"
+    # (not "bypass") still count.
+    bounds = {0}
+    pos = 0
+    for seg in segments:
+        pos += len(seg)
+        bounds.add(pos)
+    masked = list(compact)
+    for word in _ORDINARY_WORDS:
+        start = compact.find(word)
+        while start != -1:
+            end = start + len(word)
+            if start in bounds and end in bounds:
+                masked[start:end] = "|" * len(word)
+            start = compact.find(word, start + 1)
+    if _CREDENTIAL_COMPACT_RE.search("".join(masked)):
+        return True
+    if any(seg in _CREDENTIAL_NAME_SEGMENTS for seg in segments):
+        return True
+    if any(a == "session" and b == "id" for a, b in zip(segments, segments[1:])):
+        return True
+    words = [seg for seg in segments if not seg.isdigit()]
+    return bool(words) and words[-1] in _CREDENTIAL_LAST_SEGMENTS
+
+
+def _text_mentions_credential(text: str) -> bool:
+    """Whether free text names a credential.
+
+    Random base64 spells "pwd" now and then, so a match inside a long opaque
+    run counts only when it is set off within the run -- by ``-``, ``/``, ``+``
+    or the run's own edges -- as in ``reset-password/<token>`` or
+    ``api/token/<token>``. A word buried in random characters does not count.
+    """
+    runs = [(m.start(), m.end()) for m in _OPAQUE_RUN_RE.finditer(text)]
+    starts = [start for start, _ in runs]
+    for match in _CREDENTIAL_TEXT_RE.finditer(text):
+        i = bisect.bisect_right(starts, match.start()) - 1
+        if i < 0 or match.end() > runs[i][1]:
+            return True  # not inside an opaque run
+        run_start, run_end = runs[i]
+        word = match.group()
+        start, end = match.start(), match.end()
+        # Inside a run the word must be set apart: by a separator, the run's
+        # edge, or -- for words of 5+ letters, which random data almost never
+        # spells -- a camelCase boundary ("resetPassword/<token>").
+        long_word = len(word) >= 5
+        before_ok = (
+            start == run_start
+            or text[start - 1] in "-/+_"
+            or (long_word and text[start - 1].islower() and word[0].isupper())
+        )
+        after_ok = (
+            end >= run_end
+            or text[end] in "-/+_="
+            or (long_word and text[end].isupper() and word[-1].islower())
+        )
+        # Written the way people write words ("pwd", "PWD", "Token",
+        # "ApiKey"), not the mixed case random base64 produces ("PWd").
+        case_ok = bool(_WORD_SHAPE_RE.fullmatch(word))
+        if before_ok and after_ok and case_ok:
+            return True
+    return False
 
 
 def _credential_headers(headers: dict[str, str]) -> list[str]:
@@ -576,37 +724,155 @@ def _credential_headers(headers: dict[str, str]) -> list[str]:
     found = [
         name
         for name in headers
-        if name.lower() in _CREDENTIAL_HEADER_NAMES
-        or any(part in name.lower() for part in _CREDENTIAL_SUBSTRINGS)
+        if name.lower() in _CREDENTIAL_HEADER_NAMES or _is_credential_name(name)
     ]
     return sorted(found, key=str.lower)
 
 
-def _credential_query_params(url: str) -> list[str]:
+def _display_name(name: str) -> str:
+    """The name as it may appear in the warning, or a placeholder."""
+    if not _PRINTABLE_NAME_RE.fullmatch(name):
+        return _UNNAMED
+    for run in _ALNUM_RUN_RE.findall(name):
+        # "newPasswordConfirmation", "oauth2Token" and "password12" are names;
+        # "AbCdEf0123456789" and 32+ unbroken characters are values.
+        if len(run) >= 32 or (len(run) >= 10 and sum(c.isdigit() for c in run) >= 3):
+            return _UNNAMED
+    return name
+
+
+def _credential_form_fields(encoded: str) -> set[str]:
+    """Credential-shaped field names in a query string or form-encoded body.
+
+    A bare part with no ``=`` may be a value rather than a name, so when it
+    looks like a credential it is reported as ``<unnamed field>`` and never
+    printed.
+    """
+    parts = encoded.split("&")
+    pairs = "&".join(part for part in parts if "=" in part)
+    found = {
+        _display_name(name)
+        for name, _ in parse_qsl(pairs, keep_blank_values=True)
+        if _is_credential_name(name)
+    }
+    if any("=" not in part and _is_credential_name(unquote_plus(part)) for part in parts):
+        found.add(_UNNAMED)
+    return found
+
+
+def _credential_query_params(url: str) -> set[str]:
     """Query parameter names that look like they carry a credential."""
-    query = urlparse(url).query
-    if not query:
-        return []
-    names = {name for name, _ in parse_qsl(query, keep_blank_values=True)}
-    return sorted((n for n in names if _CREDENTIAL_QUERY_RE.search(n)), key=str.lower)
+    return _credential_form_fields(urlparse(url).query)
 
 
-def _warn_on_credentials(entries: list[HarEntry], config: HarImportConfig) -> None:
+def _parse_json_body(body: str) -> object:
+    """``json.loads`` that returns None for anything it cannot parse or nests too deeply."""
+    try:
+        parsed = json.loads(body)
+    except (TypeError, ValueError, RecursionError):  # JSONDecodeError is a ValueError
+        return None
+    stack: list[tuple[object, int]] = [(parsed, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _MAX_JSON_DEPTH:
+            return None
+        if isinstance(node, dict):
+            stack.extend((v, depth + 1) for v in node.values())
+        elif isinstance(node, list):
+            stack.extend((v, depth + 1) for v in node)
+    return parsed
+
+
+def _credential_body_fields(entry: HarEntry) -> tuple[set[str], bool]:
+    """Credential-shaped field names in a recorded request body.
+
+    A JSON object or array is walked, nested objects included: its keys are
+    judged as names and its string values as free text. A URL-encoded form body
+    (by MIME type or by shape) is split into its field names, and a multipart
+    body into its part names. Anything else, or a body whose names say
+    nothing, is judged as free text.
+
+    Returns:
+        The matching field names, and whether the body's text mentions a
+        credential where no field name did.
+    """
+    body = entry.body
+    if not body or not isinstance(body, str):
+        # Exporters sometimes put a JSON object in postData.text; it is written
+        # through untouched and is not scanned here, as on main.
+        return set(), False
+
+    parsed = _parse_json_body(body)
+    if isinstance(parsed, (dict, list)):
+        names: set[str] = set()
+        text_hit = False
+        stack: list[object] = [parsed]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if _is_credential_name(key):
+                        names.add(_display_name(key))
+                    stack.append(value)
+            elif isinstance(node, list):
+                stack.extend(node)
+            elif isinstance(node, str) and _text_mentions_credential(node):
+                text_hit = True
+        return names, text_hit and not names
+
+    content_type = entry.content_type.lower() if isinstance(entry.content_type, str) else ""
+    stripped = body.strip()
+    if "x-www-form-urlencoded" in content_type or _FORM_BODY_RE.fullmatch(stripped):
+        fields = _credential_form_fields(stripped)
+        if fields:
+            return fields, False
+    elif "multipart/" in content_type:
+        fields = {
+            _display_name(n) for n in _MULTIPART_NAME_RE.findall(body) if _is_credential_name(n)
+        }
+        if fields:
+            return fields, False
+
+    return set(), _text_mentions_credential(body)
+
+
+def _warn_on_credentials(
+    entries: list[HarEntry],
+    config: HarImportConfig,
+    include_bodies: bool = True,
+    include_headers: bool = True,
+) -> None:
     """Warn when the output will contain something that looks like a secret.
 
     Silence here would be the dangerous part: nothing else in the pipeline
     tells the user that the file they are about to commit has a live token in
     it.
+
+    Args:
+        entries: The entries that will be written.
+        config: Import options; headers are only checked when they are kept.
+        include_bodies: Whether request bodies reach the output. The url-file
+            format drops them, so they cannot leak there.
+        include_headers: Whether headers reach the output; url-file drops
+            them too.
     """
     header_names: set[str] = set()
     query_names: set[str] = set()
+    body_names: set[str] = set()
+    text_bodies = 0
 
     for entry in entries:
-        if config.preserve_headers:
-            header_names.update(_credential_headers(_build_step_headers(entry, config)))
+        if include_headers and config.preserve_headers:
+            header_names.update(
+                _display_name(h) for h in _credential_headers(_build_step_headers(entry, config))
+            )
         query_names.update(_credential_query_params(entry.url))
+        if include_bodies:
+            fields, flagged = _credential_body_fields(entry)
+            body_names.update(fields)
+            text_bodies += flagged
 
-    if not header_names and not query_names:
+    if not header_names and not query_names and not body_names and not text_bodies:
         return
 
     parts = []
@@ -614,6 +880,13 @@ def _warn_on_credentials(entries: list[HarEntry], config: HarImportConfig) -> No
         parts.append("headers " + ", ".join(sorted(header_names, key=str.lower)))
     if query_names:
         parts.append("query parameters " + ", ".join(sorted(query_names, key=str.lower)))
+    if body_names:
+        parts.append("request body fields " + ", ".join(sorted(body_names, key=str.lower)))
+    if text_bodies:
+        parts.append(
+            f"{text_bodies} request bod{'y' if text_bodies == 1 else 'ies'} "
+            "whose text mentions a password, secret, token, API key or credential"
+        )
 
     logger.warning(
         "The generated output contains %s, which may hold live credentials "
@@ -659,7 +932,8 @@ def convert_har(
             f"Try --include-static or adjusting --domain / --exclude filters."
         )
 
-    _warn_on_credentials(filtered, config)
+    as_scenario = output_format == "scenario"
+    _warn_on_credentials(filtered, config, include_bodies=as_scenario, include_headers=as_scenario)
 
     scenario_name = name or os.path.splitext(os.path.basename(har_path))[0]
 
