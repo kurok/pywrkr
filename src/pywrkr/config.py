@@ -35,6 +35,25 @@ logger = logging.getLogger(__name__)
 HTTP_SCHEMES = ("http", "https")
 
 
+def loggable_url(url: str) -> str:
+    """A URL fit for a log line: no userinfo, and the query string redacted.
+
+    A target URL can carry a token in its query string (or ``user:pass@`` in
+    its authority), and logs -- CI logs especially -- are kept and shared.
+
+    Args:
+        url: The URL to log.
+
+    Returns:
+        ``scheme://host[:port]/path``, with ``?<redacted>`` when there was a
+        query string.
+    """
+    parsed = urlparse(url)
+    host = parsed.netloc.rpartition("@")[2]
+    shown = f"{parsed.scheme}://{host}{parsed.path}" if parsed.scheme else url.split("?", 1)[0]
+    return shown + ("?<redacted>" if parsed.query else "")
+
+
 def check_url_scheme(url: object, context: str = "", extra_schemes: tuple[str, ...] = ()) -> None:
     """Refuse a target URL whose scheme pywrkr does not drive.
 

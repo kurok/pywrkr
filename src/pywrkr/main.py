@@ -1703,13 +1703,26 @@ def _parse_and_validate_args(
         ca_bundle=args.ca_bundle or env_ssl.ca_bundle,
     )
 
-    credentials_in_use = bool(args.basic_auth or args.cookies)
+    credential_headers = {"authorization", "proxy-authorization", "cookie", "x-api-key"}
+    credentials_in_use = bool(
+        args.basic_auth
+        or args.cookies
+        or any(name.strip().lower() in credential_headers for name, _ in args.headers)
+    )
     url_is_https = (args.url or "").startswith("https://")
     if credentials_in_use and url_is_https and not ssl_config.verify:
         print(
             "WARNING: SSL verification is disabled while credentials are in use. "
             "Your credentials may be exposed to a man-in-the-middle attack. "
             "Use --ssl-verify to enable certificate validation.",
+            file=sys.stderr,
+        )
+    elif url_is_https and not ssl_config.verify:
+        # Off by default for compatibility (#309); say so once, so an https://
+        # run is not mistaken for one that checked who it was talking to.
+        print(
+            "NOTE: the target's TLS certificate is not verified (the default). "
+            "Use --ssl-verify, or PYWRKR_SSL_VERIFY=1, to verify it.",
             file=sys.stderr,
         )
 

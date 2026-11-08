@@ -34,6 +34,7 @@ from pywrkr.config import (
     Threshold,
     WorkerStats,
     check_url_scheme,
+    loggable_url,
     merge_stats,
     parse_extract_spec,
 )
@@ -1696,7 +1697,7 @@ async def run_worker_node(
             with contextlib.suppress(OSError, ConnectionError):
                 await _send_msg(writer, {"type": "error", "error": refusal})
             return 1
-        logger.info("Worker: received config. Target: %s", config.url)
+        logger.info("Worker: received config. Target: %s", loggable_url(config.url))
 
         # The master decides the protocol, but each worker needs the backend
         # installed locally. Fail here with the fix, rather than silently

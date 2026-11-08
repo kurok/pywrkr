@@ -588,6 +588,24 @@ class TestSslCredentialWarning:
         captured = capsys.readouterr()
         assert "WARNING" not in captured.err
 
+    @pytest.mark.parametrize("header", ["Authorization: Bearer x", "X-API-Key: k", "cookie: a=b"])
+    def test_warning_with_a_credential_header_no_verify(self, capsys, header):
+        """-H Authorization carries a credential just as -A does (#309)."""
+        _parse(["-H", header, "https://example.com/"])
+        captured = capsys.readouterr()
+        assert "WARNING: SSL verification is disabled while credentials" in captured.err
+
+    def test_https_without_verify_notes_it_once(self, capsys):
+        """Unverified TLS stays the default, but is no longer silent (#309)."""
+        _parse(["https://example.com/"])
+        err = capsys.readouterr().err
+        assert err.count("NOTE: the target's TLS certificate is not verified") == 1
+
+    def test_no_note_when_verifying_or_on_plain_http(self, capsys):
+        _parse(["--ssl-verify", "https://example.com/"])
+        _parse(["http://example.com/"])
+        assert "NOTE" not in capsys.readouterr().err
+
 
 # ---------------------------------------------------------------------------
 # README / argparse parity

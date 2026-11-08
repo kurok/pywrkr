@@ -5,7 +5,7 @@ import os
 import time
 from dataclasses import dataclass, replace
 
-from pywrkr.config import BenchmarkConfig, WorkerStats
+from pywrkr.config import BenchmarkConfig, WorkerStats, loggable_url
 from pywrkr.reporting import (
     build_multi_url_json,
     print_multi_url_summary,
@@ -88,7 +88,9 @@ async def run_multi_url(
     for i, entry in enumerate(url_entries, 1):
         sep = "\u2500" * 70
         logger.info("\n%s", sep)
-        logger.info("  Endpoint %s/%s: %s %s", i, len(url_entries), entry.method, entry.url)
+        logger.info(
+            "  Endpoint %s/%s: %s %s", i, len(url_entries), entry.method, loggable_url(entry.url)
+        )
         logger.info("%s\n", sep)
 
         # Clone config with this URL and method, deep-copying all mutable
