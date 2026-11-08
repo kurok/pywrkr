@@ -16,7 +16,7 @@ import os
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from urllib.parse import ParseResult, parse_qsl, unquote, unquote_plus, urlparse, urlsplit
+from urllib.parse import ParseResult, parse_qsl, unquote_plus, urlparse, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +294,14 @@ def _split_domain(value: str) -> tuple[str, int | None]:
             1-65535.
     """
     text = value.strip()
+    if "@" in text.partition("://")[2].split("/", 1)[0] or ("://" not in text and "@" in text):
+        # Never echo a value that carries credentials.
+        raise ValueError("--domain: give host or host:port, not a URL with user:password@")
     bad = ValueError(f"--domain {value!r}: expected host or host:port with a port of 1-65535")
     if not text:
+        raise bad
+    if "://" not in text and any(c in text for c in "/?#"):
+        # urlsplit would cut the value there and drop a port after it.
         raise bad
     if "://" not in text and _is_ip_literal(text.split("%", 1)[0]) and ":" in text:
         # An unbracketed IPv6 address: all of it is the host.
@@ -330,7 +336,11 @@ def _canon_host(host: str) -> str:
     So ``Example.com.`` matches ``example.com``, ``0:0:0:0:0:0:0:1`` matches
     ``[::1]``, and a URL's ``%25``-escaped zone id matches ``fe80::1%eth0``.
     """
-    host = unquote(host).strip("[]").lower().rstrip(".")
+    # Decode only the %25 of an IPv6 zone id: decoding a name would merge
+    # ex%61mple.com with example.com while base_url keeps the raw spelling.
+    host = host.strip("[]").lower().rstrip(".")
+    if ":" in host:
+        host = host.replace("%25", "%", 1)
     try:
         return str(ipaddress.ip_address(host))
     except ValueError:

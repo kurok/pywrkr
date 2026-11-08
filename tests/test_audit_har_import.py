@@ -1248,6 +1248,9 @@ def test_split_domain(value, expected):
         "localhost:+80",
         "localhost:",
         "localhost:0",
+        "localhost#8080",
+        "h:8080?x",
+        "h/8080",
         "localhost:\u0668\u0660",
     ],
 )
@@ -1256,6 +1259,23 @@ def test_split_domain_rejects_a_bad_port(value):
 
     with pytest.raises(ValueError, match="expected host or host:port"):
         _split_domain(value)
+
+
+@pytest.mark.parametrize(
+    "value", ["http://admin:s3cret@staging.test:8080/", "admin:s3cret@staging.test", "u:p@h:99999"]
+)
+def test_split_domain_never_echoes_credentials(value):
+    from pywrkr.har_import import _split_domain
+
+    with pytest.raises(ValueError) as exc:
+        _split_domain(value)
+    assert "s3cret" not in str(exc.value) and ":p@" not in str(exc.value)
+
+
+def test_domain_filter_does_not_decode_a_hostname():
+    entries = [_entry("http://ex%61mple.com/a"), _entry("http://example.com/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["example.com"]))
+    assert [e.url for e in kept] == ["http://example.com/b"]
 
 
 def test_domain_filter_accepts_a_pasted_url():
