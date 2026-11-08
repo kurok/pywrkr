@@ -1005,5 +1005,118 @@ class TestPlainStepsSkipResponseCapture(_CorrelationServerMixin, AioHTTPTestCase
         self.assertTrue(all(body is not None for _, body, _ in capturing))
 
 
+# ---------------------------------------------------------------------------
+# A user regex against server-supplied text (#314)
+# ---------------------------------------------------------------------------
+
+
+class TestRegexExtractorBounds(unittest.TestCase):
+    """Test the bounds and the warning, never a catastrophic match itself."""
+
+    def _extract(self, expr, body):
+        rules = {"v": compile_regex_extractor("v", expr)}
+        return apply_extractors(rules, body, {})
+
+    def test_regex_extractor_is_not_matched_beyond_the_cap(self):
+        from pywrkr.user_regex import SCAN_MAX
+
+        values, failures = self._extract(r"token=(\w+);", b"x" * SCAN_MAX + b"token=abc;")
+        self.assertEqual(values, {})
+        self.assertIn(f"did not match the first {SCAN_MAX} characters", failures[0])
+
+    def test_regex_extractor_still_matches_within_the_cap(self):
+        from pywrkr.user_regex import SCAN_MAX
+
+        body = b"token=abc;" + b"x" * (SCAN_MAX * 4)
+        values, failures = self._extract(r"token=(\w+);", body)
+        self.assertEqual((values, failures), ({"v": "abc"}, []))
+        values, failures = self._extract(r'"id":\s*(\d+)', b'{"id": 42}')
+        self.assertEqual(values, {"v": "42"})
+
+    def test_a_capture_running_into_the_cut_is_not_a_truncated_value(self):
+        """token=([a-z]+) would capture only the part of the token before the cut."""
+        from pywrkr.user_regex import SCAN_MAX
+
+        body = b" " * (SCAN_MAX - 10) + b"token=" + b"a" * 100
+        values, failures = self._extract(r"token=([a-z]+)", body)
+        self.assertEqual(values, {})
+        self.assertIn("undecided", failures[0])
+
+    def test_a_greedy_capture_that_backtracked_inside_the_window_is_undecided(self):
+        """The engine read past the cut and settled on a shorter value inside the window."""
+        from pywrkr.user_regex import SCAN_MAX
+
+        cases = [
+            (
+                r'src="(.*)"',
+                " " * 7000 + '<img src="a.png" alt="x">' + " " * 2000 + '<b class="z">',
+            ),
+            (r"a(\d+)5", " " * 8000 + "a15" + "1" * 1000 + "5"),
+            (r"(\w+)(?:=.{300}|;)", " " * 7900 + "foo=" + "x" * 96 + " bar;" + "x" * 1000),
+        ]
+        for expr, text in cases:
+            with self.subTest(expr=expr):
+                self.assertGreater(len(text), SCAN_MAX)
+                values, failures = self._extract(expr, text.encode())
+                self.assertEqual(values, {})
+                self.assertIn("undecided", failures[0])
+
+    def test_a_terminated_capture_ending_at_the_cut_is_decided(self):
+        from pywrkr.user_regex import SCAN_MAX
+
+        body = (" " * (SCAN_MAX - 5) + "id=1;" + "x" * 100).encode()
+        values, failures = self._extract(r"id=(\d+);", body)
+        self.assertEqual((values, failures), ({"v": "1"}, []))
+
+    def test_a_body_between_one_and_two_windows_is_exact(self):
+        """The confirming search covers the whole body, so the value is the whole-body one."""
+        from pywrkr.user_regex import SCAN_MAX
+
+        text = " " * 7000 + '<img src="a.png" alt="x">' + " " * 2000 + '<b class="z">'
+        self.assertLess(len(text), 2 * SCAN_MAX)
+        values, failures = self._extract(r'src="(.*)"', text.encode())
+        # Undecided here because the 8K and 16K answers differ; never the short value.
+        self.assertNotEqual(values.get("v"), 'a.png" alt="x')
+
+    def test_documented_limit_reading_past_twice_the_window(self):
+        """Pins the documented limit: a greedy match reading past 16,384 characters,
+        from a start near the 8,192 mark, can still yield a value that differs
+        from the whole-body one. If this starts failing, the docs can be tightened."""
+        body = " " * 8000 + "<td>a</td>" + "x" * 8500 + "</td>"
+        values, failures = self._extract(r"(?s)<td>(.*)</td>", body.encode())
+        self.assertEqual((values, failures), ({"v": "a"}, []))
+
+    def test_a_cut_dependent_pattern_is_undecided(self):
+        from pywrkr.user_regex import SCAN_MAX
+
+        body = b"id=1;" + b"x" * SCAN_MAX + b"ERROR"
+        values, failures = self._extract(r"(?s)id=(\d+);(?!.*ERROR)", body)
+        self.assertEqual(values, {})
+        self.assertIn("undecided", failures[0])
+
+    def test_regex_extractor_emits_a_backtracking_warning(self):
+        # The pattern is read from data, as a scenario file supplies it, so a
+        # static analyser does not mistake this deliberately nested test
+        # pattern for one the code itself uses. It is compiled, never matched.
+        nested = json.loads('{"regex": "(a+)+(b)"}')["regex"]
+        with self.assertLogs("pywrkr.templating", level="WARNING") as logs:
+            compile_regex_extractor("token", nested)
+        message = "\n".join(logs.output)
+        self.assertIn("extract 'token'", message)
+        self.assertIn("'(a+)+(b)'", message)
+        self.assertIn("catastrophic backtracking (e.g. '(a+)+')", message)
+
+    def test_ordinary_extractor_patterns_do_not_warn(self):
+        for expr in (r'"token":\s*"([^"]+)"', r"name=\"csrf\" value=\"([^\"]+)\"", r"(\d{3})"):
+            with self.subTest(expr=expr), self.assertNoLogs("pywrkr.templating", "WARNING"):
+                compile_regex_extractor("v", expr)
+
+    def test_both_paths_share_one_bound(self):
+        from pywrkr import assertions, user_regex
+
+        self.assertEqual(assertions._ASSERT_MATCH_MAX, user_regex.SCAN_MAX)
+        self.assertIs(assertions._has_nested_repetition, user_regex.has_nested_repetition)
+
+
 if __name__ == "__main__":
     unittest.main()
