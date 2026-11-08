@@ -135,10 +135,13 @@ pywrkr har-import recording.har --no-think-time -o scenario.json               #
 > because a scenario is usually replayed against the same environment, but
 > `har-import` warns when it writes something that looks like a credential: a
 > header, query parameter or request body field whose name looks like one (JSON
-> keys at any depth and URL-encoded form fields, including short names such as
-> `pwd` and `pass`), or a request body whose text mentions a password, secret,
-> token or API key. Values are never printed. Replace them with a template such
-> as `${token}` and supply them at run time before committing the file.
+> keys at any depth, URL-encoded form fields and multipart part names, including
+> short names such as `pwd`, `pass` and `app_key`), or a request body whose text
+> mentions a password, secret, token or API key. Field names that look like a
+> value rather than a name are shown as `<unnamed field>`, and values are never
+> printed. The check leans towards warning, so expect the occasional false
+> alarm. Replace the values with a template such as `${token}` and supply them
+> at run time before committing the file.
 
 ## Library usage
 

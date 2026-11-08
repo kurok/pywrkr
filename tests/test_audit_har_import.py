@@ -584,14 +584,16 @@ def test_har_import_flags_credential_text_inside_json_values(tmp_path, caplog, b
     assert "hunter2" not in warning
 
 
-def test_har_import_flags_multipart_body_by_text(tmp_path, caplog):
+def test_har_import_names_multipart_part(tmp_path, caplog):
     body = '--b\r\nContent-Disposition: form-data; name="pwd"\r\n\r\nS3cret\r\n--b--\r\n'
     path = _body_har(tmp_path, body, "multipart/form-data; boundary=b")
 
     with caplog.at_level(logging.WARNING):
         convert_har(path)
 
-    assert "1 request body whose text mentions" in _credential_warnings(caplog)
+    warning = _credential_warnings(caplog)
+    assert "request body fields pwd" in warning
+    assert "S3cret" not in warning
 
 
 def test_har_import_checks_base64_body(tmp_path, caplog):
@@ -654,6 +656,172 @@ def test_har_import_one_warning_names_every_carrier(tmp_path, caplog):
 
 def test_har_import_deeply_nested_body_does_not_crash(tmp_path):
     """Deep JSON used to escape ``har_to_scenario`` as a RecursionError traceback."""
-    body = "[" * 100000
-    content = convert_har(_body_har(tmp_path, body))
-    assert json.loads(content)["steps"][0]["body"] == body
+    for body in ("[" * 100000, "[" * 100000 + "]" * 100000):
+        content = convert_har(_body_har(tmp_path, body))
+        assert json.loads(content)["steps"][0]["body"] == body
+
+
+# Every name main's query rule (token|key|secret|password|sig) flagged that is
+# really a credential must still be flagged by the segment rule.
+_CREDENTIAL_NAMES = [
+    "access_token",
+    "api_key",
+    "apiKey",
+    "APIKey",
+    "key",
+    "sig",
+    "signature",
+    "X-Amz-Signature",
+    "client_secret",
+    "password",
+    "newpassword",
+    "subscription-key",
+    "Ocp-Apim-Subscription-Key",
+    "app_key",
+    "appkey",
+    "authkey",
+    "api_keys",
+    "passkey",
+    "privkey",
+    "session_key",
+    "consumer_key",
+    "oauth_consumer_key",
+    "master_key",
+    "hmac_key",
+    "keyId",
+    "pwd",
+    "passwd",
+    "passcode",
+    "user_pass",
+    "card_pin",
+    "otp",
+    "session_id",
+    "sessionId",
+    "PHPSESSID",
+    "JSESSIONID",
+]
+_ORDINARY_NAMES = [
+    "monkey",
+    "design",
+    "keyword",
+    "signup",
+    "assignee",
+    "sortKey",
+    "cacheKey",
+    "idempotencyKey",
+    "primaryKey",
+    "public_key",
+    "passport",
+    "pass_through",
+    "auth_type",
+    "authProvider",
+    "cookie_consent",
+    "max_tokens",
+    "prompt_tokens",
+    "page",
+]
+
+
+@pytest.mark.parametrize("name", _CREDENTIAL_NAMES)
+def test_credential_name_rule_flags(name):
+    from pywrkr.har_import import _is_credential_name
+
+    assert _is_credential_name(name)
+
+
+@pytest.mark.parametrize("name", _ORDINARY_NAMES)
+def test_credential_name_rule_ignores(name):
+    from pywrkr.har_import import _is_credential_name
+
+    assert not _is_credential_name(name)
+
+
+def test_har_import_warns_on_subscription_key_query(tmp_path, caplog):
+    """Azure APIM's query credential: flagged on main, must stay flagged."""
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "https://x.test/a?subscription-key=abc", "method": "GET"},
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    assert "query parameters subscription-key" in _credential_warnings(caplog)
+
+
+@pytest.mark.parametrize("mime", ["", "text/plain"])
+def test_har_import_reads_form_shaped_body_whatever_the_mime_type(tmp_path, caplog, mime):
+    path = _body_har(tmp_path, "user=a&pass=hunter2", mime)
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "request body fields pass" in warning
+    assert "hunter2" not in warning
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"tokens": {"secret_AbCdEf0123456789": {}}}',
+        '{"sk_live_secretABC123": 1}',
+    ],
+)
+def test_har_import_token_shaped_name_is_not_printed(tmp_path, caplog, body):
+    path = _body_har(tmp_path, body)
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "<unnamed field>" in warning
+    assert "AbCdEf0123456789" not in warning
+    assert "secretABC123" not in warning
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"title": "Secretary", "note": "tokenizer"}',
+        '{"model": "m", "max_tokens": 5, "messages": [{"content": "Tokens remaining"}]}',
+        '{"grant_type": "client_credentials"}',
+    ],
+)
+def test_har_import_ordinary_words_do_not_warn(tmp_path, caplog, body):
+    path = _body_har(tmp_path, body)
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    assert not _credential_warnings(caplog)
+
+
+def test_har_import_url_file_does_not_warn_on_dropped_headers(tmp_path, caplog):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "https://h/a",
+                        "method": "GET",
+                        "headers": [{"name": "Authorization", "value": "Bearer X"}],
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path, output_format="url-file", config=HarImportConfig(preserve_headers=True))
+
+    assert not _credential_warnings(caplog)
