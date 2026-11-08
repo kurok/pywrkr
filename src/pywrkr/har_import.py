@@ -15,7 +15,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from urllib.parse import parse_qsl, unquote_plus, urlparse
+from urllib.parse import ParseResult, parse_qsl, unquote_plus, urlparse, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +277,47 @@ def parse_har(path: str) -> list[HarEntry]:
     return entries
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _split_domain(value: str) -> tuple[str, int | None]:
+    """``--domain`` value -> (lower-cased host, port or None).
+
+    ``api.example.com``, ``localhost:8080`` and ``[::1]:8080`` are all
+    accepted; a value that does not parse as host[:port] is kept as a bare
+    host so it simply never matches.
+    """
+    try:
+        parts = urlsplit("//" + value.strip())
+        return (parts.hostname or value.strip().lower()), parts.port
+    except ValueError:
+        return value.strip().lower(), None
+
+
+def _domain_allowed(parsed: ParseResult, allowed: list[str]) -> bool:
+    """Whether an entry's URL passes ``--domain``.
+
+    A bare host matches that host and its subdomains on any port. A
+    ``host:port`` value also requires the port, where a URL without one
+    counts as its scheme's default (80 / 443). So the address a recording was
+    made against, ``--domain localhost:8080``, is accepted as typed.
+    """
+    host = parsed.hostname or ""
+    try:
+        port = parsed.port or _DEFAULT_PORTS.get(parsed.scheme)
+    except ValueError:
+        port = None
+    for value in allowed:
+        want_host, want_port = _split_domain(value)
+        if not want_host:
+            continue
+        if host != want_host and not host.endswith("." + want_host):
+            continue
+        if want_port is None or want_port == port:
+            return True
+    return False
+
+
 def filter_entries(
     entries: list[HarEntry],
     config: HarImportConfig,
@@ -308,10 +349,8 @@ def filter_entries(
             continue
 
         # Domain filtering
-        if config.allowed_domains:
-            domain = urlparse(entry.url).hostname or ""
-            if not any(domain == d or domain.endswith("." + d) for d in config.allowed_domains):
-                continue
+        if config.allowed_domains and not _domain_allowed(parsed, config.allowed_domains):
+            continue
 
         # Exclude patterns
         if excludes and _matches_patterns(entry.url, excludes):
@@ -927,9 +966,25 @@ def convert_har(
     filtered = filter_entries(entries, config)
 
     if not filtered:
+        hint = ""
+        if config.allowed_domains:
+            hosts = sorted(
+                {
+                    urlparse(e.url).netloc.rpartition("@")[2]
+                    for e in entries
+                    if urlparse(e.url).netloc
+                }
+            )
+            hint = (
+                f" --domain was {', '.join(repr(d) for d in config.allowed_domains)}; "
+                "it matches a host and its subdomains, and a port only when one is "
+                f"given. The recording's hosts are: {', '.join(hosts[:10]) or 'none'}"
+                + (" ..." if len(hosts) > 10 else "")
+                + "."
+            )
         raise ValueError(
             f"No requests remained after filtering {len(entries)} HAR entries. "
-            f"Try --include-static or adjusting --domain / --exclude filters."
+            f"Try --include-static or adjusting --domain / --exclude filters.{hint}"
         )
 
     as_scenario = output_format == "scenario"

@@ -1148,3 +1148,66 @@ def test_camel_case_names_are_printed(name):
     from pywrkr.har_import import _display_name
 
     assert _display_name(name) == name
+
+
+# --- #323: --domain with a port ----------------------------------------------
+
+
+def _domain_entries():
+    return [
+        _entry("http://localhost:8080/x"),
+        _entry("http://localhost:9000/y"),
+        _entry("http://example.com/z"),
+        _entry("https://api.example.com/v"),
+    ]
+
+
+def _kept(domains):
+    return [
+        e.url for e in filter_entries(_domain_entries(), HarImportConfig(allowed_domains=domains))
+    ]
+
+
+def test_domain_filter_accepts_a_host_with_a_port():
+    assert _kept(["localhost:8080"]) == ["http://localhost:8080/x"]
+
+
+def test_domain_filter_bare_host_matches_any_port():
+    assert _kept(["localhost"]) == ["http://localhost:8080/x", "http://localhost:9000/y"]
+
+
+def test_domain_filter_still_rejects_another_host():
+    assert "http://example.com/z" not in _kept(["localhost"])
+    assert _kept(["localhost:8080"]) == ["http://localhost:8080/x"]
+
+
+def test_domain_filter_default_port_and_subdomains():
+    assert _kept(["example.com:443"]) == ["https://api.example.com/v"]
+    assert _kept(["EXAMPLE.com"]) == ["http://example.com/z", "https://api.example.com/v"]
+    assert _kept(["example.com:80"]) == ["http://example.com/z"]
+
+
+def test_domain_filter_ipv6_with_a_port():
+    entries = [_entry("http://[::1]:8080/a"), _entry("http://[::1]:9000/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["[::1]:8080"]))
+    assert [e.url for e in kept] == ["http://[::1]:8080/a"]
+
+
+def test_empty_filter_error_names_the_domain_values(tmp_path):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "http://localhost:8080/x", "method": "GET"},
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+    with pytest.raises(ValueError) as exc:
+        convert_har(path, config=HarImportConfig(allowed_domains=["127.0.0.1:8080"]))
+    message = str(exc.value)
+    assert "'127.0.0.1:8080'" in message
+    assert "localhost:8080" in message
+    assert "a port only when one is given" in message

@@ -597,7 +597,10 @@ Examples:
         action="append",
         default=[],
         dest="domains",
-        help="Only include requests to this domain (repeatable)",
+        help=(
+            "Only include requests to this host and its subdomains (repeatable); "
+            "host:port also requires that port, a bare host matches any port"
+        ),
     )
     parser.add_argument(
         "--exclude",
