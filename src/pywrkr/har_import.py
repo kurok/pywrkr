@@ -565,80 +565,94 @@ _CREDENTIAL_HEADER_NAMES = frozenset(
 )
 # Which field names look like a credential.
 #
-# A name is split into segments (camelCase, "_", "-", ".", "[]"). The rule
-# leans towards warning, because a missed credential is committed silently
-# while a spurious warning costs a glance -- but not so far that ordinary API
-# traffic warns on every run, which would teach people to ignore it.
+# The rule is main's substring rule (token|key|secret|password|sig) widened
+# with pass/pwd/session ids, applied to the lower-cased name with separators
+# removed, so "passWord", "x-api-keys" and "apikeyid" all match. The only names
+# it deliberately stops flagging are the ordinary words below: each is cut out
+# of the name before the match, so "monkey" is quiet but "monkey_api_key" is
+# not. Leaning towards warning is intended -- a missed credential is committed
+# silently, a spurious warning costs a glance.
+_ORDINARY_WORDS = tuple(
+    sorted(
+        {
+            # ...key
+            "monkey", "donkey", "turkey", "hockey", "jockey", "whiskey", "turnkey",
+            "keyboard", "keyword", "keynote", "keyframe", "keystroke", "hotkey",
+            "sortkey", "cachekey", "idempotencykey", "partitionkey", "foreignkey",
+            "publickey", "groupkey", "dedupkey",
+            # ...sig
+            "design", "signup", "signin", "signout", "signal", "assign", "consign",
+            "resign", "insight",
+            # ...secret
+            "secretary",
+            # ...pass
+            "passport", "passenger", "passage", "passive", "passed", "passing",
+            "passes", "compass", "bypass", "surpass", "trespass", "overpass",
+            "underpass", "passthrough",
+            # ...token: counts and pagination cursors, not secrets
+            "maxtokens", "maxnewtokens", "prompttokens", "completiontokens",
+            "totaltokens", "inputtokens", "outputtokens", "stoptokens", "numtokens",
+            "tokencount", "tokenizer", "nexttoken", "pagetoken", "nextpagetoken",
+            "continuationtoken",
+        },
+        key=len,
+        reverse=True,
+    )
+)  # fmt: skip
+_CREDENTIAL_COMPACT_RE = re.compile(
+    r"token|key|secret|pass|pwd|sig|credential|sessid|sessionid|jwt"
+)
 _NAME_SEGMENT_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
-# Substrings that are a credential wherever they appear in the name, so
-# run-together spellings ("newpassword", "PHPSESSID") count as well.
-_CREDENTIAL_NAME_SUBSTRINGS = (
-    "passw",
-    "passcode",
-    "passphrase",
-    "secret",
-    "token",
-    "credential",
-    "sessid",
-    "sessionid",
-    "privkey",
-)
-# Segments that are a credential anywhere in the name.
-_CREDENTIAL_NAME_SEGMENTS = frozenset(
-    {"pwd", "sig", "signature", "sid", "jwt", "bearer", "authorization", "otp"}
-)
-# Segments that are a credential only as the last segment: "user_pass" and
-# "card_pin" are, "pass_through", "auth_type" and "cookie_consent" are not.
-_CREDENTIAL_LAST_SEGMENTS = frozenset({"pass", "pin", "auth", "cookie"})
-# A segment ending in "key" is a credential ("api_key", "subscription-key",
-# "appkey", "passkey") unless it is an ordinary word or follows one of these.
-_NOT_KEY_WORDS = frozenset({"monkey", "donkey", "turkey", "hockey", "jockey", "whiskey", "hotkey"})
-_NOT_KEY_QUALIFIERS = frozenset(
-    {"sort", "cache", "idempotency", "partition", "primary", "foreign", "public", "group", "dedup"}
-)
-# Counts rather than secrets: "max_tokens", "prompt_tokens" in LLM API bodies.
-_TOKEN_COUNT_QUALIFIERS = frozenset(
-    {"max", "num", "total", "prompt", "completion", "input", "output", "used", "remaining"}
-)
+# Short words that are a credential only as a whole segment ("sid", "otp"), and
+# ones that are only as the last segment ("card_pin", but not "pin_code_hint").
+_CREDENTIAL_NAME_SEGMENTS = frozenset({"sid", "otp", "bearer", "authorization"})
+_CREDENTIAL_LAST_SEGMENTS = frozenset({"pin", "auth"})
 # Free text has no field names, so only whole words count there. The letter
 # boundaries are case-sensitive so "accessToken" matches but "Secretary" and
-# "tokenizer" do not.
+# "tokenizer" do not; long base64-like runs are skipped, since random data
+# spells "pwd" now and then.
 _CREDENTIAL_TEXT_RE = re.compile(
     r"(?-i:(?<![a-z])|(?<=[a-z])(?=[A-Z]))"
-    r"(?:passw(?:or)?ds?|pwd|secrets?|token|api[_-]?key|credential)"
+    r"(?:passw(?:or)?ds?|pwd|secrets?|token|api[_-]?key|credential|bearer)"
     r"(?-i:(?![a-z]))",
     re.IGNORECASE,
 )
-# A name is printed in the warning only when it looks like a short word-like
-# identifier. A HAR can hold a "field name" that is really a value -- a token
-# used as a JSON key, a form part with no "=" -- or one with control
-# characters that would forge log lines; those print as a placeholder.
-_PRINTABLE_NAME_RE = re.compile(r"[A-Za-z_.\[\]-]{1,32}[0-9]?")
-_LONG_RUN_RE = re.compile(r"[A-Za-z0-9]{20,}")
+_OPAQUE_RUN_RE = re.compile(r"[A-Za-z0-9+/=_-]{64,}")
+# A name is printed in the warning only when it looks like an identifier. A HAR
+# can hold a "field name" that is really a value -- a token used as a JSON key,
+# a form part with no "=" -- or one with control characters that would forge
+# log lines; those print as a placeholder.
+_PRINTABLE_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.\[\]-]{0,63}")
+_VALUE_LIKE_RUN_RE = re.compile(
+    r"[A-Za-z0-9]{20,}|(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{10,}"
+)
 _UNNAMED = "<unnamed field>"
 _MULTIPART_NAME_RE = re.compile(r'\bname="([^"\r\n]*)"')
 _FORM_BODY_RE = re.compile(r"[^=&\s]+=[^&\s]*(?:&[^=&\s]+=[^&\s]*)*")
+# Deeper JSON than this is kept as a string: encoding it again recurses once
+# per level and overflows the stack on some Python versions.
+_MAX_JSON_DEPTH = 200
 
 
 def _is_credential_name(name: str) -> bool:
     """Whether a header, query, form or JSON field name looks like a credential."""
+    compact = re.sub(r"[^a-z0-9]", "", name.lower())
+    for word in _ORDINARY_WORDS:
+        compact = compact.replace(word, "|")
+    if _CREDENTIAL_COMPACT_RE.search(compact):
+        return True
     segments = [seg.lower() for seg in _NAME_SEGMENT_RE.findall(name)]
-    if not segments:
-        return False
-    for i, seg in enumerate(segments):
-        before = segments[i - 1] if i else ""
-        if any(word in seg for word in _CREDENTIAL_NAME_SUBSTRINGS):
-            if seg == "tokens" and before in _TOKEN_COUNT_QUALIFIERS:
-                continue
-            return True
-        if seg in _CREDENTIAL_NAME_SEGMENTS:
-            return True
-        if seg in ("key", "keys") or (seg.endswith("key") and seg not in _NOT_KEY_WORDS):
-            if before not in _NOT_KEY_QUALIFIERS:
-                return True
-        if seg == "id" and before == "session":
-            return True
-    return segments[-1] in _CREDENTIAL_LAST_SEGMENTS
+    if any(seg in _CREDENTIAL_NAME_SEGMENTS for seg in segments):
+        return True
+    if any(a == "session" and b == "id" for a, b in zip(segments, segments[1:])):
+        return True
+    words = [seg for seg in segments if not seg.isdigit()]
+    return bool(words) and words[-1] in _CREDENTIAL_LAST_SEGMENTS
+
+
+def _text_mentions_credential(text: str) -> bool:
+    """Whether free text names a credential, ignoring base64-like runs."""
+    return bool(_CREDENTIAL_TEXT_RE.search(_OPAQUE_RUN_RE.sub(" ", text)))
 
 
 def _credential_headers(headers: dict[str, str]) -> list[str]:
@@ -653,7 +667,7 @@ def _credential_headers(headers: dict[str, str]) -> list[str]:
 
 def _display_name(name: str) -> str:
     """The name as it may appear in the warning, or a placeholder."""
-    if _PRINTABLE_NAME_RE.fullmatch(name) and not _LONG_RUN_RE.search(name):
+    if _PRINTABLE_NAME_RE.fullmatch(name) and not _VALUE_LIKE_RUN_RE.search(name):
         return name
     return _UNNAMED
 
@@ -678,11 +692,21 @@ def _credential_query_params(url: str) -> set[str]:
 
 
 def _parse_json_body(body: str) -> object:
-    """``json.loads`` that returns None for anything it cannot parse."""
+    """``json.loads`` that returns None for anything it cannot parse or nests too deeply."""
     try:
-        return json.loads(body)
+        parsed = json.loads(body)
     except (TypeError, ValueError, RecursionError):  # JSONDecodeError is a ValueError
         return None
+    stack: list[tuple[object, int]] = [(parsed, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _MAX_JSON_DEPTH:
+            return None
+        if isinstance(node, dict):
+            stack.extend((v, depth + 1) for v in node.values())
+        elif isinstance(node, list):
+            stack.extend((v, depth + 1) for v in node)
+    return parsed
 
 
 def _credential_body_fields(entry: HarEntry) -> tuple[set[str], bool]:
@@ -716,13 +740,14 @@ def _credential_body_fields(entry: HarEntry) -> tuple[set[str], bool]:
                     stack.append(value)
             elif isinstance(node, list):
                 stack.extend(node)
-            elif isinstance(node, str) and _CREDENTIAL_TEXT_RE.search(node):
+            elif isinstance(node, str) and _text_mentions_credential(node):
                 text_hit = True
         return names, text_hit and not names
 
     content_type = (entry.content_type or "").lower()
-    if "x-www-form-urlencoded" in content_type or _FORM_BODY_RE.fullmatch(body):
-        fields = _credential_form_fields(body)
+    stripped = body.strip()
+    if "x-www-form-urlencoded" in content_type or _FORM_BODY_RE.fullmatch(stripped):
+        fields = _credential_form_fields(stripped)
         if fields:
             return fields, False
     elif "multipart/" in content_type:
@@ -732,7 +757,7 @@ def _credential_body_fields(entry: HarEntry) -> tuple[set[str], bool]:
         if fields:
             return fields, False
 
-    return set(), bool(_CREDENTIAL_TEXT_RE.search(body))
+    return set(), _text_mentions_credential(body)
 
 
 def _warn_on_credentials(

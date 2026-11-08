@@ -656,7 +656,7 @@ def test_har_import_one_warning_names_every_carrier(tmp_path, caplog):
 
 def test_har_import_deeply_nested_body_does_not_crash(tmp_path):
     """Deep JSON used to escape ``har_to_scenario`` as a RecursionError traceback."""
-    for body in ("[" * 100000, "[" * 100000 + "]" * 100000):
+    for body in ("[" * 100000, "[" * 2000 + "]" * 2000, "[" * 100000 + "]" * 100000):
         content = convert_har(_body_har(tmp_path, body))
         assert json.loads(content)["steps"][0]["body"] == body
 
@@ -699,6 +699,26 @@ _CREDENTIAL_NAMES = [
     "sessionId",
     "PHPSESSID",
     "JSESSIONID",
+    "primaryKey",
+    "sign",
+    "apiSign",
+    "sigv4",
+    "hmacsig",
+    "apikeys",
+    "x-apikeys",
+    "keyid",
+    "accesskeyid",
+    "keypass",
+    "keystore",
+    "passWord",
+    "userPassWord",
+    "passPhrase",
+    "pass_code",
+    "pass1",
+    "newpwd",
+    "loginpass",
+    "connect.sid",
+    "ASP.NET_SessionId",
 ]
 _ORDINARY_NAMES = [
     "monkey",
@@ -709,7 +729,6 @@ _ORDINARY_NAMES = [
     "sortKey",
     "cacheKey",
     "idempotencyKey",
-    "primaryKey",
     "public_key",
     "passport",
     "pass_through",
@@ -718,8 +737,27 @@ _ORDINARY_NAMES = [
     "cookie_consent",
     "max_tokens",
     "prompt_tokens",
+    "max_new_tokens",
+    "NextToken",
+    "pageToken",
+    "continuation_token",
+    "tokenizer",
+    "keyword",
     "page",
 ]
+
+
+def test_credential_name_rule_is_a_superset_of_mains_except_ordinary_words():
+    """Every name main's substring rule flagged still counts, unless an
+    ordinary word listed in ``_ORDINARY_WORDS`` is all that matched."""
+    import re
+
+    from pywrkr.har_import import _is_credential_name
+
+    main_rule = re.compile(r"token|key|secret|password|sig", re.IGNORECASE)
+    for name in _CREDENTIAL_NAMES + _ORDINARY_NAMES:
+        if main_rule.search(name) and not _is_credential_name(name):
+            assert name in _ORDINARY_NAMES, name
 
 
 @pytest.mark.parametrize("name", _CREDENTIAL_NAMES)
@@ -825,3 +863,64 @@ def test_har_import_url_file_does_not_warn_on_dropped_headers(tmp_path, caplog):
         convert_har(path, output_format="url-file", config=HarImportConfig(preserve_headers=True))
 
     assert not _credential_warnings(caplog)
+
+
+def test_har_import_names_wordpress_registration_fields(tmp_path, caplog):
+    path = _body_har(tmp_path, "user_login=bob&pass1=hunter2&pass2=hunter2", "")
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "request body fields pass1, pass2" in warning
+    assert "hunter2" not in warning
+
+
+def test_har_import_form_body_with_trailing_newline(tmp_path, caplog):
+    path = _body_har(tmp_path, "user=bob&app_key=X\n", "text/plain")
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    assert "request body fields app_key" in _credential_warnings(caplog)
+
+
+def test_har_import_base64_payload_does_not_warn(tmp_path, caplog):
+    """Random base64 spells "pwd" now and then; an upload must not warn."""
+    import base64
+    import random
+
+    data = base64.b64encode(random.Random(305).randbytes(300_000)).decode()
+    path = _body_har(tmp_path, json.dumps({"image": data}))
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    assert not _credential_warnings(caplog)
+
+
+@pytest.mark.parametrize(
+    "name", ["X-Hub-Signature-256", "oauth2_token", "user[0][password]", "token_v12"]
+)
+def test_identifier_names_with_digits_are_printed(name):
+    from pywrkr.har_import import _display_name
+
+    assert _display_name(name) == name
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Authorization: Bearer eyJ", True),
+        ("old passwords", True),
+        ("api_secrets", True),
+        # Plural token/credential is how ordinary text talks about them
+        # ("Tokens remaining", grant_type=client_credentials), so it stays quiet.
+        ("two tokens", False),
+        ("client_credentials", False),
+    ],
+)
+def test_credential_text_words(text, expected):
+    from pywrkr.har_import import _text_mentions_credential
+
+    assert _text_mentions_credential(text) is expected
