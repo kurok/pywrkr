@@ -377,7 +377,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--follow-redirects` | Follow 3xx responses instead of measuring them (default: off, as in wrk/ab) |
 | | `--threshold` / `--th` | SLO threshold (repeatable), e.g. `--threshold "p95 < 300ms"`. Exit code 2 on breach |
 | | `--tag` | Metadata tag as `key=value` (repeatable), e.g. `--tag environment=staging` |
-| | `--otel-endpoint` | Export metrics to OpenTelemetry collector (OTLP/HTTP) |
+| | `--otel-endpoint` | Export metrics to an OpenTelemetry collector (OTLP/HTTP): its base URL (`/v1/metrics` is added when the URL has no path) or the full metrics endpoint |
 | | `--prom-remote-write` | Push metrics to Prometheus Pushgateway endpoint |
 | | `--export-interval` | Stream metric snapshots every N seconds instead of only at the end (needs an export endpoint) |
 | | `--ssl-verify` / `PYWRKR_SSL_VERIFY` | Enable TLS certificate verification (default: disabled). Recommended when using `--basic-auth` or `--cookie` against `https://` targets |
@@ -1641,6 +1641,11 @@ pywrkr --otel-endpoint http://localhost:4318 \
     --tag environment=staging --tag build=$(git rev-parse --short HEAD) \
     -c 100 -d 30 http://localhost:8080/
 ```
+
+`--otel-endpoint` takes the collector's base URL (`http://localhost:4318`), and pywrkr posts to its
+`/v1/metrics` signal path; a URL that already has a path, such as `http://collector:4318/v1/metrics`
+or a gateway's own route, is used as given. If the collector refuses a batch (a wrong path, for
+example, answers 404), the export is reported as failed rather than silently dropped.
 
 Exports gauges and counters: `pywrkr.requests.total`, `pywrkr.errors.total`, `pywrkr.requests_per_sec`, `pywrkr.latency.p50/p95/p99/mean/max`, `pywrkr.transfer_bytes_per_sec`, `pywrkr.duration_sec`.
 
