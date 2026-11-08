@@ -1,6 +1,22 @@
 # pywrkr Examples
 
-Sample benchmark outputs generated against `https://example.com/`. These demonstrate all major output formats and modes.
+Sample benchmark outputs for the commands below. These demonstrate all major output formats and modes.
+
+The outputs of sections 1-6 are produced by `examples/regenerate.py`, which runs those commands
+against a local test server (`http://127.0.0.1:8080/`, a small page after 5-30 ms) instead of
+`https://example.com/`, so the numbers describe a loopback server. Re-run it from the repository
+root after changing the terminal report or the JSON results:
+
+```bash
+uv run python examples/regenerate.py
+```
+
+`tests/test_examples.py` fails when the JSON keys or the report's sections no longer match these files.
+
+**Where the run configuration is reported.** The terminal output starts with the results; it does
+not repeat the run's settings (connections, duration, method, timeout, rate). Those are in the JSON
+output's `config` object (`mode`, `connections`, `users`, `duration`, `num_requests`, `rate`,
+`url_host`, `read_body`), next to `schema_version` and the per-response `http_versions`.
 
 ## Quick Reference
 
@@ -62,6 +78,7 @@ pywrkr -u 5 -d 5 \
 
 **Output files:**
 - [`user-simulation-output.txt`](user-simulation-output.txt) — terminal output with per-user stats
+  and a `Sessions` line (each virtual user keeps its own cookie jar)
 - [`user-simulation.json`](user-simulation.json) — JSON results
 
 ### 5. Latency Breakdown
