@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -1097,6 +1098,12 @@ def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
     return merge_stats(stats_list)
 
 
+#: How long a master waits for its workers to connect before giving up, in
+#: seconds, when neither ``--worker-wait-timeout`` nor
+#: ``PYWRKR_WORKER_WAIT_TIMEOUT`` says otherwise.
+DEFAULT_WORKER_WAIT_TIMEOUT = 300.0
+
+
 async def run_master(
     config: BenchmarkConfig,
     host: str | Sequence[str] | None,
@@ -1104,8 +1111,13 @@ async def run_master(
     expect_workers: int,
     worker_secret: str | None = None,
     ready: asyncio.Event | None = None,
+    worker_wait_timeout: float = DEFAULT_WORKER_WAIT_TIMEOUT,
 ) -> tuple[WorkerStats, int] | None:
     """Run in master mode: wait for workers, distribute config, collect results.
+
+    The master waits up to *worker_wait_timeout* seconds for all
+    *expect_workers* workers to connect and authenticate; if they have not by
+    then, it logs the window it waited and returns None.
 
     If *worker_secret* is set, each connecting worker must complete an
     HMAC-SHA256 challenge-response before it is admitted.  Workers that fail
@@ -1122,6 +1134,10 @@ async def run_master(
     a task should await the task (or ``asyncio.wait`` on both), not *ready*
     alone.
     """
+    if not (worker_wait_timeout > 0 and math.isfinite(worker_wait_timeout)):
+        raise ValueError(
+            f"worker_wait_timeout must be a positive number of seconds, got {worker_wait_timeout!r}"
+        )
     # In a thread: resolving ``localhost`` is a blocking getaddrinfo call.
     await asyncio.to_thread(check_master_auth, host, worker_secret)
     logger.info(
@@ -1246,10 +1262,12 @@ async def run_master(
     try:
         # Wait for all workers with a timeout
         try:
-            await asyncio.wait_for(ready_event.wait(), timeout=300)
+            await asyncio.wait_for(ready_event.wait(), timeout=worker_wait_timeout)
         except asyncio.TimeoutError:
             logger.error(
-                "Master: timed out waiting for workers (%s/%s connected)",
+                "Master: timed out after %ss waiting for workers (%s/%s connected); "
+                "--worker-wait-timeout or PYWRKR_WORKER_WAIT_TIMEOUT sets the window",
+                f"{worker_wait_timeout:g}",
                 len(worker_connections),
                 expect_workers,
             )

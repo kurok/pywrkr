@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--worker-wait-timeout SECONDS` (or `PYWRKR_WORKER_WAIT_TIMEOUT`, or `run_master(..., worker_wait_timeout=)`) sets how long a distributed master waits for its `--expect-workers` workers to connect before giving up and exiting 1. The default stays 300 s; the timeout message now names the window it waited. (#322)
+
 ### Changed
 
 - `assert_body_regex` and the `assert_header` regex form now search only the first 8,192 characters of the response text, so a pattern that matched only further into a large body now fails, and a pattern whose answer could depend on the cut fails as undecided on a longer body. Use `assert_json` or `assert_body_contains` for large responses. See **Security** for why. (#306)

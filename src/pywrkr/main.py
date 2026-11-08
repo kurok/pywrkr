@@ -13,6 +13,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import math
 import os
 import sys
 
@@ -50,6 +51,7 @@ from pywrkr.config import (
     validate_scenario_templates,
 )
 from pywrkr.distributed import (
+    DEFAULT_WORKER_WAIT_TIMEOUT,
     check_master_auth,
     check_worker_auth,
     normalize_host,
@@ -528,6 +530,17 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
         help=(
             "Run as worker node, connecting to master at HOST:PORT. A non-loopback "
             "master requires --worker-secret."
+        ),
+    )
+    parser.add_argument(
+        "--worker-wait-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Distributed master: how long to wait for all --expect-workers workers "
+            "to connect before giving up (default: 300). Also read from "
+            "PYWRKR_WORKER_WAIT_TIMEOUT"
         ),
     )
     parser.add_argument(
@@ -1269,6 +1282,26 @@ def _validate_mode_conflicts(
         parser.error("--allow-partial only applies to a distributed master (--master)")
 
 
+def _resolve_worker_wait_timeout(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> float:
+    """--worker-wait-timeout, else PYWRKR_WORKER_WAIT_TIMEOUT, else the default."""
+    raw: object = args.worker_wait_timeout
+    source = "--worker-wait-timeout"
+    if raw is None:
+        raw = os.environ.get("PYWRKR_WORKER_WAIT_TIMEOUT") or None
+        source = "PYWRKR_WORKER_WAIT_TIMEOUT"
+    if raw is None:
+        return DEFAULT_WORKER_WAIT_TIMEOUT
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except ValueError:
+        parser.error(f"{source} must be a number of seconds, got {raw!r}")
+    if not (value > 0 and math.isfinite(value)):
+        parser.error(f"{source} must be a positive number of seconds, got {raw!r}")
+    return value
+
+
 def _resolve_worker_secret(args: argparse.Namespace) -> str | None:
     """Return the distributed secret from --worker-secret or PYWRKR_WORKER_SECRET."""
     return args.worker_secret or os.environ.get("PYWRKR_WORKER_SECRET") or None
@@ -1326,6 +1359,9 @@ def _validate_url_and_mode(
             parser.error("--master requires --expect-workers N (N >= 1)")
         if args.url is None:
             parser.error("--master requires a target URL")
+        args.worker_wait_timeout = _resolve_worker_wait_timeout(parser, args)
+    elif args.worker_wait_timeout is not None:
+        parser.error("--worker-wait-timeout only applies to --master")
 
     # URL is required for all remaining modes
     if args.url is None and args.url_file is None and not args.scenario:
@@ -1841,7 +1877,12 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
         worker_secret = _resolve_worker_secret(args)
         result = asyncio.run(
             run_master(
-                config, args.bind, args.port, args.expect_workers, worker_secret=worker_secret
+                config,
+                args.bind,
+                args.port,
+                args.expect_workers,
+                worker_secret=worker_secret,
+                worker_wait_timeout=args.worker_wait_timeout,
             )
         )
         if result:
