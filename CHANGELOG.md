@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
-- Certificate verification is now exercised against a real TLS handshake: `tests/test_tls.py` generates a throwaway test CA and a `127.0.0.1` server certificate with `openssl` per run (nothing is checked in) and covers `--ssl-verify` with the right CA, without a CA and with the wrong CA, credentials over verified TLS, the unverified default, and `PYWRKR_SSL_VERIFY` / `PYWRKR_CA_BUNDLE`. (#321)
+- Certificate verification is now exercised against a real TLS handshake: `tests/test_tls.py` generates a throwaway test CA and a `127.0.0.1` server certificate with `openssl` per run (nothing is checked in) and drives the default aiohttp backend through it: `--ssl-verify` with the right CA, without a CA, with the wrong CA and against the wrong hostname (each must fail on certificate validation specifically), credentials arriving over verified TLS, the unverified default, and `PYWRKR_SSL_VERIFY` / `PYWRKR_CA_BUNDLE` through both `SSLConfig.from_env` and the CLI. (#321)
 
 ## [1.6.0] - 2026-09-11
 
