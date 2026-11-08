@@ -1069,3 +1069,82 @@ def test_random_base64_does_not_count_as_credential_text():
     for seed in range(100):
         data = base64.b64encode(random.Random(seed).randbytes(100_000)).decode()
         assert not _text_mentions_credential(data), seed
+
+
+@pytest.mark.parametrize(
+    ("text", "mime"),
+    [
+        ({"password": "x"}, "application/json"),
+        (12345, "text/plain"),
+        (["a"], "application/json"),
+        ("a=b", 5),
+        ("a=b", ["a"]),
+    ],
+)
+def test_har_import_non_string_post_data_does_not_crash(tmp_path, text, mime):
+    """Exporters put odd shapes in postData; main converted these, so must we."""
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "https://h/a",
+                        "method": "POST",
+                        "postData": {"mimeType": mime, "text": text},
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+    convert_har(path)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"https://app/resetPassword/{_TOKEN64}",
+        f"verifyToken/{_TOKEN64}",
+        f"getApiKey/{_TOKEN64}",
+        f"passwordReset/{_TOKEN64}",
+        f"client_secret_{_TOKEN64}",
+    ],
+)
+def test_camel_and_snake_case_word_beside_a_long_token_counts(text):
+    from pywrkr.har_import import _text_mentions_credential
+
+    assert _text_mentions_credential(text)
+
+
+def test_random_url_safe_base64_does_not_count_as_credential_text():
+    import base64
+    import random
+
+    from pywrkr.har_import import _text_mentions_credential
+
+    for seed in range(300):
+        data = base64.urlsafe_b64encode(random.Random(seed).randbytes(3000)).decode()
+        assert not _text_mentions_credential(data), seed
+
+
+def test_short_base64_body_is_not_read_as_a_form_field():
+    import base64
+    import random
+
+    from pywrkr.har_import import _credential_body_fields
+
+    for seed in range(500):
+        rng = random.Random(seed)
+        body = base64.b64encode(rng.randbytes(rng.randint(48, 190))).decode()
+        entry = HarEntry(url="http://h/", method="POST", body=body, content_type="")
+        assert _credential_body_fields(entry) == (set(), False), seed
+
+
+@pytest.mark.parametrize(
+    "name", ["newPasswordConfirmation", "googleRecaptchaToken", "oauth2Token", "password12"]
+)
+def test_camel_case_names_are_printed(name):
+    from pywrkr.har_import import _display_name
+
+    assert _display_name(name) == name

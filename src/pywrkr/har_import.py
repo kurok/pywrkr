@@ -619,19 +619,23 @@ _CREDENTIAL_TEXT_RE = re.compile(
     r"(?-i:(?![a-z]))",
     re.IGNORECASE,
 )
-# "_" and "=" end a run so "access_token=<long token>" keeps its name.
-_OPAQUE_RUN_RE = re.compile(r"[A-Za-z0-9+/-]{64,}={0,2}")
+# Standard and URL-safe base64 alphabets; "=" ends a run so
+# "access_token=<long token>" keeps its name outside it.
+_OPAQUE_RUN_RE = re.compile(r"[A-Za-z0-9+/_-]{64,}={0,2}")
+# A run of these is one word in camelCase or snake/kebab case, the way people
+# write it; random base64 rarely is.
+_WORD_SHAPE_RE = re.compile(r"[A-Z]?[a-z]+(?:[_-]?[A-Z]?[a-z]+)*|[A-Z]+(?:[_-]?[A-Z]+)*")
 # A name is printed in the warning only when it looks like an identifier. A HAR
 # can hold a "field name" that is really a value -- a token used as a JSON key,
 # a form part with no "=" -- or one with control characters that would forge
 # log lines; those print as a placeholder.
 _PRINTABLE_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.\[\]-]{0,63}")
-_VALUE_LIKE_RUN_RE = re.compile(
-    r"[A-Za-z0-9]{20,}|(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{10,}"
-)
+_ALNUM_RUN_RE = re.compile(r"[A-Za-z0-9]+")
 _UNNAMED = "<unnamed field>"
 _MULTIPART_NAME_RE = re.compile(r'\bname="([^"\r\n]*)"')
-_FORM_BODY_RE = re.compile(r"[^=&\s]+=[^&\s]*(?:&[^=&\s]+=[^&\s]*)*")
+# Field names are short; a 64-256 character base64 blob ending in "=" is not
+# a form with one field.
+_FORM_BODY_RE = re.compile(r"[^=&\s]{1,64}=[^&\s]*(?:&[^=&\s]{1,64}=[^&\s]*)*")
 # Deeper JSON than this is kept as a string: encoding it again recurses once
 # per level and overflows the stack on some Python versions.
 _MAX_JSON_DEPTH = 200
@@ -642,8 +646,10 @@ _MAX_NAME_LENGTH = 256
 def _is_credential_name(name: str) -> bool:
     """Whether a header, query, form or JSON field name looks like a credential."""
     if len(name) > _MAX_NAME_LENGTH:
-        # A "name" this long is a value (a base64 blob posted as a form body);
-        # judging it would also cost time on every segment.
+        # A "name" this long is a value (a base64 blob posted as a form body,
+        # whose "+" the form parser has already turned into spaces), so it is
+        # not judged; the body's own text check still runs when no field is
+        # found.
         return False
     segments = [seg.lower() for seg in _NAME_SEGMENT_RE.findall(name)]
     compact = "".join(segments)
@@ -666,7 +672,6 @@ def _is_credential_name(name: str) -> bool:
             start = compact.find(word, start + 1)
     if _CREDENTIAL_COMPACT_RE.search("".join(masked)):
         return True
-    segments = [seg.lower() for seg in _NAME_SEGMENT_RE.findall(name)]
     if any(seg in _CREDENTIAL_NAME_SEGMENTS for seg in segments):
         return True
     if any(a == "session" and b == "id" for a, b in zip(segments, segments[1:])):
@@ -690,12 +695,25 @@ def _text_mentions_credential(text: str) -> bool:
         if i < 0 or match.end() > runs[i][1]:
             return True  # not inside an opaque run
         run_start, run_end = runs[i]
-        before_ok = match.start() == run_start or text[match.start() - 1] in "-/+"
-        after_ok = match.end() >= run_end or text[match.end()] in "-/+="
         word = match.group()
-        # A short word in mixed case ("PWd") is what random base64 produces;
-        # people write "pwd" or "PWD".
-        case_ok = len(word) >= 5 or word.islower() or word.isupper()
+        start, end = match.start(), match.end()
+        # Inside a run the word must be set apart: by a separator, the run's
+        # edge, or -- for words of 5+ letters, which random data almost never
+        # spells -- a camelCase boundary ("resetPassword/<token>").
+        long_word = len(word) >= 5
+        before_ok = (
+            start == run_start
+            or text[start - 1] in "-/+_"
+            or (long_word and text[start - 1].islower() and word[0].isupper())
+        )
+        after_ok = (
+            end >= run_end
+            or text[end] in "-/+_="
+            or (long_word and text[end].isupper() and word[-1].islower())
+        )
+        # Written the way people write words ("pwd", "PWD", "Token",
+        # "ApiKey"), not the mixed case random base64 produces ("PWd").
+        case_ok = bool(_WORD_SHAPE_RE.fullmatch(word))
         if before_ok and after_ok and case_ok:
             return True
     return False
@@ -713,9 +731,14 @@ def _credential_headers(headers: dict[str, str]) -> list[str]:
 
 def _display_name(name: str) -> str:
     """The name as it may appear in the warning, or a placeholder."""
-    if _PRINTABLE_NAME_RE.fullmatch(name) and not _VALUE_LIKE_RUN_RE.search(name):
-        return name
-    return _UNNAMED
+    if not _PRINTABLE_NAME_RE.fullmatch(name):
+        return _UNNAMED
+    for run in _ALNUM_RUN_RE.findall(name):
+        # "newPasswordConfirmation", "oauth2Token" and "password12" are names;
+        # "AbCdEf0123456789" and 32+ unbroken characters are values.
+        if len(run) >= 32 or (len(run) >= 10 and sum(c.isdigit() for c in run) >= 3):
+            return _UNNAMED
+    return name
 
 
 def _credential_form_fields(encoded: str) -> set[str]:
@@ -774,7 +797,9 @@ def _credential_body_fields(entry: HarEntry) -> tuple[set[str], bool]:
         credential where no field name did.
     """
     body = entry.body
-    if not body:
+    if not body or not isinstance(body, str):
+        # Exporters sometimes put a JSON object in postData.text; it is written
+        # through untouched and is not scanned here, as on main.
         return set(), False
 
     parsed = _parse_json_body(body)
@@ -795,7 +820,7 @@ def _credential_body_fields(entry: HarEntry) -> tuple[set[str], bool]:
                 text_hit = True
         return names, text_hit and not names
 
-    content_type = (entry.content_type or "").lower()
+    content_type = entry.content_type.lower() if isinstance(entry.content_type, str) else ""
     stripped = body.strip()
     if "x-www-form-urlencoded" in content_type or _FORM_BODY_RE.fullmatch(stripped):
         fields = _credential_form_fields(stripped)

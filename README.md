@@ -137,7 +137,7 @@ pywrkr har-import recording.har --no-think-time -o scenario.json               #
 > header, query parameter or request body field whose name looks like one (JSON
 > keys at any depth, URL-encoded form fields and multipart part names, including
 > short names such as `pwd`, `pass1` and `app_key`), or a request body whose text
-> mentions a password, secret, token, API key or bearer token. Field names that
+> mentions a password, secret, token, API key, credential or bearer token. Field names that
 > look like a value rather than a name are shown as `<unnamed field>`, so the
 > warning avoids printing token-like values. The check leans towards warning, so expect the occasional false
 > alarm. Replace the values with a template such as `${token}` and supply them
