@@ -14,7 +14,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, unquote_plus, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -565,7 +565,7 @@ _CREDENTIAL_HEADER_NAMES = frozenset(
 )
 # Which field names look like a credential.
 #
-# The rule is main's substring rule (token|key|secret|password|sig) widened
+# The base is the substring rule token|key|secret|password|sig, widened
 # with pass/pwd/session ids, applied to the lower-cased name with separators
 # removed, so "passWord", "x-api-keys" and "apikeyid" all match. The only names
 # it deliberately stops flagging are the ordinary words below: each is cut out
@@ -579,9 +579,10 @@ _ORDINARY_WORDS = tuple(
             "monkey", "donkey", "turkey", "hockey", "jockey", "whiskey", "turnkey",
             "keyboard", "keyword", "keynote", "keyframe", "keystroke", "hotkey",
             "sortkey", "cachekey", "idempotencykey", "partitionkey", "foreignkey",
-            "publickey", "groupkey", "dedupkey",
+            "publickey", "dedupkey",
             # ...sig
-            "design", "signup", "signin", "signout", "signal", "assign", "consign",
+            "design", "signup", "signin", "signout", "signal", "assign", "assignee",
+            "assigned", "assignment", "consign",
             "resign", "insight",
             # ...secret
             "secretary",
@@ -617,7 +618,8 @@ _CREDENTIAL_TEXT_RE = re.compile(
     r"(?-i:(?![a-z]))",
     re.IGNORECASE,
 )
-_OPAQUE_RUN_RE = re.compile(r"[A-Za-z0-9+/=_-]{64,}")
+# "_" and "=" are left out so "access_token=<long token>" keeps its name.
+_OPAQUE_RUN_RE = re.compile(r"[A-Za-z0-9+/-]{64,}={0,2}")
 # A name is printed in the warning only when it looks like an identifier. A HAR
 # can hold a "field name" that is really a value -- a token used as a JSON key,
 # a form part with no "=" -- or one with control characters that would forge
@@ -636,10 +638,24 @@ _MAX_JSON_DEPTH = 200
 
 def _is_credential_name(name: str) -> bool:
     """Whether a header, query, form or JSON field name looks like a credential."""
-    compact = re.sub(r"[^a-z0-9]", "", name.lower())
+    segments = [seg.lower() for seg in _NAME_SEGMENT_RE.findall(name)]
+    compact = "".join(segments)
+    # An ordinary word is cut out only where it lines up with the name's own
+    # segment boundaries: "sortKey" and "max_tokens" go quiet, but "common_key"
+    # (not "monkey"), "presignedUrl" (not "resign") and "login_by_password"
+    # (not "bypass") still count.
+    bounds = {0}
+    for seg in segments:
+        bounds.add(max(bounds) + len(seg))
+    masked = list(compact)
     for word in _ORDINARY_WORDS:
-        compact = compact.replace(word, "|")
-    if _CREDENTIAL_COMPACT_RE.search(compact):
+        start = compact.find(word)
+        while start != -1:
+            end = start + len(word)
+            if start in bounds and end in bounds:
+                masked[start:end] = "|" * len(word)
+            start = compact.find(word, start + 1)
+    if _CREDENTIAL_COMPACT_RE.search("".join(masked)):
         return True
     segments = [seg.lower() for seg in _NAME_SEGMENT_RE.findall(name)]
     if any(seg in _CREDENTIAL_NAME_SEGMENTS for seg in segments):
@@ -675,15 +691,20 @@ def _display_name(name: str) -> str:
 def _credential_form_fields(encoded: str) -> set[str]:
     """Credential-shaped field names in a query string or form-encoded body.
 
-    Only ``name=value`` pairs count: a bare token with no ``=`` is a value, and
-    reporting it as a name would print it in the warning.
+    A bare part with no ``=`` may be a value rather than a name, so when it
+    looks like a credential it is reported as ``<unnamed field>`` and never
+    printed.
     """
-    pairs = "&".join(part for part in encoded.split("&") if "=" in part)
-    return {
+    parts = encoded.split("&")
+    pairs = "&".join(part for part in parts if "=" in part)
+    found = {
         _display_name(name)
         for name, _ in parse_qsl(pairs, keep_blank_values=True)
         if _is_credential_name(name)
     }
+    if any("=" not in part and _is_credential_name(unquote_plus(part)) for part in parts):
+        found.add(_UNNAMED)
+    return found
 
 
 def _credential_query_params(url: str) -> set[str]:
@@ -809,7 +830,7 @@ def _warn_on_credentials(
     if text_bodies:
         parts.append(
             f"{text_bodies} request bod{'y' if text_bodies == 1 else 'ies'} "
-            "whose text mentions a password, secret, token or API key"
+            "whose text mentions a password, secret, token, API key or credential"
         )
 
     logger.warning(

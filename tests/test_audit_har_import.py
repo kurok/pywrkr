@@ -531,10 +531,11 @@ def test_har_import_form_body_without_equals_is_not_printed(tmp_path, caplog):
 
     warning = _credential_warnings(caplog)
     assert "sk_live_TOKEN_abc123" not in warning
-    assert "1 request body whose text mentions" in warning
+    assert "request body fields <unnamed field>" in warning
 
 
 def test_har_import_query_without_equals_is_not_printed(tmp_path, caplog):
+    """A bare part may be the value itself: still warned, never printed."""
     path = _write_har(
         tmp_path,
         {
@@ -551,6 +552,7 @@ def test_har_import_query_without_equals_is_not_printed(tmp_path, caplog):
         convert_har(path)
 
     assert "sk_live_TOKEN_abc123" not in "\n".join(r.getMessage() for r in caplog.records)
+    assert "query parameters <unnamed field>" in _credential_warnings(caplog)
 
 
 def test_har_import_control_characters_in_field_name_are_not_logged(tmp_path, caplog):
@@ -719,6 +721,22 @@ _CREDENTIAL_NAMES = [
     "loginpass",
     "connect.sid",
     "ASP.NET_SessionId",
+    # An ordinary word straddling a segment boundary must not swallow the
+    # credential next to it.
+    "presignedUrl",
+    "pre_signed_url",
+    "X-Amz-Presign",
+    "common_key",
+    "commonKey",
+    "commonkey",
+    "login_by_password",
+    "authByPassword",
+    "gas_signature",
+    "node_signature",
+    "shot_key",
+    "return_key",
+    "homepage_token",
+    "groupKey",
 ]
 _ORDINARY_NAMES = [
     "monkey",
@@ -743,13 +761,19 @@ _ORDINARY_NAMES = [
     "continuation_token",
     "tokenizer",
     "keyword",
+    "assigned_to",
     "page",
+    # A count of CSRF tokens and a search keyword: both are listed words lined
+    # up with the name's segments, so they are deliberately quiet.
+    "csrf_token_count",
+    "api_keyword",
 ]
 
 
 def test_credential_name_rule_is_a_superset_of_mains_except_ordinary_words():
-    """Every name main's substring rule flagged still counts, unless an
-    ordinary word listed in ``_ORDINARY_WORDS`` is all that matched."""
+    """Every name the old substring rule (token|key|secret|password|sig)
+    flagged still counts, unless an ordinary word listed in ``_ORDINARY_WORDS``
+    is all that matched."""
     import re
 
     from pywrkr.har_import import _is_credential_name
@@ -924,3 +948,53 @@ def test_credential_text_words(text, expected):
     from pywrkr.har_import import _text_mentions_credential
 
     assert _text_mentions_credential(text) is expected
+
+
+@pytest.mark.parametrize(
+    ("body", "mime"),
+    [
+        ('{"redirect": "https://x/cb?access_token=' + "A" * 64 + '"}', "application/json"),
+        ("token=" + "A" * 64 + " extra", "text/plain"),
+        ('{"x": "pw_' + "a" * 61 + '_password_"}', "application/json"),
+    ],
+)
+def test_har_import_long_value_does_not_hide_its_name(tmp_path, caplog, body, mime):
+    """The base64 skip must not swallow "access_token=" along with the value."""
+    path = _body_har(tmp_path, body, mime)
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "1 request body whose text mentions" in warning
+    assert "A" * 64 not in warning
+
+
+def test_har_import_cross_segment_names_warn_end_to_end(tmp_path, caplog):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "https://h/a?presignedUrl=x",
+                        "method": "POST",
+                        "postData": {
+                            "mimeType": "application/json",
+                            "text": '{"common_key": "S3CRET", "login_by_password": "hunter2"}',
+                        },
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "query parameters presignedUrl" in warning
+    assert "request body fields common_key, login_by_password" in warning
+    assert "S3CRET" not in warning
+    assert "hunter2" not in warning
