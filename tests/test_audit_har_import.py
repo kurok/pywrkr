@@ -1272,6 +1272,22 @@ def test_split_domain_never_echoes_credentials(value):
     assert "s3cret" not in str(exc.value) and ":p@" not in str(exc.value)
 
 
+def test_multi_host_error_masks_userinfo():
+    entries = [_entry("http://user:s3cret@h.test/a"), _entry("http://h.test/b")]
+    with pytest.raises(ValueError) as exc:
+        har_to_scenario(entries, HarImportConfig())
+    message = str(exc.value)
+    assert "s3cret" not in message and "user" not in message
+    assert "http://***@h.test" in message
+
+
+@pytest.mark.parametrize("value", ["http://h?next=a@b", "http://h#x@y"])
+def test_split_domain_at_sign_outside_the_authority_is_not_credentials(value):
+    from pywrkr.har_import import _split_domain
+
+    assert _split_domain(value) == ("h", 80)
+
+
 def test_domain_filter_does_not_decode_a_hostname():
     entries = [_entry("http://ex%61mple.com/a"), _entry("http://example.com/b")]
     kept = filter_entries(entries, HarImportConfig(allowed_domains=["example.com"]))

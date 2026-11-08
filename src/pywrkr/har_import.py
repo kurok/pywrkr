@@ -294,7 +294,8 @@ def _split_domain(value: str) -> tuple[str, int | None]:
             1-65535.
     """
     text = value.strip()
-    if "@" in text.partition("://")[2].split("/", 1)[0] or ("://" not in text and "@" in text):
+    authority = re.split(r"[/?#]", text.partition("://")[2], maxsplit=1)[0]
+    if "@" in authority or ("://" not in text and "@" in text):
         # Never echo a value that carries credentials.
         raise ValueError("--domain: give host or host:port, not a URL with user:password@")
     bad = ValueError(f"--domain {value!r}: expected host or host:port with a port of 1-65535")
@@ -554,7 +555,10 @@ def har_to_scenario(
         )
         if key not in seen_origins:
             seen_origins.add(key)
-            origins.append(f"{parsed.scheme}://{parsed.netloc}")
+            # Never print credentials: mask the userinfo, keep it visible as
+            # the reason two otherwise equal origins differ.
+            userinfo, _, hostport = parsed.netloc.rpartition("@")
+            origins.append(f"{parsed.scheme}://{'***@' if userinfo else ''}{hostport}")
     if len(origins) > 1:
         raise ValueError(
             "HAR spans multiple hosts "
@@ -1076,8 +1080,9 @@ def convert_har(
                     hosts.append(shown)
             hint = (
                 f" --domain was {', '.join(repr(d) for d in config.allowed_domains)}; "
-                "it matches a host and its subdomains, and a port only when one is "
-                f"given. The recording's hosts are: {', '.join(hosts[:10]) or 'none'}"
+                "it matches a host and its subdomains (an IP address only itself), "
+                "and a port only when one is given. "
+                f"The recording's hosts are: {', '.join(hosts[:10]) or 'none'}"
                 + (" ..." if len(hosts) > 10 else "")
                 + "."
             )
