@@ -252,6 +252,29 @@ Runnable examples: [`examples/library_usage.py`](examples/library_usage.py).
 pip install pywrkr
 ```
 
+## Container image
+
+A pre-built image is published on every release and on every push to `main`:
+
+```bash
+# GitHub Container Registry
+docker pull ghcr.io/kurok/pywrkr:latest
+
+# Docker Hub
+docker pull docker.io/ryabikov/pywrkr:latest
+```
+
+Both registries carry the same tags — `latest`, the release version (`1.6.0`), the minor line
+(`1.6`) and the commit (`sha-…`). Run it like the CLI:
+
+```bash
+docker run --rm ghcr.io/kurok/pywrkr:latest https://example.com -c 10 -d 5
+```
+
+The image runs as a non-root user (uid 10001) and has a `HEALTHCHECK`. The image built for a
+release is attested with build provenance on GitHub Container Registry; Docker Hub does not offer
+an attestation store, so the Docker Hub image carries no attestation.
+
 ## Quick Start
 
 ```bash
