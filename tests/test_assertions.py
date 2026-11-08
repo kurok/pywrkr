@@ -3,6 +3,7 @@
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from io import StringIO
@@ -740,6 +741,239 @@ class TestAssertionsIntegration(AioHTTPTestCase):
         )
         self.assertIn("AssertBody: 'absent' not found", stats.error_types)
         self.assertEqual(stats.errors, stats.total_requests // 2)
+
+
+# ---------------------------------------------------------------------------
+# A user regex against server-supplied text (#306)
+# ---------------------------------------------------------------------------
+
+
+class TestAssertionRegexBounds(unittest.TestCase):
+    """Test the bounds and the warning, never a catastrophic match itself."""
+
+    def _evaluate(self, spec, body=b"", headers=None):
+        rules = parse_step_assertions(spec, "Step 3")
+        return evaluate_assertions(rules, 200, body, headers or {}, 0.01)
+
+    def test_assert_body_regex_is_not_matched_beyond_the_cap(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"x" * _ASSERT_MATCH_MAX + b"NEEDLE"
+        failures = self._evaluate({"assert_body_regex": "NEEDLE"}, body=body)
+        self.assertEqual(keys(failures), ["AssertBodyRegex: 'NEEDLE' did not match"])
+
+    def test_assert_body_regex_still_matches_within_the_cap(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"x" * (_ASSERT_MATCH_MAX - 6) + b"NEEDLE"
+        self.assertEqual(self._evaluate({"assert_body_regex": "NEEDLE"}, body=body), [])
+        self.assertEqual(self._evaluate({"assert_body_regex": r'"id":\s*42'}, body=OK_BODY), [])
+
+    def test_assert_header_regex_is_not_matched_beyond_the_cap(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        value = "x" * _ASSERT_MATCH_MAX + "NEEDLE"
+        failures = self._evaluate(
+            {"assert_header": {"X-Long": {"regex": "NEEDLE"}}}, headers={"X-Long": value}
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0].key.startswith("AssertHeader: X-Long"))
+
+    def test_assert_body_regex_emits_a_backtracking_warning(self):
+        with self.assertLogs("pywrkr.assertions", level="WARNING") as logs:
+            parse_step_assertions({"assert_body_regex": "(a+)+b"}, "Step 3")
+        message = "\n".join(logs.output)
+        self.assertIn("Step 3", message)
+        self.assertIn("'(a+)+b'", message)
+        self.assertIn("catastrophic backtracking (e.g. '(a+)+')", message)
+
+    def test_assert_header_regex_emits_a_backtracking_warning(self):
+        with self.assertLogs("pywrkr.assertions", level="WARNING") as logs:
+            parse_step_assertions({"assert_header": {"X-Id": {"regex": r"(\w+\s?)*$"}}}, "Step 1")
+        message = "\n".join(logs.output)
+        self.assertIn("Step 1 assert_header 'X-Id'", message)
+
+    def test_ordinary_patterns_do_not_warn(self):
+        for pattern in (r'"id":\s*42', "(ab)+", "a+b+", "(?:foo|bar)+", r"(\d{3})?", "^ok$"):
+            with self.subTest(pattern=pattern), self.assertNoLogs("pywrkr.assertions", "WARNING"):
+                parse_step_assertions({"assert_body_regex": pattern}, "Step 0")
+
+    def test_nested_repetition_shapes_are_flagged(self):
+        from pywrkr.assertions import _has_nested_repetition
+
+        for pattern in ("(a+)+b", "(a*)*", "(.*a){20}", r"(\w+\s?)*$", "(?:x+y?)+"):
+            with self.subTest(pattern=pattern):
+                self.assertTrue(_has_nested_repetition(pattern))
+
+    def test_a_cut_body_does_not_let_a_negative_lookahead_pass(self):
+        """ "Must not contain ERROR" must not pass just because ERROR is past the cut."""
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"x" * _ASSERT_MATCH_MAX + b"ERROR"
+        failures = self._evaluate({"assert_body_regex": r"(?s)\A(?!.*ERROR)"}, body=body)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_a_cut_body_does_not_let_an_end_anchor_pass(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"x" * (_ASSERT_MATCH_MAX * 2) + b"}"
+        failures = self._evaluate({"assert_body_regex": r"x\Z"}, body=body)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_short_bodies_keep_full_regex_semantics(self):
+        self.assertEqual(self._evaluate({"assert_body_regex": r"(?s)\A(?!.*ERROR)"}, b"ok"), [])
+        self.assertEqual(
+            len(self._evaluate({"assert_body_regex": r"(?s)\A(?!.*ERROR)"}, b"ERROR")), 1
+        )
+        self.assertEqual(self._evaluate({"assert_body_regex": r"\}\Z"}, b'{"a": 1}'), [])
+
+    def test_a_match_early_in_a_long_body_still_counts(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b'{"id": 42, "pad": "' + b"x" * (_ASSERT_MATCH_MAX * 4) + b'"}'
+        self.assertEqual(self._evaluate({"assert_body_regex": r'"id":\s*42\b'}, body=body), [])
+
+    def test_quadratic_pattern_against_a_long_hostile_body_is_bounded(self):
+        """\\s+$ is quadratic and not flagged; the cap is what bounds it."""
+        import time
+
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        # The worst case has to fall inside the cap: all spaces, then a
+        # non-space at the last scanned position.
+        body = b" " * (_ASSERT_MATCH_MAX - 1) + b"x" + b" " * 200_000
+        start = time.perf_counter()
+        self._evaluate({"assert_body_regex": r"\s+$"}, body=body)
+        self.assertLess(time.perf_counter() - start, 2.0)
+
+    def test_bounded_and_atomic_shapes_are_not_flagged(self):
+        from pywrkr.assertions import _has_nested_repetition
+
+        for pattern in (r"(?:\d{1,3}\.){3}\d{1,3}", "(a{1,2}){3}", "(ab)+", "(?:foo|bar)+"):
+            with self.subTest(pattern=pattern):
+                self.assertFalse(_has_nested_repetition(pattern))
+
+    @unittest.skipIf(sys.version_info < (3, 11), "atomic groups and possessive repeats are 3.11+")
+    def test_atomic_and_possessive_shapes(self):
+        from pywrkr.assertions import _has_nested_repetition
+
+        for pattern in ("(?>a+)+", "(a++)+", "(a+)++"):
+            with self.subTest(pattern=pattern):
+                self.assertFalse(_has_nested_repetition(pattern))
+        # Backtracking still happens inside an atomic group.
+        self.assertTrue(_has_nested_repetition("(?>(a+)+b)"))
+
+    def test_a_positive_lookahead_testing_the_end_is_undecided_on_a_cut_body(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        cases = [
+            (r"\A(?=[^E]*\Z)", "a" * (_ASSERT_MATCH_MAX + 800) + "E"),
+            (r"a(?=b*\Z)", "a" + "b" * (_ASSERT_MATCH_MAX + 800) + "c"),
+            (r"x(?=y*\b)", "x" + "y" * (_ASSERT_MATCH_MAX + 800) + "z"),
+        ]
+        for pattern, text in cases:
+            with self.subTest(pattern=pattern):
+                failures = self._evaluate({"assert_body_regex": pattern}, body=text.encode())
+                self.assertEqual(len(failures), 1)
+                self.assertIn("scan limit", failures[0].key)
+
+    def test_dollar_before_a_newline_at_the_cut_is_undecided(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = b"a" * (_ASSERT_MATCH_MAX - 2) + b"x\nmore"
+        failures = self._evaluate({"assert_body_regex": "x$"}, body=body)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_backreferences_and_conditionals_are_undecided_on_a_cut_body(self):
+        """They settle on what the cut text holds and need not match the whole."""
+        from pywrkr.assertions import _ASSERT_MATCH_MAX as n
+
+        pad = '{"x":"' + "p" * (n - 15) + '","id":12347'
+        cases = [
+            (r"(?=\w+,(\w+))\1", " " * (n - 4) + "ac,a" + "b"),
+            (r"(?=\w+(,)?)(?(1)Z|a)", " " * (n - 1) + "a" + "b,"),
+            (r"(?=(\w+))\1(?<=a)", " " * (n - 1) + "a" + "b"),
+            (r"(?=(?=(\w+))\1(?<=a))", " " * (n - 100) + "x" * 99 + "a" + "b"),
+            (r'"id":(?=(\d+))\1(?<=7)', pad[:n] + "8}"),
+        ]
+        for pattern, text in cases:
+            with self.subTest(pattern=pattern):
+                failures = self._evaluate({"assert_body_regex": pattern}, body=text.encode())
+                self.assertEqual(len(failures), 1)
+                self.assertIn("scan limit", failures[0].key)
+
+    @unittest.skipIf(sys.version_info < (3, 11), "atomic groups and possessive repeats are 3.11+")
+    def test_atomic_and_possessive_constructs_are_undecided_on_a_cut_body(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX as n
+
+        cases = [
+            (r"(?>\w+)(?<=a)", " " * (n - 1) + "a" + "b"),
+            (r"\w++(?<=a)", " " * (n - 1) + "a" + "b"),
+            (r"(?=(?>\w+)(?<=a))", " " * (n - 100) + "x" * 99 + "a" + "b"),
+        ]
+        for pattern, text in cases:
+            with self.subTest(pattern=pattern):
+                failures = self._evaluate({"assert_body_regex": pattern}, body=text.encode())
+                self.assertEqual(len(failures), 1)
+                self.assertIn("scan limit", failures[0].key)
+
+    def test_a_lookahead_inside_a_lookbehind_is_undecided_on_a_cut_body(self):
+        """Inside (?<!...) a positive lookahead flips polarity and can read past the cut."""
+        from pywrkr.assertions import _ASSERT_MATCH_MAX as n
+
+        cases = [
+            ("x(?<!x(?=yz))", "." * (n - 2) + "xyz"),
+            ("q(?<!q(?=.{9000}))", "q" + "." * 9192),
+        ]
+        for pattern, text in cases:
+            with self.subTest(pattern=pattern):
+                failures = self._evaluate({"assert_body_regex": pattern}, body=text.encode())
+                self.assertEqual(len(failures), 1)
+                self.assertIn("scan limit", failures[0].key)
+
+    def test_small_bounded_outer_repeats_are_flagged(self):
+        from pywrkr.assertions import _has_nested_repetition
+
+        for pattern in (r"(\w+,){3}", "(.*a){9}"):
+            with self.subTest(pattern=pattern):
+                self.assertTrue(_has_nested_repetition(pattern))
+
+    def test_a_negative_lookbehind_does_not_make_a_long_body_undecided(self):
+        """A lookbehind reads only text before the match, never the cut."""
+        self.assertEqual(
+            self._evaluate({"assert_body_regex": "(?<!x)id"}, body=b"id" + b"a" * 20000), []
+        )
+
+    def test_a_header_regex_that_depends_on_the_cut_is_undecided(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        failures = self._evaluate(
+            {"assert_header": {"X-Long": {"regex": r"\A(?=[^E]*\Z)"}}},
+            headers={"X-Long": "a" * (_ASSERT_MATCH_MAX + 1) + "E"},
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_a_four_byte_utf8_body_is_still_detected_as_cut(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = ("\U0001f600" * (_ASSERT_MATCH_MAX + 10)).encode() + b"ERROR"
+        failures = self._evaluate({"assert_body_regex": r"(?s)\A(?!.*ERROR)"}, body=body)
+        self.assertIn("scan limit", failures[0].key)
+
+    def test_contains_and_json_rules_still_see_the_whole_body(self):
+        from pywrkr.assertions import _ASSERT_MATCH_MAX
+
+        body = json.dumps({"pad": "x" * (_ASSERT_MATCH_MAX * 4), "id": 42}).encode()
+        spec = {
+            "assert_body_regex": '"pad"',
+            "assert_body_contains": '"id": 42',
+            "assert_json": {"$.id": 42},
+        }
+        self.assertEqual(self._evaluate(spec, body=body), [])
 
 
 if __name__ == "__main__":

@@ -128,13 +128,20 @@ pywrkr har-import recording.har --no-think-time -o scenario.json               #
 
 > **Recorded credentials.** A HAR captured from a logged-in session contains
 > whatever that session was authenticating with. `--preserve-headers` keeps
-> `Authorization`, `X-API-Key` and similar, and the query string is copied into
-> the step path whether or not that flag is used — so `?access_token=...` ends
-> up in the generated file too. These are deliberately not stripped, because a
-> scenario is usually replayed against the same environment, but `har-import`
-> warns when it writes something that looks like a credential. Replace the
-> values with a template such as `${token}` and supply them at run time before
-> committing the file.
+> `Authorization`, `X-API-Key` and similar; the query string is copied into the
+> step path whether or not that flag is used, so `?access_token=...` ends up in
+> the generated file too; and with `--format scenario` a recorded login's
+> request body carries its password. These are deliberately not stripped,
+> because a scenario is usually replayed against the same environment, but
+> `har-import` warns when it writes something that looks like a credential: a
+> header, query parameter or request body field whose name looks like one (JSON
+> keys at any depth, URL-encoded form fields and multipart part names, including
+> short names such as `pwd`, `pass1` and `app_key`), or a request body whose text
+> mentions a password, secret, token, API key, credential or bearer token. Field names that
+> look like a value rather than a name are shown as `<unnamed field>`, so the
+> warning avoids printing token-like values. The check leans towards warning, so expect the occasional false
+> alarm. Replace the values with a template such as `${token}` and supply them
+> at run time before committing the file.
 
 ## Library usage
 
@@ -524,7 +531,7 @@ steps:
 |-----------|--------|
 | `assert_status` | Exact status code |
 | `assert_body_contains` | Substring is present in the body |
-| `assert_body_regex` | Regex matches somewhere in the body |
+| `assert_body_regex` | Regex matches somewhere in the first 8,192 characters of the body |
 | `assert_json` | JSONPath → expected value, or `"*"` for "must exist" |
 | `assert_header` | Header equals a string, or matches `{regex: "..."}` |
 | `assert_max_latency` | This request took no longer than `500ms` / `1.5s` / `250us` |
@@ -535,6 +542,19 @@ not satisfy an expected `1`.
 
 Exact `assert_header` matches are exact: a server sending `application/json; charset=utf-8` will
 *not* match `"application/json"`. Use the regex form for prefixes.
+
+Assertion regexes run against text the server under test chooses, on the event loop, and Python's
+`re` has no timeout. So `assert_body_regex` and the `assert_header` regex form search only the first
+8,192 characters of that text (the same bound `har-import` puts on URLs), and a match further in does
+not count. When the text is longer and the answer could depend on where it was cut, such as a
+lookahead that reads to the end like `(?!.*ERROR)` or `(?=[^E]*\Z)`; a backreference, conditional,
+atomic group, possessive repeat or lookahead inside a lookbehind; or an end anchor or word boundary in a match running up to the
+cut, the assertion fails as *undecided* rather than passing. A pattern that nests an unbounded repeat inside a repeat,
+the `(a+)+` shape behind catastrophic backtracking, logs a warning when the scenario loads. That
+check is a heuristic and misses some shapes, such as overlapping alternation like `(a|ab)*` and
+adjacent repeats like `\s*\s*$`. The limit bounds linear and quadratic patterns; cubic or
+exponential ones can still take a long time within it. For large JSON responses, prefer
+`assert_json` or `assert_body_contains`.
 
 A failed assertion counts the request as **one** error however many rules broke, and each broken
 rule gets its own key in the error distribution. Those keys name the *rule*, never the observed
