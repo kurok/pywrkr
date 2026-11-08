@@ -141,6 +141,7 @@ __all__ = [
     "run_autofind",
     # pywrkr.distributed
     "merge_worker_stats",
+    "DEFAULT_WORKER_WAIT_TIMEOUT",
     "run_master",
     "run_worker_node",
     # pywrkr.multi_url
@@ -222,6 +223,7 @@ from pywrkr.config import (
     validate_scenario_templates,
 )
 from pywrkr.distributed import (
+    DEFAULT_WORKER_WAIT_TIMEOUT,
     merge_worker_stats,
     run_master,
     run_worker_node,
