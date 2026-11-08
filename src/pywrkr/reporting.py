@@ -12,7 +12,7 @@ import sys
 from collections import defaultdict
 from string import Template
 from typing import TYPE_CHECKING, NamedTuple, Sequence, TextIO
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from pywrkr.compare import (
     EXIT_USAGE,
@@ -42,7 +42,10 @@ RICH_AVAILABLE = importlib.util.find_spec("rich") is not None
 try:
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.sdk.metrics.export import (
+        MetricExportResult,
+        PeriodicExportingMetricReader,
+    )
     from opentelemetry.sdk.resources import Resource
 
     OTEL_AVAILABLE = True
@@ -1254,10 +1257,40 @@ def _resolve_metric_value(
     return val * multiplier
 
 
+#: The OTLP/HTTP path a collector serves metrics on.
+OTEL_METRICS_PATH = "/v1/metrics"
+
+
+def otel_metrics_endpoint(endpoint: str) -> str:
+    """The OTLP/HTTP metrics endpoint for ``--otel-endpoint``.
+
+    The exporter wants the full signal endpoint, path included. Given only a
+    collector's base URL it would post to the collector's root, which answers
+    404, so a URL with no path gets ``/v1/metrics`` appended. A URL that already
+    has a path is used as given.
+
+    Args:
+        endpoint: A collector base URL (``http://collector:4318``) or a full
+            signal endpoint (``http://collector:4318/v1/metrics``).
+
+    Returns:
+        The URL to hand to the OTLP metric exporter.
+    """
+    parsed = urlparse(endpoint)
+    if parsed.path in ("", "/"):
+        return urlunparse(parsed._replace(path=OTEL_METRICS_PATH))
+    return endpoint
+
+
 def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
     """Export benchmark metrics to an OpenTelemetry collector via OTLP/HTTP.
 
-    Returns True on success, False on any error (including missing packages).
+    *endpoint* may be the collector's base URL; see :func:`otel_metrics_endpoint`.
+
+    Returns True when every batch was delivered, False on any error -- missing
+    packages, an exception, or a batch the collector refused (a 404 from a
+    wrong path, for one). The SDK's ``force_flush()`` reports success even for
+    a refused batch, so the exporter's own results are what decide.
     """
     if not OTEL_AVAILABLE:
         _logger.error(
@@ -1266,11 +1299,23 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
         )
         return False
 
+    signal_endpoint = otel_metrics_endpoint(endpoint)
     try:
         resource_attrs = {"service.name": "pywrkr"}
         resource_attrs.update(tags)
         resource = Resource.create(resource_attrs)
-        exporter = OTLPMetricExporter(endpoint=endpoint)
+        exporter = OTLPMetricExporter(endpoint=signal_endpoint)
+
+        outcomes: list[object] = []
+        deliver = exporter.export
+
+        def recording_export(*args: object, **kwargs: object) -> object:
+            outcome = deliver(*args, **kwargs)
+            outcomes.append(outcome)
+            return outcome
+
+        exporter.export = recording_export  # type: ignore[method-assign]
+
         reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
         provider = MeterProvider(resource=resource, metric_readers=[reader])
         meter = provider.get_meter("pywrkr")
@@ -1291,10 +1336,22 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
 
         provider.force_flush()
         provider.shutdown()
-        return True
     except Exception as e:
-        _logger.error("OTel export failed (endpoint=%s): %s", endpoint, e)
+        _logger.error("OTel export failed (endpoint=%s): %s", signal_endpoint, e)
         return False
+
+    failed = sum(1 for outcome in outcomes if outcome is not MetricExportResult.SUCCESS)
+    if failed:
+        _logger.error(
+            "OTel export failed: the collector at %s refused %d of %d metric batches "
+            "(see the exporter's error above). Check that --otel-endpoint points at "
+            "an OTLP/HTTP collector.",
+            signal_endpoint,
+            failed,
+            len(outcomes),
+        )
+        return False
+    return True
 
 
 def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> bool:

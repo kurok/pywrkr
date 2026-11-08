@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `pywrkr --worker` pointed at a non-loopback master no longer connects without a worker secret, and `run_worker_node(...)` returns 1 for that case. Set the same `PYWRKR_WORKER_SECRET` on the master and every worker, or run both against `127.0.0.1`. (#304)
 - **Terraform upgrade:** both stacks take a sensitive `worker_secret` variable, store it in an SSM SecureString and hand it to the master and every worker as `PYWRKR_WORKER_SECRET` through the container `secrets`; left `null`, a random secret is generated per deployment. **The principal that runs terraform now needs SSM parameter permissions on `parameter/pywrkr-*`** (see the updated policies in `infra/README.md` and `infra/multi-region/README.md`), and `terraform init` pulls two new providers, `hashicorp/random` and `hashicorp/time`. The execution role gets `ssm:GetParameters` on that one parameter only; the secret never appears in the task definition, so `terraform plan` keeps showing container-definition changes. (#303)
 
+### Fixed
+
+- `--otel-endpoint http://collector:4318`, the shape the README documents, posted metrics to the collector's root, which a standard OTLP/HTTP collector answers with 404, and the run still reported success. A URL with no path now gets the `/v1/metrics` signal path; a URL with a path is used as given. A batch the collector refuses now makes the OTel export report failure, as the Prometheus export already did, instead of returning success because the SDK's `force_flush()` does. (#318)
+
 ### Security
 
 - Floor `msgpack` at 1.2.3 (locked 1.2.4) for GHSA-j586-36cw-2gc2 and `filelock` at 4.2.1 (locked 4.2.4) for GHSA-8mx5-7m5m-r77g in `uv.lock`, via `[tool.uv]` constraints. (#312)

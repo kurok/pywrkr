@@ -297,7 +297,11 @@ def _add_output_options(parser: argparse.ArgumentParser) -> None:
         "--otel-endpoint",
         default=None,
         metavar="URL",
-        help="Export metrics to an OpenTelemetry collector via OTLP/HTTP",
+        help=(
+            "Export metrics to an OpenTelemetry collector via OTLP/HTTP: the collector's "
+            "base URL (http://collector:4318; /v1/metrics is added when the URL has no "
+            "path) or the full metrics endpoint"
+        ),
     )
     parser.add_argument(
         "--prom-remote-write",
