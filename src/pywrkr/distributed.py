@@ -67,7 +67,7 @@ _MAX_MESSAGE_BYTES = 256 * 1024 * 1024  # 256 MiB
 
 # Default ceiling for how long a worker should wait for the master to send the
 # initial config before assuming the master is dead.
-_WORKER_RECV_TIMEOUT_SECONDS = 300.0
+_WORKER_RECV_TIMEOUT_SECONDS = 300.0  # default for run_worker_node(config_wait_timeout=)
 
 # Timeout for the HMAC challenge-response handshake (master and worker sides).
 _WORKER_AUTH_TIMEOUT_SECONDS = 5.0
@@ -1249,12 +1249,13 @@ async def run_master(
             if not await _authenticate_worker(reader, writer):
                 writer.close()
                 return
-        if wait_over.is_set():
-            # The wait window closed while this worker was authenticating: the
-            # run has been given up, so do not admit it and leave it waiting
-            # for a config that never comes.
+        if wait_over.is_set() or len(worker_connections) >= expect_workers:
+            # Admission closed while this worker was authenticating -- the
+            # wait window ran out, or the cluster filled up (two workers can
+            # pass the surplus check above and authenticate at once) -- so do
+            # not admit it and leave it waiting for a config that never comes.
             logger.warning(
-                "  Worker %s finished authenticating after the wait window; closing it",
+                "  Worker %s finished authenticating after admission closed; closing it",
                 writer.get_extra_info("peername"),
             )
             writer.close()
@@ -1286,7 +1287,7 @@ async def run_master(
                 "Master: timed out after %ss waiting for workers (%s/%s connected); "
                 "the window is set by --worker-wait-timeout, PYWRKR_WORKER_WAIT_TIMEOUT "
                 "or run_master(worker_wait_timeout=)",
-                f"{worker_wait_timeout:g}",
+                worker_wait_timeout,
                 len(worker_connections),
                 expect_workers,
             )
@@ -1306,6 +1307,7 @@ async def run_master(
         # in use for the run, and in Python 3.12 wait_closed() blocks until
         # those handler connections finish, which would deadlock collection.
         selected = worker_connections[:expect_workers]
+        wait_over.set()  # admission closed: a late authenticator is turned away
         server.close()
         server_closed = True
 
@@ -1397,6 +1399,9 @@ async def run_master(
             *(_collect_one(i, reader, writer) for i, (reader, writer) in enumerate(selected))
         )
     finally:
+        # However run_master ends (including cancellation during the wait),
+        # no handler still authenticating may admit itself afterwards.
+        wait_over.set()
         if master_exporter is not None:
             # aclose() is idempotent, and emitting the final cluster snapshot
             # here rather than on the happy path is what makes a run killed
@@ -1606,9 +1611,18 @@ class _ProgressReporter:
 
 
 async def run_worker_node(
-    master_host: str, master_port: int, worker_secret: str | None = None
+    master_host: str,
+    master_port: int,
+    worker_secret: str | None = None,
+    config_wait_timeout: float = _WORKER_RECV_TIMEOUT_SECONDS,
 ) -> int:
     """Run in worker mode: connect to master, receive config, run benchmark, send results.
+
+    The worker waits up to *config_wait_timeout* seconds for its config once
+    connected. That has to cover the master's own wait for the rest of the
+    cluster, so give both the same value (``--worker-wait-timeout`` or
+    ``PYWRKR_WORKER_WAIT_TIMEOUT``): a worker that gave up first would leave the
+    master a dead connection.
 
     If *worker_secret* is provided, the handshake is mutual HMAC-SHA256: the
     worker answers the master's challenge and the master must sign a nonce of
@@ -1630,6 +1644,10 @@ async def run_worker_node(
         has no other way to tell a completed run from a five-minute wait for a
         master that never appeared.
     """
+    if not (config_wait_timeout > 0 and math.isfinite(config_wait_timeout)):
+        raise ValueError(
+            f"config_wait_timeout must be a positive number of seconds, got {config_wait_timeout!r}"
+        )
     master_host = normalize_host(master_host)
     try:
         await asyncio.to_thread(check_worker_auth, master_host, worker_secret)
@@ -1705,11 +1723,13 @@ async def run_worker_node(
                 logger.error("Worker: master failed the shared-secret check; refusing to run")
                 return 1
         try:
-            msg = await asyncio.wait_for(_recv_msg(reader), timeout=_WORKER_RECV_TIMEOUT_SECONDS)
+            msg = await asyncio.wait_for(_recv_msg(reader), timeout=config_wait_timeout)
         except asyncio.TimeoutError:
             logger.error(
-                "Worker: timed out after %ss waiting for config from master",
-                _WORKER_RECV_TIMEOUT_SECONDS,
+                "Worker: timed out after %ss waiting for config from master; "
+                "--worker-wait-timeout or PYWRKR_WORKER_WAIT_TIMEOUT sets the window "
+                "and should match the master's",
+                config_wait_timeout,
             )
             return 1
         except (ConnectionError, OSError) as e:

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `--worker-wait-timeout SECONDS` (or `PYWRKR_WORKER_WAIT_TIMEOUT`, or `run_master(..., worker_wait_timeout=)`) sets how long a distributed master waits for its `--expect-workers` workers to connect before giving up and exiting 1. The default stays 300 s; the timeout message now names the window it waited. (#322)
+- `--worker-wait-timeout SECONDS` (or `PYWRKR_WORKER_WAIT_TIMEOUT`, or `run_master(..., worker_wait_timeout=)` / `run_worker_node(..., config_wait_timeout=)`) sets how long a distributed master waits for its `--expect-workers` workers to connect and authenticate, and how long a worker waits for its config; set the same value on both, as with the worker secret, since a worker that gave up first would leave the master a dead connection. The default stays 300 s, and the timeout messages name the window that was waited. A worker that finishes authenticating after admission closed is turned away instead of being left waiting. (#322)
 
 ### Changed
 

@@ -15,7 +15,7 @@ import struct
 import time
 import unittest
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pywrkr
 from pywrkr.config import DEFAULT_RESERVOIR_SIZE, ReservoirSampler
@@ -945,7 +945,9 @@ class TestWorkerRequiresSecretAndValidTarget(unittest.IsolatedAsyncioTestCase):
         for argv, host, secret in cases:
             with self.subTest(argv=argv):
                 run = self._main(argv)
-                run.assert_called_once_with(host, 9220, worker_secret=secret)
+                run.assert_called_once_with(
+                    host, 9220, worker_secret=secret, config_wait_timeout=300.0
+                )
 
     async def test_worker_refuses_to_run_without_worker_secret(self):
         """API callers get the same rule: no connection is even attempted."""
@@ -1270,8 +1272,31 @@ class TestWorkerWaitTimeout(unittest.IsolatedAsyncioTestCase):
                 _ = await asyncio.wait_for(worker, timeout=10)
         self.assertIsNone(result)
         output = "\n".join(logs.output)
-        self.assertIn("after the wait window; closing it", output)
+        self.assertIn("after admission closed; closing it", output)
         self.assertNotIn("(1/1)", output)
+
+    async def test_a_worker_gives_up_after_its_config_wait(self):
+        """The worker's wait for its config is the same knob, not a fixed 300 s."""
+        accepted = asyncio.Event()
+
+        async def _silent_master(reader, writer):
+            accepted.set()
+            await asyncio.sleep(5)  # never sends a config
+            writer.close()
+
+        server = await asyncio.start_server(_silent_master, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            start = time.monotonic()
+            with self.assertLogs("pywrkr.distributed", level="ERROR") as logs:
+                code = await asyncio.wait_for(
+                    run_worker_node("127.0.0.1", port, config_wait_timeout=0.3), timeout=10
+                )
+        finally:
+            server.close()
+        self.assertEqual(code, 1)
+        self.assertLess(time.monotonic() - start, 5)
+        self.assertIn("timed out after 0.3s waiting for config", "\n".join(logs.output))
 
     async def test_an_invalid_timeout_is_refused_before_binding(self):
         config = pywrkr.BenchmarkConfig(url="http://example.com", duration=1, _quiet=True)
@@ -1331,15 +1356,25 @@ class TestWorkerWaitTimeoutCli(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self._parse(argv, env)
 
-    def test_only_for_the_master(self):
-        for argv in (
-            ["--worker-wait-timeout", "5", "http://example.com/"],
-            ["--worker", "127.0.0.1:1", "--worker-wait-timeout", "5"],
-        ):
-            with self.subTest(argv=argv), patch("sys.stderr", new_callable=StringIO):
-                with self.assertRaises(SystemExit) as ctx:
-                    self._parse(argv)
-                self.assertEqual(ctx.exception.code, 2)
+    def test_only_for_distributed_mode(self):
+        with patch("sys.stderr", new_callable=StringIO), self.assertRaises(SystemExit) as ctx:
+            self._parse(["--worker-wait-timeout", "5", "http://example.com/"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_a_worker_gets_the_same_window(self):
+        """A worker that gave up first would leave the master a dead connection."""
+        with patch("pywrkr.main.run_worker_node", new_callable=AsyncMock) as worker:
+            worker.return_value = 0
+            with self.assertRaises(SystemExit) as ctx:
+                self._parse(["--worker", "127.0.0.1:1", "--worker-wait-timeout", "900"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(worker.call_args.kwargs["config_wait_timeout"], 900.0)
+
+        with patch("pywrkr.main.run_worker_node", new_callable=AsyncMock) as worker:
+            worker.return_value = 0
+            with self.assertRaises(SystemExit):
+                self._parse(["--worker", "127.0.0.1:1"], env={"PYWRKR_WORKER_WAIT_TIMEOUT": "12"})
+        self.assertEqual(worker.call_args.kwargs["config_wait_timeout"], 12.0)
 
 
 if __name__ == "__main__":

@@ -543,10 +543,10 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
         default=None,
         metavar="SECONDS",
         help=(
-            "Distributed master: how long to wait for all --expect-workers workers "
-            "to connect and authenticate before giving up "
-            f"(default: {DEFAULT_WORKER_WAIT_TIMEOUT:g}). Also read from "
-            "PYWRKR_WORKER_WAIT_TIMEOUT"
+            "Distributed mode: how long the master waits for all --expect-workers "
+            "workers to connect and authenticate, and how long a worker waits for "
+            f"its config (default: {DEFAULT_WORKER_WAIT_TIMEOUT:g}). Set the same value "
+            "on the master and every worker. Also read from PYWRKR_WORKER_WAIT_TIMEOUT"
         ),
     )
     parser.add_argument(
@@ -1318,10 +1318,8 @@ def _validate_url_and_mode(
     args: argparse.Namespace,
 ) -> None:
     """Validate URL, worker/master mode, and mutually exclusive options."""
-    # Checked before the worker branch, which exits early: a worker has its
-    # own receive timeout, and this flag would silently do nothing there.
-    if args.worker_wait_timeout is not None and not args.master:
-        parser.error("--worker-wait-timeout only applies to --master")
+    if args.worker_wait_timeout is not None and not (args.master or args.worker is not None):
+        parser.error("--worker-wait-timeout only applies to --master and --worker")
 
     # Early exit: worker mode connects to a master and needs no URL
     if args.worker is not None:
@@ -1342,7 +1340,14 @@ def _validate_url_and_mode(
             # Every give-up path returns 1: an orchestrator cannot otherwise
             # tell a completed benchmark from a five-minute wait for a master
             # that never appeared.
-            sys.exit(asyncio.run(run_worker_node(host, w_port, worker_secret=worker_secret)))
+            config_wait = _resolve_worker_wait_timeout(parser, args)
+            sys.exit(
+                asyncio.run(
+                    run_worker_node(
+                        host, w_port, worker_secret=worker_secret, config_wait_timeout=config_wait
+                    )
+                )
+            )
         except KeyboardInterrupt:
             # 130 is the shell's convention for SIGINT, and beats printing a
             # KeyboardInterrupt traceback at whoever pressed Ctrl-C.
