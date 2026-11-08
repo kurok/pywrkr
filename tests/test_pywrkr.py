@@ -3619,10 +3619,8 @@ class TestOtelExport(unittest.TestCase):
                     for _ in outcomes:
                         # Like the SDK's reader: an exception from export()
                         # is logged and swallowed, never raised to the caller.
-                        try:
+                        with contextlib.suppress(Exception):
                             reader.exporter.export("batch")
-                        except Exception:
-                            pass
 
             def shutdown(self):
                 pass
@@ -3671,7 +3669,7 @@ class TestOtelExport(unittest.TestCase):
 
     def test_export_result_a_malformed_endpoint_is_failure_not_a_crash(self):
         self._fake_sdk([True])
-        for endpoint in ("http://[::1:4318", "localhost:4318", "ftp://c:4318"):
+        for endpoint in ("http://[::1:4318", "localhost:4318", "ftp://c:4318", "http://:4318"):
             with self.subTest(endpoint=endpoint):
                 with self.assertLogs("pywrkr.reporting", level="ERROR"):
                     ok = pywrkr.export_to_otel(self._make_results(), endpoint, {})

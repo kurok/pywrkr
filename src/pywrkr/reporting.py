@@ -1281,7 +1281,7 @@ def otel_metrics_endpoint(endpoint: str) -> str:
             not parse (``http://[::1:4318``).
     """
     parsed = urlparse(endpoint)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError(f"--otel-endpoint must be an http:// or https:// URL, got {endpoint!r}")
     if parsed.path in ("", "/"):
         return urlunparse(parsed._replace(path=OTEL_METRICS_PATH))
