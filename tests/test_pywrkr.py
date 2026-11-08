@@ -3687,29 +3687,13 @@ class TestOtelExport(unittest.TestCase):
     # Serves POST /v1/metrics and 404s everything else, as an OTLP/HTTP
     # collector does: a mock that accepts any path cannot catch a wrong path.
 
-    def _start_collector(self):
-        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    def _start_collector(self, refuse: bool = False):
+        """A collector-shaped receiver (tests/collector_fixture.py): /v1/metrics only."""
+        from tests.collector_fixture import CollectorReceiver
 
-        seen: list = []
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):  # noqa: N802 - http.server API
-                self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                status = 200 if self.path == "/v1/metrics" else 404
-                seen.append((self.path, status))
-                self.send_response(status)
-                self.send_header("Content-Type", "application/x-protobuf")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-
-            def log_message(self, *args):
-                pass
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        return f"http://127.0.0.1:{server.server_address[1]}", seen
+        receiver = CollectorReceiver(refuse=refuse).start()
+        self.addCleanup(receiver.stop)
+        return receiver
 
     def test_otel_metrics_endpoint(self):
         from pywrkr.reporting import otel_metrics_endpoint
@@ -3727,27 +3711,65 @@ class TestOtelExport(unittest.TestCase):
 
     @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_otel_export_appends_the_signal_path_to_a_base_url(self):
-        base, seen = self._start_collector()
-        self.assertTrue(pywrkr.export_to_otel(self._make_results(), base, {"env": "test"}))
-        self.assertTrue(seen)
-        self.assertTrue(all(path == "/v1/metrics" for path, _ in seen), seen)
+        receiver = self._start_collector()
+        self.assertTrue(pywrkr.export_to_otel(self._make_results(), receiver.url, {"env": "test"}))
+        self.assertTrue(receiver.received("/v1/metrics", status=200))
+        self.assertEqual([r.path for r in receiver.requests if r.status != 200], [])
 
     @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_otel_export_keeps_an_explicit_signal_path(self):
-        base, seen = self._start_collector()
-        self.assertTrue(pywrkr.export_to_otel(self._make_results(), f"{base}/v1/metrics", {}))
-        self.assertTrue(seen)
-        self.assertTrue(all(path == "/v1/metrics" for path, _ in seen), seen)
+        receiver = self._start_collector()
+        self.assertTrue(
+            pywrkr.export_to_otel(self._make_results(), f"{receiver.url}/v1/metrics", {})
+        )
+        self.assertTrue(receiver.received("/v1/metrics", status=200))
+
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
+    def test_otel_export_reports_failure_when_the_receiver_404s(self):
+        receiver = self._start_collector(refuse=True)
+        with self.assertLogs("pywrkr.reporting", level="ERROR"):
+            ok = pywrkr.export_to_otel(self._make_results(), receiver.url, {})
+        self.assertFalse(ok)
+        self.assertTrue(receiver.received("/v1/metrics", status=404))
+
+    @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
+    def test_cli_otel_endpoint_base_url_delivers_metrics(self):
+        """The documented shape, end to end: the test that would have caught #318."""
+        from pywrkr.main import main
+
+        receiver = self._start_collector()
+        argv = [
+            "pywrkr",
+            "-n",
+            "3",
+            "-c",
+            "1",
+            "--otel-endpoint",
+            receiver.url,
+            f"{receiver.url}/target",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch("sys.stdout", new_callable=StringIO),
+            patch("sys.stderr", new_callable=StringIO),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            main()
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(len([r for r in receiver.requests if r.method == "GET"]), 3)
+        delivered = receiver.received("/v1/metrics", status=200)
+        self.assertTrue(delivered)
+        self.assertEqual(delivered[0].content_type, "application/x-protobuf")
 
     @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_otel_export_reports_a_refused_batch(self):
         """A 404 used to be logged by the SDK and reported as success."""
-        base, seen = self._start_collector()
+        receiver = self._start_collector()
         with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
-            ok = pywrkr.export_to_otel(self._make_results(), f"{base}/wrong/path", {})
+            ok = pywrkr.export_to_otel(self._make_results(), f"{receiver.url}/wrong/path", {})
         self.assertFalse(ok)
-        self.assertTrue(seen)
-        self.assertTrue(all(status == 404 for _, status in seen), seen)
+        self.assertTrue(receiver.requests)
+        self.assertTrue(all(r.status == 404 for r in receiver.requests))
         self.assertTrue(any("not delivered" in line for line in cm.output))
 
     @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
