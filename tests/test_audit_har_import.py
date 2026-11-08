@@ -462,7 +462,7 @@ def test_har_import_warns_on_unstructured_body_mentioning_a_secret(tmp_path, cap
         convert_har(path)
 
     warning = _credential_warnings(caplog)
-    assert "1 request body copied verbatim" in warning
+    assert "1 request body whose text mentions" in warning
     assert "S3cret" not in warning
 
 
@@ -470,6 +470,11 @@ def test_har_import_warns_on_unstructured_body_mentioning_a_secret(tmp_path, cap
     ("body", "mime"),
     [
         ('{"email": "a@example.test", "items": [{"quantity": 1}]}', "application/json"),
+        (
+            '{"monkey": 1, "design": 2, "keyword": "k", "signup": true, "sortKey": "a", '
+            '"cacheKey": "b", "idempotencyKey": "c", "passport": "p"}',
+            "application/json",
+        ),
         ("email=a%40example.test&page=2", "application/x-www-form-urlencoded"),
         ("<order><design>blue</design></order>", "text/xml"),
         ("12345", "text/plain"),
@@ -493,3 +498,162 @@ def test_har_import_url_file_does_not_warn_on_dropped_body(tmp_path, caplog):
 
     assert "S3cret" not in content
     assert not _credential_warnings(caplog)
+
+
+@pytest.mark.parametrize(
+    ("body", "mime", "field"),
+    [
+        ('{"passwd": "S3cret"}', "application/json", "passwd"),
+        ('{"credentials": {"user": "a", "pass": "S3cret"}}', "application/json", "credentials"),
+        ("log=admin&pwd=S3cret&wp-submit=Log+In", "application/x-www-form-urlencoded", "pwd"),
+        ("user=a&pass=S3cret", "application/x-www-form-urlencoded", "pass"),
+        ('{"client_secret": "S3cret", "privateKey": "S3cret"}', "application/json", "privateKey"),
+    ],
+)
+def test_har_import_names_common_password_fields(tmp_path, caplog, body, mime, field):
+    """A WordPress login posts ``pwd``; the rule must not depend on the word "password"."""
+    path = _body_har(tmp_path, body, mime)
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert field in warning
+    assert "S3cret" not in warning
+
+
+def test_har_import_form_body_without_equals_is_not_printed(tmp_path, caplog):
+    """A bare value is not a field name; printing it would log the secret."""
+    path = _body_har(tmp_path, "sk_live_TOKEN_abc123", "application/x-www-form-urlencoded")
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "sk_live_TOKEN_abc123" not in warning
+    assert "1 request body whose text mentions" in warning
+
+
+def test_har_import_query_without_equals_is_not_printed(tmp_path, caplog):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "http://h/api?sk_live_TOKEN_abc123", "method": "GET"},
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    assert "sk_live_TOKEN_abc123" not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_har_import_control_characters_in_field_name_are_not_logged(tmp_path, caplog):
+    path = _body_har(tmp_path, json.dumps({"password\n\u001b[31mFAKE LOG LINE": "x"}))
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "<unnamed field>" in warning
+    assert "FAKE LOG LINE" not in warning
+    assert "\u001b" not in warning
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"query": "mutation { login(email: \\"a\\", password: \\"x\\") }"}',
+        '{"data": "password=hunter2"}',
+        '"my-api-token-value"',
+    ],
+)
+def test_har_import_flags_credential_text_inside_json_values(tmp_path, caplog, body):
+    path = _body_har(tmp_path, body)
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "1 request body whose text mentions" in warning
+    assert "hunter2" not in warning
+
+
+def test_har_import_flags_multipart_body_by_text(tmp_path, caplog):
+    body = '--b\r\nContent-Disposition: form-data; name="pwd"\r\n\r\nS3cret\r\n--b--\r\n'
+    path = _body_har(tmp_path, body, "multipart/form-data; boundary=b")
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    assert "1 request body whose text mentions" in _credential_warnings(caplog)
+
+
+def test_har_import_checks_base64_body(tmp_path, caplog):
+    import base64
+
+    raw = base64.b64encode(b'{"password": "S3cret"}').decode()
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "https://h/login",
+                        "method": "POST",
+                        "postData": {
+                            "mimeType": "application/json",
+                            "text": raw,
+                            "encoding": "base64",
+                        },
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    assert "request body fields password" in _credential_warnings(caplog)
+
+
+def test_har_import_one_warning_names_every_carrier(tmp_path, caplog):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "https://h/login?access_token=Q",
+                        "method": "POST",
+                        "headers": [{"name": "Authorization", "value": "Bearer H"}],
+                        "postData": {"mimeType": "application/json", "text": '{"pwd": "B"}'},
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path, config=HarImportConfig(preserve_headers=True))
+
+    records = [r.getMessage() for r in caplog.records if "credentials" in r.getMessage()]
+    assert len(records) == 1
+    assert "headers Authorization" in records[0]
+    assert "query parameters access_token" in records[0]
+    assert "request body fields pwd" in records[0]
+
+
+def test_har_import_deeply_nested_body_does_not_crash(tmp_path):
+    """Deep JSON used to escape ``har_to_scenario`` as a RecursionError traceback."""
+    body = "[" * 100000
+    content = convert_har(_body_har(tmp_path, body))
+    assert json.loads(content)["steps"][0]["body"] == body

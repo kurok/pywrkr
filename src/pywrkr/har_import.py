@@ -468,12 +468,8 @@ def har_to_scenario(
             # a quoted string) must stay a string: coercing it to int/bool/None
             # makes the scenario serializer emit a raw scalar that aiohttp
             # rejects at request time, silently dropping the recorded body.
-            try:
-                parsed = json.loads(entry.body)
-            except (json.JSONDecodeError, TypeError):
-                step["body"] = entry.body
-            else:
-                step["body"] = parsed if isinstance(parsed, (dict, list)) else entry.body
+            parsed_body = _parse_json_body(entry.body)
+            step["body"] = parsed_body if isinstance(parsed_body, (dict, list)) else entry.body
 
         # Status assertion
         if config.assert_status and isinstance(entry.status, int) and 200 <= entry.status < 400:
@@ -568,10 +564,49 @@ _CREDENTIAL_HEADER_NAMES = frozenset(
     }
 )
 _CREDENTIAL_SUBSTRINGS = ("token", "secret", "key", "password")
-_CREDENTIAL_QUERY_RE = re.compile(r"token|key|secret|password|sig", re.IGNORECASE)
-# Free text has no field names, so the bare "key" and "sig" substrings would
-# match ordinary words; only the unambiguous spellings count there.
-_CREDENTIAL_TEXT_RE = re.compile(r"passw(or)?d|secret|token|api[_-]?key", re.IGNORECASE)
+# A field name is split into segments (camelCase, "_", "-", ".", "[]") and
+# judged segment by segment, so "pwd" and "X-Amz-Signature" count while
+# "monkey", "design" and "sortKey" do not. A segment that merely *contains* one
+# of the unambiguous words counts too, for run-together names such as
+# "newpassword" or "accesstoken".
+_NAME_SEGMENT_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+_CREDENTIAL_NAME_SUBSTRINGS = ("passw", "secret", "token", "credential")
+_CREDENTIAL_NAME_SEGMENTS = frozenset(
+    {
+        "pwd",
+        "pass",
+        "passphrase",
+        "pin",
+        "otp",
+        "auth",
+        "authorization",
+        "sig",
+        "signature",
+        "apikey",
+        "accesskey",
+        "secretkey",
+        "privatekey",
+        "sid",
+        "sessionid",
+        "cookie",
+        "jwt",
+        "bearer",
+    }
+)
+# "key" alone is a credential only next to one of these ("api_key", "privateKey"),
+# or as the whole name; "sortKey" and "cacheKey" are not.
+_KEY_QUALIFIERS = frozenset(
+    {"api", "access", "private", "secret", "client", "auth", "signing", "encryption", "license"}
+)
+# Free text has no field names, so only unambiguous spellings count there.
+_CREDENTIAL_TEXT_RE = re.compile(
+    r"passw(or)?d|\bpwd\b|secret|token|api[_-]?key|credential", re.IGNORECASE
+)
+# A name is printed in the warning only when it looks like an identifier: a
+# HAR can hold a "field name" that is really a value (a form body with no "=")
+# or one with control characters that would forge log lines.
+_PRINTABLE_NAME_RE = re.compile(r"[A-Za-z0-9_.\[\]-]{1,64}")
+_UNNAMED = "<unnamed field>"
 
 
 def _credential_headers(headers: dict[str, str]) -> list[str]:
@@ -585,53 +620,93 @@ def _credential_headers(headers: dict[str, str]) -> list[str]:
     return sorted(found, key=str.lower)
 
 
-def _credential_query_params(url: str) -> list[str]:
+def _is_credential_name(name: str) -> bool:
+    """Whether a query, form or JSON field name looks like it holds a credential."""
+    segments = [seg.lower() for seg in _NAME_SEGMENT_RE.findall(name)]
+    for i, seg in enumerate(segments):
+        if seg in _CREDENTIAL_NAME_SEGMENTS or any(
+            word in seg for word in _CREDENTIAL_NAME_SUBSTRINGS
+        ):
+            return True
+        if seg == "key" and (
+            len(segments) == 1 or _KEY_QUALIFIERS.intersection(segments[max(i - 1, 0) : i + 2])
+        ):
+            return True
+    return False
+
+
+def _display_name(name: str) -> str:
+    """The name as it may appear in the warning, or a placeholder."""
+    return name if _PRINTABLE_NAME_RE.fullmatch(name) else _UNNAMED
+
+
+def _credential_form_fields(encoded: str) -> set[str]:
+    """Credential-shaped field names in a query string or form-encoded body.
+
+    Only ``name=value`` pairs count: a bare token with no ``=`` is a value, and
+    reporting it as a name would print it in the warning.
+    """
+    pairs = "&".join(part for part in encoded.split("&") if "=" in part)
+    return {
+        _display_name(name)
+        for name, _ in parse_qsl(pairs, keep_blank_values=True)
+        if _is_credential_name(name)
+    }
+
+
+def _credential_query_params(url: str) -> set[str]:
     """Query parameter names that look like they carry a credential."""
-    query = urlparse(url).query
-    if not query:
-        return []
-    names = {name for name, _ in parse_qsl(query, keep_blank_values=True)}
-    return sorted((n for n in names if _CREDENTIAL_QUERY_RE.search(n)), key=str.lower)
+    return _credential_form_fields(urlparse(url).query)
 
 
-def _credential_body_fields(entry: HarEntry) -> tuple[list[str], bool]:
+def _parse_json_body(body: str) -> object:
+    """``json.loads`` that returns None for anything it cannot parse."""
+    try:
+        return json.loads(body)
+    except (TypeError, ValueError, RecursionError):  # JSONDecodeError is a ValueError
+        return None
+
+
+def _credential_body_fields(entry: HarEntry) -> tuple[set[str], bool]:
     """Credential-shaped field names in a recorded request body.
 
-    A JSON object or array is walked, nested objects included, and its keys are
-    matched with the query-parameter rule; a form-encoded body is split into
-    its field names. Any other body cannot be read field by field, so it is
-    flagged as a whole when its text mentions a credential-like word.
+    A JSON object or array is walked, nested objects included: its keys are
+    judged as names and its string values as free text. A URL-encoded form body
+    is split into its field names. Any other body (multipart, XML, plain text)
+    cannot be read field by field, so it is judged as free text.
 
     Returns:
-        The matching field names, and whether an unstructured body was flagged.
+        The matching field names, and whether the body's text mentions a
+        credential where no field name did.
     """
     body = entry.body
     if not body:
-        return [], False
+        return set(), False
 
-    try:
-        parsed = json.loads(body)
-    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
-        parsed = None
+    parsed = _parse_json_body(body)
     if isinstance(parsed, (dict, list)):
         names: set[str] = set()
+        text_hit = False
         stack: list[object] = [parsed]
         while stack:
             node = stack.pop()
             if isinstance(node, dict):
                 for key, value in node.items():
-                    if isinstance(key, str) and _CREDENTIAL_QUERY_RE.search(key):
-                        names.add(key)
+                    if _is_credential_name(key):
+                        names.add(_display_name(key))
                     stack.append(value)
             elif isinstance(node, list):
                 stack.extend(node)
-        return sorted(names, key=str.lower), False
+            elif isinstance(node, str) and _CREDENTIAL_TEXT_RE.search(node):
+                text_hit = True
+        return names, text_hit and not names
 
     if "x-www-form-urlencoded" in (entry.content_type or "").lower():
-        fields = {name for name, _ in parse_qsl(body, keep_blank_values=True)}
-        return sorted((n for n in fields if _CREDENTIAL_QUERY_RE.search(n)), key=str.lower), False
+        fields = _credential_form_fields(body)
+        if fields:
+            return fields, False
 
-    return [], bool(_CREDENTIAL_TEXT_RE.search(body))
+    return set(), bool(_CREDENTIAL_TEXT_RE.search(body))
 
 
 def _warn_on_credentials(
@@ -652,18 +727,20 @@ def _warn_on_credentials(
     header_names: set[str] = set()
     query_names: set[str] = set()
     body_names: set[str] = set()
-    raw_bodies = 0
+    text_bodies = 0
 
     for entry in entries:
         if config.preserve_headers:
-            header_names.update(_credential_headers(_build_step_headers(entry, config)))
+            header_names.update(
+                _display_name(h) for h in _credential_headers(_build_step_headers(entry, config))
+            )
         query_names.update(_credential_query_params(entry.url))
         if include_bodies:
             fields, flagged = _credential_body_fields(entry)
             body_names.update(fields)
-            raw_bodies += flagged
+            text_bodies += flagged
 
-    if not header_names and not query_names and not body_names and not raw_bodies:
+    if not header_names and not query_names and not body_names and not text_bodies:
         return
 
     parts = []
@@ -673,9 +750,9 @@ def _warn_on_credentials(
         parts.append("query parameters " + ", ".join(sorted(query_names, key=str.lower)))
     if body_names:
         parts.append("request body fields " + ", ".join(sorted(body_names, key=str.lower)))
-    if raw_bodies:
+    if text_bodies:
         parts.append(
-            f"{raw_bodies} request bod{'y' if raw_bodies == 1 else 'ies'} copied verbatim "
+            f"{text_bodies} request bod{'y' if text_bodies == 1 else 'ies'} "
             "whose text mentions a password, secret, token or API key"
         )
 
