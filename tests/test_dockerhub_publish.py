@@ -95,7 +95,12 @@ def test_the_workflow_can_be_run_by_hand_with_a_tag(workflow):
     on = workflow["on"]
     assert "workflow_dispatch" in on
     assert "tag" in on["workflow_dispatch"]["inputs"]
-    # The tag must only be published when one was actually given.
-    tags = _step(workflow, "build-and-push", "Extract metadata (tags, labels)")["with"]["tags"]
-    assert "inputs.tag" in tags
-    assert "workflow_dispatch" in tags
+    # The extra tag is a step of its own, gated by a plain GitHub expression:
+    # metadata-action evaluates ``enable=`` with its own parser, which does not
+    # understand ``${{ }}``.
+    step = _step(workflow, "build-and-push", "Extract metadata (the extra tag, when one was given)")
+    assert step["if"] == "github.event_name == 'workflow_dispatch' && inputs.tag != ''"
+    assert "inputs.tag" in step["with"]["tags"]
+    # And its tags must reach the push.
+    push = _step(workflow, "build-and-push", "Build and push Docker image")
+    assert "steps.meta-extra.outputs.tags" in push["with"]["tags"]
