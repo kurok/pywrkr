@@ -16,7 +16,8 @@ import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-_PUSHGATEWAY_PATH = re.compile(r"^/metrics/job/[^/]+(/.*)?$")
+# A Pushgateway grouping key: /metrics/job/<job>{/<label>/<value>}
+_PUSHGATEWAY_PATH = re.compile(r"^/metrics/job/[^/]+(/[^/]+/[^/]+)*$")
 OTLP_METRICS_PATH = "/v1/metrics"
 
 
@@ -34,7 +35,7 @@ class CollectorReceiver:
     """Start with :meth:`start`, stop with :meth:`stop` (or use as a context manager)."""
 
     refuse: bool = False
-    requests: list[ReceivedRequest] = field(default_factory=list)
+    requests: list[ReceivedRequest] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         self._server: ThreadingHTTPServer | None = None
@@ -45,15 +46,21 @@ class CollectorReceiver:
         assert self._server is not None, "receiver not started"
         return f"http://127.0.0.1:{self._server.server_address[1]}"
 
-    def received(self, path_prefix: str, status: int | None = None) -> list[ReceivedRequest]:
+    def received(self, path: str, status: int | None = None) -> list[ReceivedRequest]:
+        """POSTs to exactly *path* (query string ignored), optionally with *status*."""
         with self._lock:
             return [
                 r
                 for r in self.requests
                 if r.method == "POST"
-                and r.path.startswith(path_prefix)
+                and r.path.split("?", 1)[0] == path
                 and (status is None or r.status == status)
             ]
+
+    def snapshot(self) -> list[ReceivedRequest]:
+        """Everything received so far, read under the lock."""
+        with self._lock:
+            return list(self.requests)
 
     def start(self) -> "CollectorReceiver":
         receiver = self
@@ -94,7 +101,9 @@ class CollectorReceiver:
                 pass
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        ).start()
         return self
 
     def stop(self) -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 
 import pytest
 
@@ -26,13 +27,13 @@ RESULTS = {
 
 
 @pytest.fixture
-def receiver():
+def receiver() -> Iterator[CollectorReceiver]:
     with CollectorReceiver() as r:
         yield r
 
 
 @pytest.fixture
-def refusing_receiver():
+def refusing_receiver() -> Iterator[CollectorReceiver]:
     with CollectorReceiver(refuse=True) as r:
         yield r
 
@@ -43,14 +44,24 @@ def _post(url: str) -> int:
         with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310 - local fixture
             return resp.status
     except urllib.error.HTTPError as exc:
-        return exc.code
+        with exc:
+            return exc.code
 
 
 def test_receiver_serves_only_the_signal_paths(receiver):
     """The fixture's contract: a permissive receiver is what hid #318."""
     assert _post(f"{receiver.url}/v1/metrics") == 200
     assert _post(f"{receiver.url}/metrics/job/pywrkr") == 200
-    for path in ("/", "/v1/traces/x", "/metrics", "/api/v1/write", "/v1/metrics/extra"):
+    assert _post(f"{receiver.url}/metrics/job/pywrkr/instance/a") == 200
+    for path in (
+        "/",
+        "/v1/traces/x",
+        "/metrics",
+        "/api/v1/write",
+        "/v1/metrics/extra",
+        "/metrics/job/pywrkr/",
+        "/metrics/job/pywrkr/odd",
+    ):
         assert _post(f"{receiver.url}{path}") == 404, path
 
 
