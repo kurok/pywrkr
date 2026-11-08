@@ -21,6 +21,11 @@ except ImportError:  # pragma: no cover - Python 3.10
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RELEASE_WORKFLOWS = ["publish.yml", "release.yml"]
+# Commands that build the package; each resolves an isolated backend from the
+# index unless told otherwise.
+BUILD_COMMAND = re.compile(
+    r"(-m\s+build|\bpyproject-build|\buv\s+build|\bpipx\s+run\s+build)(\s|$)"
+)
 REQUIREMENTS = REPO_ROOT / "requirements-build.txt"
 
 
@@ -71,7 +76,7 @@ def test_every_pip_install_in_the_release_path_is_pinned(workflow):
 def test_no_build_runs_in_an_isolated_environment(workflow):
     """An isolated build resolves the build backend from the index."""
     for line in _run_lines(workflow):
-        if re.search(r"-m\s+build(\s|$)", line):
+        if BUILD_COMMAND.search(line):
             assert "--no-isolation" in line, f"{workflow}: isolated build: {line!r}"
 
 
@@ -98,6 +103,18 @@ def test_build_requirements_cover_the_build_backend():
 
 
 @pytest.mark.parametrize("workflow", RELEASE_WORKFLOWS)
+def test_a_local_install_follows_the_pinned_build_inputs(workflow):
+    """--no-build-isolation uses whatever backend is installed, so the hashed
+    install must come first."""
+    lines = _run_lines(workflow)
+    for i, line in enumerate(lines):
+        if "--no-build-isolation" in line or "--no-isolation" in line:
+            assert any("-r requirements-build.txt" in prior for prior in lines[:i]), (
+                f"{workflow}: {line!r} runs before the pinned build inputs are installed"
+            )
+
+
+@pytest.mark.parametrize("workflow", [*RELEASE_WORKFLOWS, "python-package.yml"])
 def test_release_python_matches_the_lockfile(workflow):
     """requirements-build.txt is compiled for one Python; --no-deps would hide
     a dependency another version needs until the tag is pushed."""
