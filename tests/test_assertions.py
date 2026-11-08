@@ -920,6 +920,20 @@ class TestAssertionRegexBounds(unittest.TestCase):
                 self.assertEqual(len(failures), 1)
                 self.assertIn("scan limit", failures[0].key)
 
+    def test_a_lookahead_inside_a_lookbehind_is_undecided_on_a_cut_body(self):
+        """Inside (?<!...) a positive lookahead flips polarity and can read past the cut."""
+        from pywrkr.assertions import _ASSERT_MATCH_MAX as n
+
+        cases = [
+            ("x(?<!x(?=yz))", "." * (n - 2) + "xyz"),
+            ("q(?<!q(?=.{9000}))", "q" + "." * 9192),
+        ]
+        for pattern, text in cases:
+            with self.subTest(pattern=pattern):
+                failures = self._evaluate({"assert_body_regex": pattern}, body=text.encode())
+                self.assertEqual(len(failures), 1)
+                self.assertIn("scan limit", failures[0].key)
+
     def test_small_bounded_outer_repeats_are_flagged(self):
         from pywrkr.assertions import _has_nested_repetition
 

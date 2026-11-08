@@ -220,8 +220,10 @@ def _cut_sensitivity(pattern: str) -> tuple[bool, bool]:
         match up to the cut -- a negative one (``(?!.*ERROR)``), or a positive
         one testing the end or a word boundary (``(?=[^E]*\Z)``). A
         backreference, conditional, atomic group or possessive repeat can
-        settle on a different reading of the cut text. Lookbehinds read only
-        text before the match and do not count.
+        settle on a different reading of the cut text. So can any lookahead
+        inside a lookbehind, which may read past the match -- and inside a
+        negative lookbehind its polarity flips. A plain lookbehind reads only
+        text before the match and does not count.
 
         *end_dependent*: an end anchor or word boundary (``$``, ``\Z``, ``\b``)
         outside such a lookahead can match at the cut, where the whole text
@@ -263,21 +265,27 @@ def _cut_sensitivity(pattern: str) -> tuple[bool, bool]:
         if hasattr(_sre_parse, name)
     }
 
-    def walk(items: Any) -> None:
+    def walk(items: Any, in_lookbehind: bool) -> None:
         nonlocal lookahead_dependent
         for op, av in items:
             if op in committing:
                 lookahead_dependent = True
             if op in (_sre_parse.ASSERT, _sre_parse.ASSERT_NOT):
                 direction, sub = av
-                if direction == 1 and (op == _sre_parse.ASSERT_NOT or has_end(sub)):
+                if direction == 1 and (
+                    op == _sre_parse.ASSERT_NOT or has_end(sub) or in_lookbehind
+                ):
                     lookahead_dependent = True
+                if direction == -1:
+                    for child in _subpatterns(av):
+                        walk(child, True)
+                    continue
             for child in _subpatterns(av):
-                walk(child)
+                walk(child, in_lookbehind)
 
     try:
         parsed = _sre_parse.parse(pattern)
-        walk(parsed)
+        walk(parsed, False)
         return lookahead_dependent, has_end(parsed)
     except Exception:  # pragma: no cover - parser internals vary by version
         return True, True
