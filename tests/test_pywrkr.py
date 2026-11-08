@@ -4778,12 +4778,13 @@ class TestDistributedCLIArgs(unittest.TestCase):
         """--worker should be parsed as HOST:PORT."""
         from pywrkr.main import main
 
-        with patch("sys.argv", ["pywrkr", "--worker", "10.0.0.1:9220"]):
+        argv = ["pywrkr", "--worker", "10.0.0.1:9220", "--worker-secret", "test-secret"]
+        with patch("sys.argv", argv):
             with patch("pywrkr.main.run_worker_node", new_callable=AsyncMock) as mock_run:
                 with self.assertRaises(SystemExit):
                     main()
                 # Should call run_worker_node with the right args
-                mock_run.assert_called_once_with("10.0.0.1", 9220, worker_secret=None)
+                mock_run.assert_called_once_with("10.0.0.1", 9220, worker_secret="test-secret")
 
     def test_master_requires_expect_workers(self):
         """--master without --expect-workers should error."""

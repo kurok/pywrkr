@@ -1761,7 +1761,7 @@ pywrkr --worker master-host:9220
 | Flag | Description |
 |------|-------------|
 | `--master` | Run as distributed master (coordinates workers) |
-| `--worker HOST:PORT` | Run as distributed worker, connecting to master at HOST:PORT |
+| `--worker HOST:PORT` | Run as distributed worker, connecting to master at HOST:PORT. A non-loopback master requires `--worker-secret` |
 | `--worker-secret SECRET` | Shared secret authenticating the master/worker channel (HMAC-SHA256). Also read from `PYWRKR_WORKER_SECRET` |
 | `--expect-workers` | Number of workers the master should wait for before starting |
 | `--bind` | Master bind address (default: `0.0.0.0`). Any non-loopback address requires `--worker-secret` |
@@ -1791,8 +1791,9 @@ output and in whatever the metrics landed in — not only in the exit code.
 unauthenticated: anything that can reach the master's port can register as a worker, receive the
 run's credentials (`-A`, `-H`, cookies, body) and feed it forged results, and anything that can reach
 a worker can hand it a config and make it generate traffic. A master therefore **refuses to start**
-on a non-loopback `--bind` — including the default `0.0.0.0` — without a secret; for a local run use
-`--bind 127.0.0.1`. The master and every worker must use the same value, and passing it through the
+on a non-loopback `--bind` — including the default `0.0.0.0` — without a secret, and a worker
+refuses to connect to a non-loopback master without one; for a local run use `--bind 127.0.0.1` and
+`--worker 127.0.0.1:9220`. The master and every worker must use the same value, and passing it through the
 environment keeps it out of the process table:
 
 ```bash
@@ -1800,6 +1801,12 @@ export PYWRKR_WORKER_SECRET='<shared secret>'  # same value on master and every 
 pywrkr http://target:8080/ --master --expect-workers 3 -c 300 -d 60
 pywrkr --worker master-host:9220
 ```
+
+Whatever the secret, a worker checks the URLs in the config it receives: the target and any
+`--otel-endpoint` / `--prom-remote-write` URL must be `http://` or `https://` (the rule the CLI
+applies to its own URL), a scenario `ws:` step must be `ws(s)://` or `http(s)://`, and a traffic
+profile may not name a file on the worker. A link-local or cloud-metadata host (such as
+`169.254.169.254`) is allowed but logged as a warning.
 
 **A worker's exit code means something.** `0` only when a benchmark ran and its results reached the
 master. Every give-up path — the master unreachable, authentication refused, a config that never

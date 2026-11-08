@@ -11,6 +11,7 @@ import signal
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
+from urllib.parse import urlparse
 
 from pywrkr.assertions import parse_step_assertions
 from pywrkr.templating import (
@@ -29,6 +30,31 @@ if TYPE_CHECKING:
     from pywrkr.traffic_profiles import TrafficProfile
 
 logger = logging.getLogger(__name__)
+
+
+HTTP_SCHEMES = ("http", "https")
+
+
+def check_url_scheme(url: object, context: str = "", extra_schemes: tuple[str, ...] = ()) -> None:
+    """Refuse a target URL whose scheme pywrkr does not drive.
+
+    Shared by the CLI, which turns the error into a usage error, and a
+    distributed worker, which refuses a config from its master with it (#304).
+
+    Args:
+        url: The target URL. Anything that is not a string is refused.
+        context: Woven into the message to say which input was rejected.
+        extra_schemes: Schemes allowed on top of http and https (ws, wss).
+
+    Raises:
+        ValueError: The scheme is not http, https or one of *extra_schemes*.
+    """
+    allowed = HTTP_SCHEMES + extra_schemes
+    if not isinstance(url, str) or urlparse(url).scheme not in allowed:
+        names = [f"{s}://" for s in allowed]
+        wanted = f"{', '.join(names[:-1])} or {names[-1]}"
+        raise ValueError(f"Invalid URL scheme{context}: {url}. Use {wanted}")
+
 
 T = TypeVar("T")
 

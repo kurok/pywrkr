@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import sys
-from urllib.parse import urlparse
 
 from pywrkr import ci
 from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
@@ -46,11 +45,14 @@ from pywrkr.config import (
     SSLConfig,
     Threshold,
     WebSocketConfig,
+    check_url_scheme,
     load_scenario,
     validate_scenario_templates,
 )
 from pywrkr.distributed import (
     check_master_auth,
+    check_worker_auth,
+    normalize_host,
     run_master,
     run_worker_node,
 )
@@ -523,7 +525,10 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
         "--worker",
         default=None,
         metavar="HOST:PORT",
-        help="Run as worker node, connecting to master at HOST:PORT",
+        help=(
+            "Run as worker node, connecting to master at HOST:PORT. A non-loopback "
+            "master requires --worker-secret."
+        ),
     )
     parser.add_argument(
         "--worker-secret",
@@ -533,8 +538,8 @@ def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
             "Shared secret for authenticating distributed workers (HMAC-SHA256). "
             "Can also be set via the PYWRKR_WORKER_SECRET environment variable. "
             "Master and all workers must use the same secret. "
-            "Required for a master on a non-loopback --bind; omitting it on a "
-            "worker leaves that worker's channel unauthenticated."
+            "Required for a master on a non-loopback --bind and for a worker "
+            "connecting to a non-loopback master."
         ),
     )
 
@@ -1120,11 +1125,10 @@ def _require_http_scheme(
     scenario ``base_url`` drives the HTTP path, where a ws:// scheme would fail
     later and less clearly.
     """
-    allowed = ("http", "https") + (WS_SCHEMES if allow_websocket else ())
-    scheme = urlparse(url).scheme
-    if scheme not in allowed:
-        wanted = "http://, https://, ws:// or wss://" if allow_websocket else "http:// or https://"
-        parser.error(f"Invalid URL scheme{context}: {url}. Use {wanted}")
+    try:
+        check_url_scheme(url, context, WS_SCHEMES if allow_websocket else ())
+    except ValueError as e:
+        parser.error(str(e))
 
 
 #: Flags that describe an HTTP request/response exchange and have no WebSocket
@@ -1284,7 +1288,12 @@ def _validate_url_and_mode(
             w_port = int(port_str)
         except ValueError:
             parser.error(f"Invalid port in --worker: {port_str}")
+        host = normalize_host(host)
         worker_secret = _resolve_worker_secret(args)
+        try:
+            check_worker_auth(host, worker_secret)
+        except ValueError as e:
+            parser.error(f"--worker: {e}")
         try:
             # Every give-up path returns 1: an orchestrator cannot otherwise
             # tell a completed benchmark from a five-minute wait for a master
@@ -1333,10 +1342,7 @@ def _validate_url_and_mode(
     if args.master:
         # Normalised once, so the address checked is the address bound:
         # start_server rejects "[::1]" and padded values.
-        bind = args.bind.strip()
-        if bind.startswith("[") and bind.endswith("]"):
-            bind = bind[1:-1]
-        args.bind = bind
+        args.bind = normalize_host(args.bind)
         try:
             check_master_auth(args.bind, _resolve_worker_secret(args))
         except ValueError as e:

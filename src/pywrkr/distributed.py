@@ -16,6 +16,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
 from pywrkr.compare import parse_fail_on
@@ -32,6 +33,7 @@ from pywrkr.config import (
     SSLConfig,
     Threshold,
     WorkerStats,
+    check_url_scheme,
     merge_stats,
     parse_extract_spec,
 )
@@ -48,6 +50,7 @@ from pywrkr.reporting import (
     run_baseline_gate,
 )
 from pywrkr.traffic_profiles import CsvProfile, TrafficProfile, parse_traffic_profile
+from pywrkr.websockets import WS_SCHEMES
 from pywrkr.workers import run_benchmark, run_user_simulation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -146,6 +149,130 @@ def check_master_auth(host: str | Sequence[str] | None, worker_secret: str | Non
         raise ValueError(MASTER_AUTH_REQUIRED_MESSAGE)
 
 
+def normalize_host(host: str) -> str:
+    """Strip whitespace and IPv6 brackets: ``" [::1] "`` -> ``"::1"``.
+
+    Args:
+        host: A ``--bind`` value or a master address.
+
+    Returns:
+        The form ``asyncio`` binds or connects to, and the one the loopback
+        checks judge.
+    """
+    h = host.strip()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    return h
+
+
+WORKER_AUTH_REQUIRED_MESSAGE = (
+    "a worker connecting to a non-loopback master requires --worker-secret "
+    "(or PYWRKR_WORKER_SECRET); without it, whatever answers on that address "
+    "chooses the target, headers and body the worker sends. Point a local run "
+    "at 127.0.0.1."
+)
+
+
+def check_worker_auth(master_host: str | None, worker_secret: str | None) -> None:
+    """Refuse an unauthenticated worker whose master is off the machine (#304).
+
+    The worker-side twin of :func:`check_master_auth`: without a secret the
+    worker cannot tell its master from any other peer, so it only runs
+    against a loopback master.
+
+    Args:
+        master_host: The master address the worker connects to.
+        worker_secret: The shared HMAC secret, or None / empty for none.
+
+    Raises:
+        ValueError: *master_host* is not loopback and no secret is set.
+    """
+    if not worker_secret and not is_loopback_bind(master_host):
+        raise ValueError(WORKER_AUTH_REQUIRED_MESSAGE)
+
+
+#: Hosts that answer as a cloud instance-metadata service but are not
+#: link-local literals: GCE's name and AWS's IPv6 IMDS (a ULA address).
+_METADATA_HOSTS = frozenset({"metadata.google.internal", "metadata", "fd00:ec2::254"})
+
+
+def _is_metadata_or_link_local(host: str | None) -> bool:
+    """True for a link-local address or a known instance-metadata host."""
+    if not host:
+        return False
+    h = host.rstrip(".").lower()
+    if h in _METADATA_HOSTS:
+        return True
+    try:
+        addr = ipaddress.ip_address(h.split("%", 1)[0])
+    except ValueError:
+        # Numeric spellings the resolver also accepts: 2852039166, 0xa9fea9fe,
+        # 169.254.43518 all mean 169.254.169.254.
+        if ":" in h:
+            return False
+        try:
+            addr = ipaddress.IPv4Address(socket.inet_aton(h))
+        except OSError:
+            return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.is_link_local or str(addr) in _METADATA_HOSTS
+
+
+def _warn_if_link_local(url: str, what: str) -> None:
+    if _is_metadata_or_link_local(urlparse(url).hostname):
+        logger.warning("Worker: the master sent a link-local or metadata %s: %s", what, url)
+
+
+def check_worker_target(config: BenchmarkConfig) -> None:
+    """Refuse a config from the master that the CLI would refuse itself (#304).
+
+    * The target must be http(s), by the rule the CLI applies to its own URL.
+    * A ``ws:`` scenario step must be ws(s) or http(s), and its ``path`` -- the URL the
+      worker actually connects to -- must equal ``ws``, as the scenario
+      loader requires. A value that starts with ``${`` is only known once
+      rendered, so its scheme is left to the WebSocket client.
+    * ``otel_endpoint`` and ``prom_remote_write``, when set, must be http(s).
+
+    A link-local or instance-metadata host in any of these, or in an HTTP
+    step that changes the host (``@169.254.169.254/...``), is allowed but
+    logged: the master chose it, not this host. The host itself is not
+    restricted -- the master picks the target anyway; the secret, or a
+    loopback master, is what makes that master trusted.
+
+    Args:
+        config: The configuration received from the master.
+
+    Raises:
+        ValueError: A URL in *config* is one the worker will not contact.
+    """
+    check_url_scheme(config.url, " from master")
+    _warn_if_link_local(config.url, "target")
+    if config.scenario is not None:
+        base = urlparse(config.url)
+        for i, step in enumerate(config.scenario.steps, 1):
+            if not isinstance(step.path, str):
+                raise ValueError(f"Scenario step {i} path from master is not a string")
+            if step.ws is not None:
+                if step.ws != step.path:
+                    raise ValueError(
+                        f"Scenario step {i} from master sets 'ws' and a different 'path'"
+                    )
+                if not step.path.startswith("${"):
+                    # ws_connect also takes http(s), and the scenario loader allows it.
+                    check_url_scheme(step.path, f" in scenario step {i} from master", WS_SCHEMES)
+                _warn_if_link_local(step.path, f"scenario step {i} URL")
+            elif "${" not in step.path:
+                _warn_if_link_local(
+                    f"{base.scheme}://{base.netloc}{step.path}", f"scenario step {i} URL"
+                )
+    for name in ("otel_endpoint", "prom_remote_write"):
+        endpoint = getattr(config, name)
+        if endpoint:
+            check_url_scheme(endpoint, f" in {name} from master")
+            _warn_if_link_local(endpoint, name)
+
+
 def _serialize_ssl_config(ssl_cfg: SSLConfig) -> dict:
     """Serialize SSLConfig to a JSON-safe dict."""
     return {"verify": ssl_cfg.verify, "ca_bundle": ssl_cfg.ca_bundle}
@@ -155,7 +282,10 @@ def _deserialize_ssl_config(data: dict | None) -> SSLConfig:
     """Deserialize a dict back into SSLConfig."""
     if not data:
         return SSLConfig()
-    return SSLConfig(verify=data.get("verify", False), ca_bundle=data.get("ca_bundle"))
+    ca_bundle = data.get("ca_bundle")
+    if ca_bundle is not None and not isinstance(ca_bundle, str):
+        raise TypeError(f"ca_bundle must be a string, got {type(ca_bundle).__name__}")
+    return SSLConfig(verify=data.get("verify", False), ca_bundle=ca_bundle)
 
 
 def _serialize_threshold(th: Threshold) -> dict:
@@ -385,7 +515,13 @@ def _deserialize_traffic_profile(data: "dict | None") -> "TrafficProfile | None"
             bool(data.get("is_multiplier", False)),
         )
     else:
-        profile = parse_traffic_profile(data["spec"])
+        spec = data["spec"]
+        # A master sends a CSV profile as parsed points (kind "csv" above). A
+        # "csv:<path>" spec would make the worker open a file of the master's
+        # choosing on its own disk (#304).
+        if not isinstance(spec, str) or spec.split(":", 1)[0].strip().lower() == "csv":
+            raise ValueError("a traffic profile from the master must not name a file")
+        profile = parse_traffic_profile(spec)
     return profile
 
 
@@ -1445,12 +1581,21 @@ async def run_worker_node(
     headers -- and the results travel in clear text. Run it on a trusted
     network or tunnel it.
 
+    Without a secret the worker only runs against a loopback master (#304),
+    and it refuses a config whose target is not http(s) whatever the secret.
+
     Returns:
         0 when a benchmark ran and its results reached the master, 1 on every
         give-up path. An orchestrator -- systemd, a k8s Job, a Jenkins agent --
         has no other way to tell a completed run from a five-minute wait for a
         master that never appeared.
     """
+    master_host = normalize_host(master_host)
+    try:
+        await asyncio.to_thread(check_worker_auth, master_host, worker_secret)
+    except ValueError as e:
+        logger.error("Worker: %s", e)
+        return 1
     logger.info("Worker: connecting to master at %s:%s...", master_host, master_port)
 
     try:
@@ -1533,7 +1678,24 @@ async def run_worker_node(
         if msg.get("type") != "config":
             logger.error("Worker: unexpected message type: %s", msg.get("type"))
             return 1
-        config = _deserialize_config(msg["config"])
+        refusal: str | None = None
+        try:
+            config = _deserialize_config(msg["config"])
+        except Exception as e:  # any parse failure is a refusal, never a traceback
+            # Logged here, not echoed: the text of an arbitrary parse error is
+            # not the master's to read.
+            logger.error("Worker: malformed config from master: %r", e)
+            refusal = f"worker refused: malformed config ({type(e).__name__})"
+        else:
+            try:
+                check_worker_target(config)
+            except ValueError as e:
+                logger.error("Worker: refusing the config: %s", e)
+                refusal = f"worker refused: {e}"
+        if refusal is not None:
+            with contextlib.suppress(OSError, ConnectionError):
+                await _send_msg(writer, {"type": "error", "error": refusal})
+            return 1
         logger.info("Worker: received config. Target: %s", config.url)
 
         # The master decides the protocol, but each worker needs the backend
