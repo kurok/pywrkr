@@ -391,3 +391,105 @@ def test_har_without_credentials_does_not_warn(tmp_path, caplog):
         convert_har(str(path), config=HarImportConfig(preserve_headers=True))
 
     assert not [r for r in caplog.records if "credentials" in r.message]
+
+
+def _body_har(tmp_path, body, mime="application/json"):
+    return _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {
+                        "url": "https://app.example.test/api/login",
+                        "method": "POST",
+                        "headers": [{"name": "Content-Type", "value": mime}],
+                        "postData": {"mimeType": mime, "text": body},
+                    },
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+
+
+def _credential_warnings(caplog):
+    return "\n".join(r.getMessage() for r in caplog.records if "credentials" in r.getMessage())
+
+
+def test_har_import_warns_on_credential_in_request_body(tmp_path, caplog):
+    """A recorded login puts the password in the POST body by construction."""
+    path = _body_har(tmp_path, '{"username": "u", "password": "S3cret-Dummy-Passw0rd"}')
+
+    with caplog.at_level(logging.WARNING):
+        content = convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "request body fields password" in warning
+    assert "username" not in warning
+    # Never the value, and the body itself is kept (warn, do not strip).
+    assert "S3cret-Dummy-Passw0rd" not in warning
+    assert json.loads(content)["steps"][0]["body"]["password"] == "S3cret-Dummy-Passw0rd"
+
+
+def test_har_import_warns_on_nested_credential_in_request_body(tmp_path, caplog):
+    body = '{"query": "mutation", "variables": [{"input": {"apiKey": "K", "name": "n"}}]}'
+    path = _body_har(tmp_path, body)
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    assert "request body fields apiKey" in _credential_warnings(caplog)
+
+
+def test_har_import_warns_on_form_encoded_credential(tmp_path, caplog):
+    path = _body_har(
+        tmp_path, "username=u&password=S3cret&remember=1", "application/x-www-form-urlencoded"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "request body fields password" in warning
+    assert "S3cret" not in warning
+    assert "remember" not in warning
+
+
+def test_har_import_warns_on_unstructured_body_mentioning_a_secret(tmp_path, caplog):
+    path = _body_har(tmp_path, "<login><passwd>S3cret</passwd></login>", "text/xml")
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "1 request body copied verbatim" in warning
+    assert "S3cret" not in warning
+
+
+@pytest.mark.parametrize(
+    ("body", "mime"),
+    [
+        ('{"email": "a@example.test", "items": [{"quantity": 1}]}', "application/json"),
+        ("email=a%40example.test&page=2", "application/x-www-form-urlencoded"),
+        ("<order><design>blue</design></order>", "text/xml"),
+        ("12345", "text/plain"),
+    ],
+)
+def test_har_import_does_not_warn_on_ordinary_body(tmp_path, caplog, body, mime):
+    path = _body_har(tmp_path, body, mime)
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    assert not _credential_warnings(caplog)
+
+
+def test_har_import_url_file_does_not_warn_on_dropped_body(tmp_path, caplog):
+    """url-file drops bodies, so a body credential never reaches that output."""
+    path = _body_har(tmp_path, '{"password": "S3cret"}')
+
+    with caplog.at_level(logging.WARNING):
+        content = convert_har(path, output_format="url-file")
+
+    assert "S3cret" not in content
+    assert not _credential_warnings(caplog)

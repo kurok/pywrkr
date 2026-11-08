@@ -569,6 +569,9 @@ _CREDENTIAL_HEADER_NAMES = frozenset(
 )
 _CREDENTIAL_SUBSTRINGS = ("token", "secret", "key", "password")
 _CREDENTIAL_QUERY_RE = re.compile(r"token|key|secret|password|sig", re.IGNORECASE)
+# Free text has no field names, so the bare "key" and "sig" substrings would
+# match ordinary words; only the unambiguous spellings count there.
+_CREDENTIAL_TEXT_RE = re.compile(r"passw(or)?d|secret|token|api[_-]?key", re.IGNORECASE)
 
 
 def _credential_headers(headers: dict[str, str]) -> list[str]:
@@ -591,22 +594,76 @@ def _credential_query_params(url: str) -> list[str]:
     return sorted((n for n in names if _CREDENTIAL_QUERY_RE.search(n)), key=str.lower)
 
 
-def _warn_on_credentials(entries: list[HarEntry], config: HarImportConfig) -> None:
+def _credential_body_fields(entry: HarEntry) -> tuple[list[str], bool]:
+    """Credential-shaped field names in a recorded request body.
+
+    A JSON object or array is walked, nested objects included, and its keys are
+    matched with the query-parameter rule; a form-encoded body is split into
+    its field names. Any other body cannot be read field by field, so it is
+    flagged as a whole when its text mentions a credential-like word.
+
+    Returns:
+        The matching field names, and whether an unstructured body was flagged.
+    """
+    body = entry.body
+    if not body:
+        return [], False
+
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        names: set[str] = set()
+        stack: list[object] = [parsed]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if isinstance(key, str) and _CREDENTIAL_QUERY_RE.search(key):
+                        names.add(key)
+                    stack.append(value)
+            elif isinstance(node, list):
+                stack.extend(node)
+        return sorted(names, key=str.lower), False
+
+    if "x-www-form-urlencoded" in (entry.content_type or "").lower():
+        fields = {name for name, _ in parse_qsl(body, keep_blank_values=True)}
+        return sorted((n for n in fields if _CREDENTIAL_QUERY_RE.search(n)), key=str.lower), False
+
+    return [], bool(_CREDENTIAL_TEXT_RE.search(body))
+
+
+def _warn_on_credentials(
+    entries: list[HarEntry], config: HarImportConfig, include_bodies: bool = True
+) -> None:
     """Warn when the output will contain something that looks like a secret.
 
     Silence here would be the dangerous part: nothing else in the pipeline
     tells the user that the file they are about to commit has a live token in
     it.
+
+    Args:
+        entries: The entries that will be written.
+        config: Import options; headers are only checked when they are kept.
+        include_bodies: Whether request bodies reach the output. The url-file
+            format drops them, so they cannot leak there.
     """
     header_names: set[str] = set()
     query_names: set[str] = set()
+    body_names: set[str] = set()
+    raw_bodies = 0
 
     for entry in entries:
         if config.preserve_headers:
             header_names.update(_credential_headers(_build_step_headers(entry, config)))
         query_names.update(_credential_query_params(entry.url))
+        if include_bodies:
+            fields, flagged = _credential_body_fields(entry)
+            body_names.update(fields)
+            raw_bodies += flagged
 
-    if not header_names and not query_names:
+    if not header_names and not query_names and not body_names and not raw_bodies:
         return
 
     parts = []
@@ -614,6 +671,13 @@ def _warn_on_credentials(entries: list[HarEntry], config: HarImportConfig) -> No
         parts.append("headers " + ", ".join(sorted(header_names, key=str.lower)))
     if query_names:
         parts.append("query parameters " + ", ".join(sorted(query_names, key=str.lower)))
+    if body_names:
+        parts.append("request body fields " + ", ".join(sorted(body_names, key=str.lower)))
+    if raw_bodies:
+        parts.append(
+            f"{raw_bodies} request bod{'y' if raw_bodies == 1 else 'ies'} copied verbatim "
+            "whose text mentions a password, secret, token or API key"
+        )
 
     logger.warning(
         "The generated output contains %s, which may hold live credentials "
@@ -659,7 +723,7 @@ def convert_har(
             f"Try --include-static or adjusting --domain / --exclude filters."
         )
 
-    _warn_on_credentials(filtered, config)
+    _warn_on_credentials(filtered, config, include_bodies=output_format == "scenario")
 
     scenario_name = name or os.path.splitext(os.path.basename(har_path))[0]
 
