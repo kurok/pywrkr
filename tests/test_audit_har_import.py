@@ -1225,7 +1225,8 @@ def test_empty_filter_error_names_the_domain_values(tmp_path):
         ("http://localhost:8080/path?q=1", ("localhost", 8080)),
         ("https://Example.com", ("example.com", 443)),
         ("fe80::1%eth0", ("fe80::1%eth0", None)),
-        ("", ("", None)),
+        ("0:0:0:0:0:0:0:1", ("::1", None)),
+        ("Example.COM.:8080", ("example.com", 8080)),
     ],
 )
 def test_split_domain(value, expected):
@@ -1235,7 +1236,18 @@ def test_split_domain(value, expected):
 
 
 @pytest.mark.parametrize(
-    "value", ["localhost:99999", "host:abc", "http://localhost:99999/", "host:80:90", ":8080"]
+    "value",
+    [
+        "localhost:99999",
+        "host:abc",
+        "http://localhost:99999/",
+        "host:80:90",
+        ":8080",
+        "",
+        "  ",
+        "localhost:+80",
+        "localhost:\u0668\u0660",
+    ],
 )
 def test_split_domain_rejects_a_bad_port(value):
     from pywrkr.har_import import _split_domain
@@ -1254,6 +1266,20 @@ def test_domain_filter_matches_an_ip_address_exactly():
     assert kept == []
     kept = filter_entries(entries, HarImportConfig(allowed_domains=["127.0.0.1"]))
     assert [e.url for e in kept] == ["http://127.0.0.1:8080/a"]
+
+
+@pytest.mark.parametrize(
+    ("domain", "url"),
+    [
+        ("0:0:0:0:0:0:0:1", "http://[::1]:8080/x"),
+        ("fe80::1%eth0", "http://[fe80::1%25eth0]/x"),
+        ("example.com", "http://Example.com./x"),
+        ("example.com.", "http://example.com/x"),
+    ],
+)
+def test_domain_filter_compares_canonical_hosts(domain, url):
+    kept = filter_entries([_entry(url)], HarImportConfig(allowed_domains=[domain]))
+    assert [e.url for e in kept] == [url]
 
 
 def test_default_port_spelled_out_is_one_origin():

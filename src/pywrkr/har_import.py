@@ -17,7 +17,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from urllib.parse import ParseResult, parse_qsl, unquote_plus, urlparse, urlsplit
+from urllib.parse import ParseResult, parse_qsl, unquote, unquote_plus, urlparse, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -295,24 +295,44 @@ def _split_domain(value: str) -> tuple[str, int | None]:
             0-65535.
     """
     text = value.strip()
-    if not text:
-        return "", None
     bad = ValueError(f"--domain {value!r}: expected host or host:port with a port of 0-65535")
+    if not text:
+        raise bad
     if "://" not in text and _is_ip_literal(text.split("%", 1)[0]) and ":" in text:
         # An unbracketed IPv6 address: all of it is the host.
-        return text.lower(), None
+        return _canon_host(text), None
     try:
         parts = urlsplit(text if "://" in text else "//" + text)
         host = parts.hostname or ""
         port = parts.port
     except ValueError:
         raise bad from None
+    if port is not None:
+        # urllib's port parsing differs across Python versions (``+80``);
+        # accept only ASCII digits.
+        port_text = parts.netloc.rpartition(":")[2]
+        if not (port_text.isascii() and port_text.isdigit()):
+            raise bad
+    host = _canon_host(host)
     if not host:
         raise bad
     if port is None and parts.scheme in _DEFAULT_PORTS:
         # A pasted https://example.com means that origin, not every port.
         port = _DEFAULT_PORTS[parts.scheme]
     return host, port
+
+
+def _canon_host(host: str) -> str:
+    """Lower-cased host without a trailing dot; an IP address in its standard form.
+
+    So ``Example.com.`` matches ``example.com``, ``0:0:0:0:0:0:0:1`` matches
+    ``[::1]``, and a URL's ``%25``-escaped zone id matches ``fe80::1%eth0``.
+    """
+    host = unquote(host).strip("[]").lower().rstrip(".")
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return host
 
 
 def _is_ip_literal(host: str) -> bool:
@@ -340,7 +360,7 @@ def _domain_allowed(parsed: ParseResult, allowed: list[tuple[str, int | None]]) 
     So the address a recording was made against, ``--domain localhost:8080``,
     is accepted as typed.
     """
-    host = parsed.hostname or ""
+    host = _canon_host(parsed.hostname or "")
     host_is_ip = _is_ip_literal(host)
     port = _effective_port(parsed)
     for want_host, want_port in allowed:
