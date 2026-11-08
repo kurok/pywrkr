@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `--otel-endpoint http://collector:4318`, the shape the README documents, posted metrics to the collector's root, which a standard OTLP/HTTP collector answers with 404, and the run still reported success. A URL with no path now gets the `/v1/metrics` signal path; a URL with a path is used as given. A batch the collector refuses now makes the OTel export report failure, as the Prometheus export already did, instead of returning success because the SDK's `force_flush()` does. (#318)
+- `--otel-endpoint http://collector:4318`, the shape the README documents, posted metrics to the collector's root, which a standard OTLP/HTTP collector answers with 404, and the run still reported success. A URL with no path now gets the `/v1/metrics` signal path; a URL with a path is used as given. A batch that is not delivered (refused by the collector, or an exporter error the SDK swallows), an export that sends nothing, and an endpoint that is not an `http(s)://` URL now make the OTel export report failure, as the Prometheus export already did, instead of returning success because the SDK's `force_flush()` does or aborting the run. (#318)
 
 ### Security
 

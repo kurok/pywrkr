@@ -3617,7 +3617,12 @@ class TestOtelExport(unittest.TestCase):
             def force_flush(self):
                 for reader in self.readers:
                     for _ in outcomes:
-                        reader.exporter.export("batch")
+                        # Like the SDK's reader: an exception from export()
+                        # is logged and swallowed, never raised to the caller.
+                        try:
+                            reader.exporter.export("batch")
+                        except Exception:
+                            pass
 
             def shutdown(self):
                 pass
@@ -3646,7 +3651,31 @@ class TestOtelExport(unittest.TestCase):
         with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
             ok = pywrkr.export_to_otel(self._make_results(), "http://c:4318/x", {})
         self.assertFalse(ok)
-        self.assertTrue(any("refused 1 of 2" in line for line in cm.output))
+        self.assertTrue(any("1 of 2 metric batches" in line for line in cm.output))
+
+    def test_export_result_a_raising_export_is_failure(self):
+        """The SDK's reader swallows an exception from export(); it must still count."""
+        exporter_cls = self._fake_sdk([True])
+        exporter_cls.return_value.export.side_effect = RuntimeError("boom")
+        with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+            ok = pywrkr.export_to_otel(self._make_results(), "http://c:4318", {})
+        self.assertFalse(ok)
+        self.assertTrue(any("1 of 1 metric batches" in line for line in cm.output))
+
+    def test_export_result_nothing_exported_is_failure(self):
+        self._fake_sdk([])
+        with self.assertLogs("pywrkr.reporting", level="ERROR") as cm:
+            ok = pywrkr.export_to_otel(self._make_results(), "http://c:4318", {})
+        self.assertFalse(ok)
+        self.assertTrue(any("no metric batch" in line for line in cm.output))
+
+    def test_export_result_a_malformed_endpoint_is_failure_not_a_crash(self):
+        self._fake_sdk([True])
+        for endpoint in ("http://[::1:4318", "localhost:4318", "ftp://c:4318"):
+            with self.subTest(endpoint=endpoint):
+                with self.assertLogs("pywrkr.reporting", level="ERROR"):
+                    ok = pywrkr.export_to_otel(self._make_results(), endpoint, {})
+                self.assertFalse(ok)
 
     def test_export_result_an_exception_is_failure(self):
         exporter_cls = self._fake_sdk([])
@@ -3721,7 +3750,7 @@ class TestOtelExport(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(seen)
         self.assertTrue(all(status == 404 for _, status in seen), seen)
-        self.assertTrue(any("refused" in line for line in cm.output))
+        self.assertTrue(any("not delivered" in line for line in cm.output))
 
     @unittest.skipUnless(pywrkr.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_graceful_on_connection_error(self):

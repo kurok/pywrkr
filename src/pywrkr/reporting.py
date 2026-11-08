@@ -1275,8 +1275,14 @@ def otel_metrics_endpoint(endpoint: str) -> str:
 
     Returns:
         The URL to hand to the OTLP metric exporter.
+
+    Raises:
+        ValueError: The endpoint is not an http(s) URL with a host, or does
+            not parse (``http://[::1:4318``).
     """
     parsed = urlparse(endpoint)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"--otel-endpoint must be an http:// or https:// URL, got {endpoint!r}")
     if parsed.path in ("", "/"):
         return urlunparse(parsed._replace(path=OTEL_METRICS_PATH))
     return endpoint
@@ -1299,8 +1305,11 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
         )
         return False
 
-    signal_endpoint = otel_metrics_endpoint(endpoint)
+    signal_endpoint = endpoint
     try:
+        # Inside the try: a malformed endpoint is a failed export, not an
+        # exception that aborts the run's finalisation.
+        signal_endpoint = otel_metrics_endpoint(endpoint)
         resource_attrs = {"service.name": "pywrkr"}
         resource_attrs.update(tags)
         resource = Resource.create(resource_attrs)
@@ -1310,7 +1319,13 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
         deliver = exporter.export
 
         def recording_export(*args: object, **kwargs: object) -> object:
-            outcome = deliver(*args, **kwargs)
+            # The SDK's reader logs and swallows an exception from export(), so
+            # record it here or a raising exporter would read as success.
+            try:
+                outcome = deliver(*args, **kwargs)
+            except Exception:
+                outcomes.append(MetricExportResult.FAILURE)
+                raise
             outcomes.append(outcome)
             return outcome
 
@@ -1340,15 +1355,18 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> bool:
         _logger.error("OTel export failed (endpoint=%s): %s", signal_endpoint, e)
         return False
 
+    if not outcomes:
+        _logger.error("OTel export failed: no metric batch was exported to %s", signal_endpoint)
+        return False
     failed = sum(1 for outcome in outcomes if outcome is not MetricExportResult.SUCCESS)
     if failed:
         _logger.error(
-            "OTel export failed: the collector at %s refused %d of %d metric batches "
-            "(see the exporter's error above). Check that --otel-endpoint points at "
-            "an OTLP/HTTP collector.",
-            signal_endpoint,
+            "OTel export failed: %d of %d metric batches to %s were not delivered "
+            "(see the exporter's error above). Check that the endpoint is an "
+            "OTLP/HTTP collector that is reachable.",
             failed,
             len(outcomes),
+            signal_endpoint,
         )
         return False
     return True
