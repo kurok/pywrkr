@@ -37,12 +37,22 @@ jobs:
           exit 1
         fi
 
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+      with:
+        # requirements-build.txt is compiled for this version.
+        python-version: "3.12"
+
+    # pywrkr.__version__ is read from the installed package metadata (#149),
+    # so installing the package alone -- pinned build backend, no isolation,
+    # no dependencies -- is enough to check it, and nothing is resolved from
+    # the index in a job that holds contents: write (#307).
     - name: Verify pywrkr.__version__ matches tag
       env:
         TAG_VERSION: ${{ steps.version.outputs.version }}
       run: |
-        pip install --quiet .
-        RUNTIME_VERSION=$(python -c "import pywrkr; print(pywrkr.__version__)")
+        python -m pip install --quiet --require-hashes --no-deps -r requirements-build.txt
+        python -m pip install --quiet --no-build-isolation --no-deps .
+        RUNTIME_VERSION=$(python -c "from importlib.metadata import version; print(version('pywrkr'))")
         if [ "$RUNTIME_VERSION" != "$TAG_VERSION" ]; then
           echo "::error::pywrkr.__version__ ($RUNTIME_VERSION) != tag ($TAG_VERSION)"
           exit 1

@@ -27,12 +27,17 @@ jobs:
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
-          python-version: "3.x"
+          # requirements-build.txt is compiled for this version.
+          python-version: "3.12"
 
+      # The build tool and the build backend come from requirements-build.txt,
+      # pinned by version and hash, and the build runs without isolation so
+      # nothing is resolved from the index at release time (#307). The
+      # published artifact is a function of the tagged source and these pins.
       - name: Build release distributions
         run: |
-          python -m pip install build
-          python -m build
+          python -m pip install --require-hashes --no-deps -r requirements-build.txt
+          python -m build --no-isolation
 
       - name: Upload distributions
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0

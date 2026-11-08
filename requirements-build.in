@@ -1,0 +1,7 @@
+# Build inputs for the release pipeline (#307), pinned with hashes.
+# Regenerate with:
+#   uv pip compile requirements-build.in --generate-hashes --python-version 3.12 \
+#     --python-platform x86_64-manylinux_2_28 -o requirements-build.txt
+build
+setuptools
+wheel
