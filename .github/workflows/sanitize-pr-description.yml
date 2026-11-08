@@ -4,12 +4,18 @@ on:
   pull_request:
     types: [opened, edited, synchronize]
 
+# Read-only by default; only the job below may edit the pull request, and it
+# runs only for pull requests from this repository's own branches. A fork's
+# pull request never gets a write-scoped token from this workflow (#308).
 permissions:
-  pull-requests: write
+  contents: read
 
 jobs:
   clean-pr:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
 
     steps:
       - name: Clean PR description
