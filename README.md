@@ -128,13 +128,20 @@ pywrkr har-import recording.har --no-think-time -o scenario.json               #
 
 > **Recorded credentials.** A HAR captured from a logged-in session contains
 > whatever that session was authenticating with. `--preserve-headers` keeps
-> `Authorization`, `X-API-Key` and similar, and the query string is copied into
-> the step path whether or not that flag is used — so `?access_token=...` ends
-> up in the generated file too. These are deliberately not stripped, because a
-> scenario is usually replayed against the same environment, but `har-import`
-> warns when it writes something that looks like a credential. Replace the
-> values with a template such as `${token}` and supply them at run time before
-> committing the file.
+> `Authorization`, `X-API-Key` and similar; the query string is copied into the
+> step path whether or not that flag is used, so `?access_token=...` ends up in
+> the generated file too; and with `--format scenario` a recorded login's
+> request body carries its password. These are deliberately not stripped,
+> because a scenario is usually replayed against the same environment, but
+> `har-import` warns when it writes something that looks like a credential: a
+> header, query parameter or request body field whose name looks like one (JSON
+> keys at any depth, URL-encoded form fields and multipart part names, including
+> short names such as `pwd`, `pass1` and `app_key`), or a request body whose text
+> mentions a password, secret, token, API key, credential or bearer token. Field names that
+> look like a value rather than a name are shown as `<unnamed field>`, so the
+> warning avoids printing token-like values. The check leans towards warning, so expect the occasional false
+> alarm. Replace the values with a template such as `${token}` and supply them
+> at run time before committing the file.
 
 ## Library usage
 
