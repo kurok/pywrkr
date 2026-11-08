@@ -66,6 +66,8 @@ Jenkins Controller
 
 Each region is fully independent — no cross-region master/worker communication. Regions run their tests in parallel.
 
+The task definitions also set `PYWRKR_ROLE=master|worker`. pywrkr does not read it: the role comes from the container command (`--master` / `--worker`). The variable is only a label for whoever inspects a running task, and it enforces nothing.
+
 ---
 
 ## Prerequisites

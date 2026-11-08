@@ -11,7 +11,7 @@ import signal
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from pywrkr.assertions import parse_step_assertions
 from pywrkr.templating import (
@@ -33,6 +33,38 @@ logger = logging.getLogger(__name__)
 
 
 HTTP_SCHEMES = ("http", "https")
+
+
+def loggable_url(url: str) -> str:
+    """A URL fit for a log line: no userinfo, and the query string redacted.
+
+    A target URL can carry a token in its query string, its path parameters
+    or its fragment (or ``user:pass@`` in its authority), and logs -- CI logs
+    especially -- are kept and shared.
+
+    Args:
+        url: The URL to log.
+
+    Returns:
+        ``scheme://host[:port]/path``, with ``;<redacted>``, ``?<redacted>``
+        or ``#<redacted>`` marking what was removed. A string that does not
+        parse as a URL comes back as ``<unparseable url>``.
+    """
+    try:
+        parsed = urlsplit(url)
+        host = parsed.netloc.rpartition("@")[2]
+        if parsed.scheme and parsed.netloc:
+            path, _, params = parsed.path.partition(";")
+            shown = f"{parsed.scheme}://{host}{path}" + (";<redacted>" if params else "")
+        else:
+            # No authority to anchor on: drop anything up to an "@" too.
+            head = url.split("#", 1)[0].split("?", 1)[0]
+            shown = head.rpartition("@")[2]
+    except ValueError:
+        return "<unparseable url>"
+    return (
+        shown + ("?<redacted>" if parsed.query else "") + ("#<redacted>" if parsed.fragment else "")
+    )
 
 
 def check_url_scheme(url: object, context: str = "", extra_schemes: tuple[str, ...] = ()) -> None:

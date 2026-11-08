@@ -1322,6 +1322,10 @@ session state between worker nodes, so a session started on one node is never co
 `--no-read-body` releases the connection instead of reading the response body, for runs where
 nothing looks at it.
 
+By default each response body is read in full and held in memory until the request is done, with
+no size cap, so a target that returns very large bodies makes the client hold them. Use
+`--no-read-body` when nothing needs the body.
+
 ```bash
 pywrkr --no-read-body -c 100 -d 30 http://localhost:8080/large.json
 ```
@@ -1819,7 +1823,10 @@ a worker can hand it a config and make it generate traffic. A master therefore *
 on a non-loopback `--bind` — including the default `0.0.0.0` — without a secret, and a worker
 refuses to connect to a non-loopback master without one; for a local run use `--bind 127.0.0.1` and
 `--worker 127.0.0.1:9220`. The master and every worker must use the same value, and passing it through the
-environment keeps it out of the process table:
+environment keeps it out of the process table. The secret **authenticates** the two ends; it does not
+**encrypt** anything. The channel is plain TCP, so the config (credentials included) and the results
+still cross the network in clear text: run it on a trusted network, or tunnel it (SSH, WireGuard, a
+service mesh). pywrkr has no TLS for this channel.
 
 ```bash
 export PYWRKR_WORKER_SECRET='<shared secret>'  # same value on master and every worker
