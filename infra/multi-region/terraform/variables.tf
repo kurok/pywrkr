@@ -12,6 +12,12 @@ variable "environment" {
   description = "Environment name (e.g., loadtest, staging, prod)"
   type        = string
   default     = "loadtest"
+
+  validation {
+    # Part of every resource name, the SSM parameter path and the state key.
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,30}$", var.environment))
+    error_message = "environment must be lower-case letters, digits and '-' (at most 31 characters)."
+  }
 }
 
 variable "home_region" {
@@ -207,17 +213,16 @@ variable "cloudmap_namespace" {
 
 variable "worker_secret" {
   description = <<-EOT
-    Shared HMAC secret for the master/worker control channel, passed to every
-    container as PYWRKR_WORKER_SECRET. A master bound to 0.0.0.0 refuses to
-    start without one (#303). Leave null to generate a random secret for this
-    deployment. Stored in state and in an SSM SecureString read via the container `secrets`.
+    No longer used (#315). The master/worker HMAC secret is now an SSM
+    SecureString the operator creates out of band, one per region, so the
+    plaintext is never in terraform state. See README.md, "Worker secret".
   EOT
   type        = string
   default     = null
   sensitive   = true
 
   validation {
-    condition     = var.worker_secret == null || try(length(var.worker_secret) >= 16, false)
-    error_message = "worker_secret must be at least 16 characters (or null to generate one)."
+    condition     = var.worker_secret == null
+    error_message = "worker_secret is no longer read: create the SSM SecureString /<project>-<environment>-<region code>/pywrkr/worker-secret in each region instead (see infra/multi-region/README.md)."
   }
 }

@@ -43,6 +43,10 @@ pipeline {
         DOCKER_DIR    = "${WORKSPACE}/infra/multi-region"
         PROJECT_NAME  = 'pywrkr'
         HOME_REGION   = 'us-east-1'
+        // Remote, locked, encrypted state (#315): the same bucket and lock
+        // table as the single-region pipeline, under a key per environment.
+        TF_STATE_BUCKET = 'pywrkr-terraform-state'
+        TF_LOCK_TABLE   = 'pywrkr-terraform-locks'
     }
 
     stages {
@@ -55,6 +59,11 @@ pipeline {
         stage('Validate Parameters') {
             steps {
                 script {
+                    // ENVIRONMENT names the state key and every resource, and is
+                    // interpolated into shell commands: allow only a plain name.
+                    if (!(params.ENVIRONMENT ==~ /[a-z0-9][a-z0-9-]{0,30}/)) {
+                        error("ENVIRONMENT '${params.ENVIRONMENT}' must be lower-case letters, digits and '-' (at most 31)")
+                    }
                     def regions = params.AWS_REGIONS.split(',').collect { it.trim() }
                     def workerCount = params.WORKER_COUNT_PER_REGION.toInteger()
                     def maxWorkers = 10
@@ -210,7 +219,14 @@ tags = {
                     writeFile file: "${TF_DIR}/jenkins.auto.tfvars", text: tfvars
 
                     dir(TF_DIR) {
-                        sh 'terraform init'
+                        sh '''
+                            terraform init -input=false \\
+                              -backend-config="bucket=${TF_STATE_BUCKET}" \\
+                              -backend-config="key=pywrkr/multi-region/${ENVIRONMENT}/terraform.tfstate" \\
+                              -backend-config="region=${HOME_REGION}" \\
+                              -backend-config="dynamodb_table=${TF_LOCK_TABLE}" \\
+                              -backend-config="encrypt=true"
+                        '''
                         sh 'terraform plan -out=tfplan'
                         sh 'terraform apply tfplan'
                     }
@@ -297,9 +313,12 @@ tags = {
                     }
                 } else {
                     echo 'Skipping cleanup (CLEANUP_AFTER_RUN=false). Infrastructure remains running.'
-                    echo 'To destroy manually: cd infra/multi-region/terraform && terraform destroy'
+                    echo 'To destroy it later: re-run with CLEANUP_AFTER_RUN=true, or see infra/multi-region/README.md'
                 }
             }
+            // The state lives in S3, so nothing here is needed after the run:
+            // drop the plan, the generated tfvars and the provider cache.
+            cleanWs()
         }
         failure {
             echo 'Pipeline failed. Check logs for details.'

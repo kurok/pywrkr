@@ -851,6 +851,48 @@ class TestInfraHardening(unittest.TestCase):
             versions, r'(?m)^\s*#\s*backend\s+"s3"', "the backend block is still commented out"
         )
 
+    def test_multi_region_terraform_declares_a_remote_backend(self):
+        """#315: the multi-region stack still wrote its state, worker secret
+        included, to a plain file in the Jenkins workspace."""
+        backend = (self._root / "infra/multi-region/terraform/backend.tf").read_text()
+        self.assertRegex(
+            backend, r'(?m)^\s*backend\s+"s3"\s*\{', "multi-region state is not remote"
+        )
+        self.assertNotRegex(
+            backend, r'(?m)^\s*#\s*backend\s+"s3"', "the backend block is still commented out"
+        )
+
+    def test_multi_region_pipeline_configures_the_backend(self):
+        pipeline = (self._root / "infra/multi-region/jenkins/Jenkinsfile").read_text()
+        start = pipeline.find("terraform init")
+        self.assertNotEqual(start, -1, "the pipeline does not run terraform init")
+        # The init command and its continuation lines, up to the end of the sh block.
+        init = pipeline[start : pipeline.find("'''", start)]
+        for setting in ("bucket=", "key=", "region=", "dynamodb_table=", "encrypt=true"):
+            with self.subTest(setting=setting):
+                self.assertTrue(
+                    f'-backend-config="{setting}' in init,
+                    f"terraform init is not given -backend-config {setting}",
+                )
+        # With the state remote, nothing in the workspace is needed afterwards.
+        self.assertTrue("cleanWs()" in pipeline, "the pipeline does not clean its workspace")
+
+    def test_multi_region_state_does_not_hold_the_worker_secret(self):
+        """The secret was a resource attribute, so terraform wrote it to state
+        in the clear. It is now created out of band and only referenced."""
+        modules = self._root / "infra/multi-region/terraform"
+        for path in sorted(modules.rglob("*.tf")):
+            text = path.read_text()
+            rel = path.relative_to(self._root)
+            with self.subTest(file=str(rel)):
+                self.assertNotRegex(text, r'(?m)^resource\s+"random_password"', f"{rel}")
+                self.assertNotRegex(text, r'(?m)^resource\s+"aws_ssm_parameter"', f"{rel}")
+        regional = (modules / "modules/regional/main.tf").read_text()
+        data = re.search(r'(?ms)^data\s+"aws_ssm_parameter"\s+"worker_secret"\s*\{.*?^\}', regional)
+        self.assertIsNotNone(data, "the worker secret is not read from SSM")
+        assert data is not None
+        self.assertRegex(data.group(0), r"with_decryption\s*=\s*false")
+
     def test_destroy_requires_confirmation(self):
         """-auto-approve against state the run did not create destroys
         whatever that state happens to describe, and there is no undo."""

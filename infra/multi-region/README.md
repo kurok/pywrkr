@@ -8,6 +8,7 @@ Deploy distributed pywrkr load tests across multiple AWS regions simultaneously 
 
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
+- [State and Worker Secret](#state-and-worker-secret)
 - [Quick Start — Single Region](#quick-start--single-region)
 - [Multi-Region Deployment](#multi-region-deployment)
 - [Jenkins Pipeline](#jenkins-pipeline)
@@ -75,7 +76,7 @@ The task definitions also set `PYWRKR_ROLE=master|worker`. pywrkr does not read 
 | Requirement | Minimum Version | Notes |
 |-------------|----------------|-------|
 | AWS CLI | v2 | Configured with credentials for all target regions |
-| Terraform | >= 1.6 | |
+| Terraform | >= 1.7 | `removed` blocks (#315) |
 | Docker | Recent stable | For building the pywrkr image |
 | Jenkins | 2.x with Pipeline plugin | For automated orchestration (optional for manual runs) |
 
@@ -89,7 +90,62 @@ The executing IAM principal needs permissions for:
 - **Cloud Map:** `servicediscovery:CreatePrivateDnsNamespace`, `servicediscovery:CreateService`, `servicediscovery:DeleteNamespace`
 - **CloudWatch Logs:** `logs:CreateLogGroup`, `logs:PutRetentionPolicy`, `logs:GetLogEvents`, `logs:DeleteLogGroup`
 - **IAM:** `iam:CreateRole`, `iam:AttachRolePolicy`, `iam:PassRole`, `iam:DeleteRole`, `iam:PutRolePolicy`, `iam:GetRolePolicy`, `iam:DeleteRolePolicy`
-- **SSM** (master/worker secret, `parameter/pywrkr-*`): `ssm:PutParameter`, `ssm:GetParameter`, `ssm:GetParameters`, `ssm:DeleteParameter`, `ssm:AddTagsToResource`, `ssm:RemoveTagsFromResource`, `ssm:ListTagsForResource`; plus `ssm:DescribeParameters` on `*`
+- **SSM** (master/worker secret, `parameter/pywrkr-*`): `ssm:GetParameter` to read the parameter's ARN and version (Terraform does not decrypt it). The operator who creates the secret needs `ssm:PutParameter`; see [State and Worker Secret](#state-and-worker-secret)
+- **S3 / DynamoDB** (state): `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on the state bucket, and `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:DeleteItem` on the lock table
+
+---
+
+## State and Worker Secret
+
+### Remote state
+
+Terraform state is kept in S3, encrypted and locked with DynamoDB, as in the single-region stack.
+`terraform/backend.tf` declares an empty `backend "s3" {}`, so `terraform init` fails without
+a backend configuration instead of writing state to the local disk. Supply it at init, for example
+from a `backend.hcl` that is not committed:
+
+```hcl
+# backend.hcl
+bucket         = "pywrkr-terraform-state"
+key            = "pywrkr/multi-region/loadtest/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "pywrkr-terraform-locks"
+encrypt        = true
+```
+
+```bash
+terraform init -backend-config=backend.hcl
+```
+
+The Jenkins pipeline passes the same settings with `-backend-config`, using a key per `ENVIRONMENT`,
+and cleans its workspace after every run, because nothing in it is needed once the state is in S3.
+
+### Worker secret
+
+The master and workers in a region authenticate each other with a shared HMAC secret (#303). Create it
+yourself, once per enabled region, as an SSM SecureString under the AWS-managed `aws/ssm` key:
+
+```bash
+# <prefix> is <project_name>-<environment>-<region code>: use1, euw1 or apse1.
+aws ssm put-parameter --region us-east-1 --type SecureString \
+  --name /pywrkr-loadtest-use1/pywrkr/worker-secret --value "$(openssl rand -hex 32)"
+```
+
+Terraform reads only the parameter's ARN and version (`with_decryption = false`) and gives the ARN to
+the containers through `secrets`, so the plaintext is never in Terraform state or in the task
+definition. `terraform plan` fails if the parameter does not exist. `terraform output
+worker_secret_parameter_names` lists the names after an apply. To rotate the secret, overwrite the parameter
+(`put-parameter --overwrite`) and apply again: the new version rolls the tasks.
+
+### Upgrading from local state and a Terraform-generated secret
+
+Earlier versions kept the state in `terraform/terraform.tfstate` and generated the secret in it.
+
+1. Move the state: `terraform init -migrate-state -backend-config=backend.hcl`.
+2. Apply. The `removed` blocks make Terraform forget the parameter it created without deleting it, so the
+   existing parameter, at the same name, becomes the out-of-band one. Then overwrite its value
+   (`put-parameter --overwrite`) and apply again, because the old value is still in old state versions.
+3. Delete the local `terraform.tfstate` and `terraform.tfstate.backup`. Both hold the old secret in plain text.
 
 ### AWS Service Quotas
 
@@ -151,8 +207,10 @@ aws ecr get-login-password --region us-east-1 | docker login --username AWS --pa
 docker tag pywrkr:latest <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/pywrkr:latest
 docker push <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/pywrkr:latest
 
-# 3. Deploy
-terraform init
+# 3. Create the worker secret (see "State and Worker Secret"), then deploy
+aws ssm put-parameter --region us-east-1 --type SecureString \
+  --name /pywrkr-loadtest-use1/pywrkr/worker-secret --value "$(openssl rand -hex 32)"
+terraform init -backend-config=backend.hcl
 terraform plan
 terraform apply
 
@@ -227,7 +285,8 @@ aws ecr describe-images --repository-name pywrkr --region ap-southeast-1 --image
 
 ```bash
 cd infra/multi-region/terraform
-terraform init
+# One worker secret per enabled region; see "State and Worker Secret"
+terraform init -backend-config=backend.hcl
 terraform plan -out=tfplan
 terraform apply tfplan
 ```
@@ -540,7 +599,7 @@ This releases all resources: EIPs, NAT gateways, VPCs, ECS clusters, Cloud Map n
 
 ### Jenkins Cleanup
 
-When `CLEANUP_AFTER_RUN=true` (the default), the Jenkins pipeline runs `terraform destroy` automatically after collecting results.
+When `CLEANUP_AFTER_RUN=true` (the default), the Jenkins pipeline runs `terraform destroy` automatically after collecting results. It then cleans its workspace in every case. The state is in S3, so a run with `CLEANUP_AFTER_RUN=false` can still be destroyed later, from Jenkins or by hand with the same backend configuration. The worker secrets are not Terraform resources and are kept; delete them with `aws ssm delete-parameter` when the environment is retired.
 
 ### Orphan Detection
 

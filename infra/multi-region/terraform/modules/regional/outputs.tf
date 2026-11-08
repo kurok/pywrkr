@@ -37,3 +37,8 @@ output "namespace_name" {
 output "vpc_id" {
   value = module.network.vpc_id
 }
+
+output "worker_secret_parameter_name" {
+  description = "SSM SecureString the operator creates for this region's master/worker secret"
+  value       = data.aws_ssm_parameter.worker_secret.name
+}

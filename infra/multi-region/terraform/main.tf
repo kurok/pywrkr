@@ -71,7 +71,6 @@ module "region_us_east_1" {
   pywrkr_tags             = local.region_pywrkr_tags["us-east-1"]
   otel_endpoint           = var.otel_endpoint
   prom_remote_write       = var.prom_remote_write
-  worker_secret           = var.worker_secret
   log_retention_days      = var.log_retention_days
   tags                    = local.common_tags
 }
@@ -109,7 +108,6 @@ module "region_eu_west_1" {
   pywrkr_tags             = local.region_pywrkr_tags["eu-west-1"]
   otel_endpoint           = var.otel_endpoint
   prom_remote_write       = var.prom_remote_write
-  worker_secret           = var.worker_secret
   log_retention_days      = var.log_retention_days
   tags                    = local.common_tags
 }
@@ -147,7 +145,6 @@ module "region_ap_southeast_1" {
   pywrkr_tags             = local.region_pywrkr_tags["ap-southeast-1"]
   otel_endpoint           = var.otel_endpoint
   prom_remote_write       = var.prom_remote_write
-  worker_secret           = var.worker_secret
   log_retention_days      = var.log_retention_days
   tags                    = local.common_tags
 }
