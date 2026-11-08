@@ -17,6 +17,14 @@ locals {
 data "aws_ssm_parameter" "worker_secret" {
   name            = local.worker_secret_parameter_name
   with_decryption = false
+
+  lifecycle {
+    # A plain String would be returned, and stored in state, in clear text.
+    postcondition {
+      condition     = self.type == "SecureString"
+      error_message = "${local.worker_secret_parameter_name} must be a SecureString."
+    }
+  }
 }
 
 # Earlier versions generated the secret and created this parameter here.

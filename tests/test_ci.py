@@ -886,13 +886,66 @@ class TestInfraHardening(unittest.TestCase):
         not wiped, and a build must not apply over (then destroy) another
         deployment's resources unless asked to."""
         pipeline = (self._root / "infra/multi-region/jenkins/Jenkinsfile").read_text()
-        for marker in ("-migrate-state", "ADOPT_EXISTING_STATE", "terraform state list"):
+        for marker in (
+            "-migrate-state",
+            "ADOPT_EXISTING_STATE",
+            "terraform state pull",
+            "count_state_resources.py",
+            "(404)",
+        ):
             with self.subTest(marker=marker):
                 self.assertTrue(marker in pipeline, f"the pipeline lacks {marker}")
         always = pipeline[pipeline.rindex("post {") :]
         self.assertTrue(
             "TF_APPLIED" in always, "the destroy does not depend on this build applying"
         )
+        # A failed destroy leaves resources billing: it must not be swallowed.
+        self.assertFalse("destroy -auto-approve || true" in pipeline, "a failed destroy is ignored")
+
+    def _count_state(self, state: str, *args: str) -> tuple[int, str]:
+        import subprocess
+        import sys
+
+        script = self._root / "infra/multi-region/jenkins/count_state_resources.py"
+        proc = subprocess.run(
+            [sys.executable, str(script), *args],
+            input=state,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode, proc.stdout.strip()
+
+    def test_state_resource_count_treats_no_state_as_empty(self):
+        """`terraform state pull` prints nothing when there is no state yet."""
+        self.assertEqual(self._count_state(""), (0, "0"))
+
+    def test_state_resource_count_counts_managed_instances_only(self):
+        state = json.dumps(
+            {
+                "resources": [
+                    {"mode": "data", "instances": [{}]},
+                    {"mode": "managed", "instances": [{}, {}]},
+                ]
+            }
+        )
+        self.assertEqual(self._count_state(state), (0, "2"))
+
+    def test_state_resource_count_rejects_another_environments_state(self):
+        """Legacy local state is migrated under this ENVIRONMENT's key only if
+        it was written for it."""
+        state = json.dumps(
+            {
+                "resources": [
+                    {
+                        "mode": "managed",
+                        "instances": [{"attributes": {"name": "pywrkr-loadtest-use1-vpc"}}],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-loadtest-")[0], 0)
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-staging-")[0], 3)
 
     def test_multi_region_state_does_not_hold_the_worker_secret(self):
         """The secret was a resource attribute, so terraform wrote it to state

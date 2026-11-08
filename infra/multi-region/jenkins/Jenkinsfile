@@ -79,10 +79,11 @@ pipeline {
                     // the name to create, rather than at terraform plan.
                     def missing = requested.findAll { region ->
                         def name = "/${PROJECT_NAME}-${params.ENVIRONMENT}-${regionCodes[region]}/pywrkr/worker-secret"
-                        sh(script: "aws ssm describe-parameters --region ${region} --parameter-filters Key=Name,Values=${name} --query 'length(Parameters)' --output text | grep -qx 1", returnStatus: true) != 0
+                        // A plain String would come back in clear through the data source.
+                        sh(script: "aws ssm describe-parameters --region ${region} --parameter-filters Key=Name,Values=${name} --query 'Parameters[0].Type' --output text | grep -qx SecureString", returnStatus: true) != 0
                     }
                     if (missing) {
-                        error("No worker secret in ${missing}: create /${PROJECT_NAME}-${params.ENVIRONMENT}-<region code>/pywrkr/worker-secret in each (see infra/multi-region/README.md)")
+                        error("No SecureString worker secret in ${missing}: create /${PROJECT_NAME}-${params.ENVIRONMENT}-<region code>/pywrkr/worker-secret in each (see infra/multi-region/README.md)")
                     }
                     def regions = params.AWS_REGIONS.split(',').collect { it.trim() }
                     def workerCount = params.WORKER_COUNT_PER_REGION.toInteger()
@@ -246,13 +247,27 @@ tags = {
                         sh '''
                             set -e
                             KEY="pywrkr/multi-region/${ENVIRONMENT}/terraform.tfstate"
+                            COUNT_STATE="python3 ${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py"
                             MIGRATE=""
                             if [ -f terraform.tfstate ]; then
-                              if aws s3api head-object --region "${HOME_REGION}" --bucket "${TF_STATE_BUCKET}" --key "${KEY}" >/dev/null 2>&1; then
-                                echo "ERROR: the workspace has a local terraform.tfstate and s3://${TF_STATE_BUCKET}/${KEY} exists too; reconcile them by hand."
+                              # Only state written for this ENVIRONMENT may go under its key.
+                              LOCAL=$($COUNT_STATE --name-prefix "${PROJECT_NAME}-${ENVIRONMENT}-" < terraform.tfstate) || {
+                                echo "ERROR: the workspace's terraform.tfstate belongs to another ENVIRONMENT than ${ENVIRONMENT}; run that one, or reconcile by hand."
                                 exit 1
+                              }
+                              if [ "$LOCAL" = "0" ]; then
+                                # Left by a run that destroyed everything: nothing to keep.
+                                rm -f terraform.tfstate terraform.tfstate.backup
+                              else
+                                if ERR=$(aws s3api head-object --region "${HOME_REGION}" --bucket "${TF_STATE_BUCKET}" --key "${KEY}" 2>&1 >/dev/null); then
+                                  echo "ERROR: the workspace has state for ${LOCAL} resource(s) and s3://${TF_STATE_BUCKET}/${KEY} exists too; reconcile them by hand."
+                                  exit 1
+                                fi
+                                case "$ERR" in
+                                  *"(404)"*|*"Not Found"*) MIGRATE="-migrate-state -force-copy" ;;
+                                  *) echo "ERROR: could not tell whether s3://${TF_STATE_BUCKET}/${KEY} exists: $ERR"; exit 1 ;;
+                                esac
                               fi
-                              MIGRATE="-migrate-state -force-copy"
                             fi
                             terraform init -input=false ${MIGRATE} \\
                               -backend-config="bucket=${TF_STATE_BUCKET}" \\
@@ -260,12 +275,22 @@ tags = {
                               -backend-config="region=${HOME_REGION}" \\
                               -backend-config="dynamodb_table=${TF_LOCK_TABLE}" \\
                               -backend-config="encrypt=true"
-                            # Migrated: the local copies hold the old secret in plain text.
-                            if [ -n "${MIGRATE}" ]; then rm -f terraform.tfstate terraform.tfstate.backup; fi
+                            if [ -n "${MIGRATE}" ]; then
+                              # The local copies hold the old secret in plain text.
+                              rm -f terraform.tfstate terraform.tfstate.backup
+                              echo "WARNING: the migrated state held the worker secret in plain text. Rotate it in every region and delete the old versions of s3://${TF_STATE_BUCKET}/${KEY} (infra/multi-region/README.md, Upgrading)."
+                            fi
                         '''
                         // The state is shared now: do not apply over, and then destroy,
                         // infrastructure this build did not create unless asked to.
-                        def existing = sh(script: 'terraform state list | wc -l', returnStdout: true).trim().toInteger()
+                        // `state pull` prints nothing when there is no state and fails
+                        // when the state cannot be read, which fails this step.
+                        def existing = sh(script: '''
+                            set -e
+                            terraform state pull > .state.json
+                            python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" < .state.json
+                            rm -f .state.json
+                        ''', returnStdout: true).trim().toInteger()
                         if (existing > 0 && !params.ADOPT_EXISTING_STATE) {
                             error("ENVIRONMENT '${params.ENVIRONMENT}' already has ${existing} resource(s) in its state, from an earlier run or a manual deployment. Use another ENVIRONMENT, destroy them first, or set ADOPT_EXISTING_STATE.")
                         }
@@ -355,7 +380,11 @@ tags = {
                 } else if (params.CLEANUP_AFTER_RUN) {
                     echo 'Cleaning up infrastructure (CLEANUP_AFTER_RUN=true)...'
                     dir(TF_DIR) {
-                        sh 'terraform destroy -auto-approve || true'
+                        // A failed destroy leaves NAT gateways and EIPs billing: say so.
+                        if (sh(script: 'terraform destroy -auto-approve', returnStatus: true) != 0) {
+                            currentBuild.result = 'FAILURE'
+                            echo "ERROR: terraform destroy failed; infrastructure for ENVIRONMENT '${params.ENVIRONMENT}' may still be running. Its state is in S3: destroy it from Jenkins or by hand."
+                        }
                     }
                 } else {
                     echo 'Skipping cleanup (CLEANUP_AFTER_RUN=false). Infrastructure remains running.'
