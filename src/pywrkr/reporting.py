@@ -28,6 +28,7 @@ from pywrkr.config import (
     StepResult,
     Threshold,
     WorkerStats,
+    loggable_url,
 )
 from pywrkr.traffic_profiles import RateLimiter
 
@@ -656,7 +657,7 @@ def _config_snapshot(config: BenchmarkConfig, connections: int) -> dict:
         "duration": config.duration,
         "num_requests": config.num_requests,
         "rate": config.rate,
-        "url_host": urlparse(config.url).netloc or None,
+        "url_host": urlparse(config.url).netloc.rpartition("@")[2] or None,
         # Whether bodies were read. Two runs that differ here are not measuring
         # the same thing -- total_bytes counts only what was read, and the
         # latency of a released response excludes receiving it -- so `compare`
@@ -1881,7 +1882,8 @@ def print_multi_url_summary(results: "list[MultiUrlResult]", file: TextIO | None
 
     for i, r in enumerate(results, 1):
         rps = r.stats.total_requests / r.duration if r.duration > 0 else 0
-        url_display = r.url if len(r.url) <= 40 else r.url[:37] + "..."
+        shown = loggable_url(r.url)
+        url_display = shown if len(shown) <= 40 else shown[:37] + "..."
 
         # Compute percentiles
         p50 = p95 = p99 = 0.0

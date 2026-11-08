@@ -124,6 +124,8 @@ This runs the benchmark, captures the exit code (non-zero if thresholds are brea
 
 The master and every worker also receive `PYWRKR_WORKER_SECRET` from an SSM SecureString through the container `secrets` (see the `worker_secret` variable): a master bound to `0.0.0.0` refuses to start without it.
 
+The task definitions also set `PYWRKR_ROLE=master|worker`. pywrkr does not read it: the role comes from the container command (`--master` / `--worker`). The variable is only a label for whoever inspects a running task, and it enforces nothing.
+
 ### Worker Container Command
 
 Workers use the default Docker `ENTRYPOINT ["pywrkr"]` with:
