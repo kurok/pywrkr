@@ -547,10 +547,11 @@ Assertion regexes run against text the server under test chooses, on the event l
 `re` has no timeout. So `assert_body_regex` and the `assert_header` regex form search only the first
 8,192 characters of that text (the same bound `har-import` puts on URLs), and a match further in does
 not count. When the text is longer and the answer could depend on where it was cut, such as a
-lookahead that reads to the end like `(?!.*ERROR)` or `(?=[^E]*\Z)`; a backreference, conditional,
-atomic group, possessive repeat or lookahead inside a lookbehind; or an end anchor or word boundary in a match running up to the
-cut, the assertion fails as *undecided* rather than passing. A pattern that nests an unbounded repeat inside a repeat,
-the `(a+)+` shape behind catastrophic backtracking, logs a warning when the scenario loads. That
+lookahead that reads to the end like `(?!.*ERROR)` or `(?=[^E]*\Z)`; a backreference,
+conditional, atomic group, possessive repeat or lookahead inside a lookbehind; or an end anchor or
+word boundary in a match running up to the cut, the assertion fails as *undecided* rather than
+passing. A pattern that nests an unbounded repeat inside a repeat, the `(a+)+` shape behind
+catastrophic backtracking, logs a warning when the scenario loads. That
 check is a heuristic and misses some shapes, such as overlapping alternation like `(a|ab)*` and
 adjacent repeats like `\s*\s*$`. The limit bounds linear and quadratic patterns; cubic or
 exponential ones can still take a long time within it. For large JSON responses, prefer
@@ -624,10 +625,17 @@ steps:
 |--------|-----------|-------|
 | `json` | `$.a.b[0].c` | Dotted JSONPath subset: object keys, array indices (negative allowed), and `["quoted keys"]`. Wildcards, slices, filters, and recursive descent are not supported. `$` selects the whole document. |
 | `header` | `X-Session-Id` | Response header, matched case-insensitively. |
-| `regex` | `value="([^"]+)"` | Searched against the response body; capture group 1 is used. The pattern must have at least one group. |
+| `regex` | `value="([^"]+)"` | Searched against the first 8,192 characters of the response body; capture group 1 is used. The pattern must have at least one group. |
 
 Non-string JSON values keep their JSON spelling (`true`, not `True`); objects and arrays are
 re-serialized compactly, so a whole sub-document can be carried between steps.
+
+A `regex` rule is matched against text the server under test chooses, so it gets the same bound as
+the [assertion regexes](#scripted-scenarios): only the first 8,192 characters are searched, a pattern
+whose capture could depend on where a longer body was cut (a match running up to the cut, or a
+lookahead that reads to the end) fails as *undecided* rather than yielding a truncated value, and a
+nested-repetition pattern such as `(a+)+` logs a warning when the scenario loads. Use a `json` rule
+for values deep in a large JSON response.
 
 **Where `${var}` works:** the step `path`, header names and values, and the `body` — including
 inside nested JSON object/array bodies. Values are inserted verbatim, so URL-encode anything that

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import random
 import re
 import string
@@ -32,6 +33,10 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+from pywrkr.user_regex import SCAN_MAX, Undecided, bounded_search, has_nested_repetition
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "EXTRACT_SOURCES",
@@ -535,6 +540,17 @@ def compile_regex_extractor(var: str, expr: str) -> Extractor:
         raise ValueError(
             f"regex {expr!r} has no capture group; wrap the part to extract in parentheses"
         )
+    if has_nested_repetition(expr):
+        logger.warning(
+            "extract %r: regex %r repeats an unbounded repeat. Patterns with "
+            "catastrophic backtracking (e.g. '(a+)+') matched against a server's "
+            "response can hang the worker, since the server chooses the text; only "
+            "the first %d characters are searched. Prefer a pattern without nested "
+            "repetition, or a json / header extract.",
+            var,
+            expr,
+            SCAN_MAX,
+        )
     return Extractor(var=var, source="regex", expr=expr, pattern=pattern)
 
 
@@ -620,8 +636,21 @@ def _apply_one(
     pattern = rule.pattern
     if pattern is None:  # pragma: no cover - unreachable via compile_extractor
         raise ExtractError(f"regex rule {rule.expr!r} was not compiled")
-    match = pattern.search(_response_text(body, cache))
+    text = _response_text(body, cache)
+    # The server chooses the text and the match runs on the event loop, so
+    # the scan is bounded; see pywrkr.user_regex (#314).
+    match = bounded_search(pattern, text, whole_match=True)
+    if isinstance(match, Undecided):
+        raise ExtractError(
+            f"regex {rule.expr!r} undecided: the response body is longer than the "
+            f"{SCAN_MAX}-char scan limit and the match could depend on where it was cut"
+        )
     if match is None:
+        if len(text) > SCAN_MAX:
+            raise ExtractError(
+                f"regex {rule.expr!r} did not match the first {SCAN_MAX} characters "
+                "of the response body"
+            )
         raise ExtractError(f"regex {rule.expr!r} did not match the response body")
     captured = match.group(1)
     if captured is None:

@@ -1005,5 +1005,70 @@ class TestPlainStepsSkipResponseCapture(_CorrelationServerMixin, AioHTTPTestCase
         self.assertTrue(all(body is not None for _, body, _ in capturing))
 
 
+# ---------------------------------------------------------------------------
+# A user regex against server-supplied text (#314)
+# ---------------------------------------------------------------------------
+
+
+class TestRegexExtractorBounds(unittest.TestCase):
+    """Test the bounds and the warning, never a catastrophic match itself."""
+
+    def _extract(self, expr, body):
+        rules = {"v": compile_regex_extractor("v", expr)}
+        return apply_extractors(rules, body, {})
+
+    def test_regex_extractor_is_not_matched_beyond_the_cap(self):
+        from pywrkr.user_regex import SCAN_MAX
+
+        values, failures = self._extract(r"token=(\w+);", b"x" * SCAN_MAX + b"token=abc;")
+        self.assertEqual(values, {})
+        self.assertIn(f"did not match the first {SCAN_MAX} characters", failures[0])
+
+    def test_regex_extractor_still_matches_within_the_cap(self):
+        from pywrkr.user_regex import SCAN_MAX
+
+        body = b"token=abc;" + b"x" * (SCAN_MAX * 4)
+        values, failures = self._extract(r"token=(\w+);", body)
+        self.assertEqual((values, failures), ({"v": "abc"}, []))
+        values, failures = self._extract(r'"id":\s*(\d+)', b'{"id": 42}')
+        self.assertEqual(values, {"v": "42"})
+
+    def test_a_capture_running_into_the_cut_is_not_a_truncated_value(self):
+        """token=([a-z]+) would capture only the part of the token before the cut."""
+        from pywrkr.user_regex import SCAN_MAX
+
+        body = b" " * (SCAN_MAX - 10) + b"token=" + b"a" * 100
+        values, failures = self._extract(r"token=([a-z]+)", body)
+        self.assertEqual(values, {})
+        self.assertIn("undecided", failures[0])
+
+    def test_a_cut_dependent_pattern_is_undecided(self):
+        from pywrkr.user_regex import SCAN_MAX
+
+        body = b"id=1;" + b"x" * SCAN_MAX + b"ERROR"
+        values, failures = self._extract(r"(?s)id=(\d+);(?!.*ERROR)", body)
+        self.assertEqual(values, {})
+        self.assertIn("undecided", failures[0])
+
+    def test_regex_extractor_emits_a_backtracking_warning(self):
+        with self.assertLogs("pywrkr.templating", level="WARNING") as logs:
+            compile_regex_extractor("token", "(a+)+(b)")
+        message = "\n".join(logs.output)
+        self.assertIn("extract 'token'", message)
+        self.assertIn("'(a+)+(b)'", message)
+        self.assertIn("catastrophic backtracking (e.g. '(a+)+')", message)
+
+    def test_ordinary_extractor_patterns_do_not_warn(self):
+        for expr in (r'"token":\s*"([^"]+)"', r"name=\"csrf\" value=\"([^\"]+)\"", r"(\d{3})"):
+            with self.subTest(expr=expr), self.assertNoLogs("pywrkr.templating", "WARNING"):
+                compile_regex_extractor("v", expr)
+
+    def test_both_paths_share_one_bound(self):
+        from pywrkr import assertions, user_regex
+
+        self.assertEqual(assertions._ASSERT_MATCH_MAX, user_regex.SCAN_MAX)
+        self.assertIs(assertions._cut_sensitivity, user_regex.cut_sensitivity)
+
+
 if __name__ == "__main__":
     unittest.main()
