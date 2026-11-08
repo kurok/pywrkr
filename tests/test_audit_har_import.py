@@ -7,6 +7,8 @@ FAIL on the pre-fix code and PASS on the fixed code in
 
 import json
 import logging
+import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -1148,3 +1150,289 @@ def test_camel_case_names_are_printed(name):
     from pywrkr.har_import import _display_name
 
     assert _display_name(name) == name
+
+
+# --- #323: --domain with a port ----------------------------------------------
+
+
+def _domain_entries():
+    return [
+        _entry("http://localhost:8080/x"),
+        _entry("http://localhost:9000/y"),
+        _entry("http://example.com/z"),
+        _entry("https://api.example.com/v"),
+    ]
+
+
+def _kept(domains):
+    return [
+        e.url for e in filter_entries(_domain_entries(), HarImportConfig(allowed_domains=domains))
+    ]
+
+
+def test_domain_filter_accepts_a_host_with_a_port():
+    assert _kept(["localhost:8080"]) == ["http://localhost:8080/x"]
+
+
+def test_domain_filter_bare_host_matches_any_port():
+    assert _kept(["localhost"]) == ["http://localhost:8080/x", "http://localhost:9000/y"]
+
+
+def test_domain_filter_still_rejects_another_host():
+    assert "http://example.com/z" not in _kept(["localhost"])
+    assert _kept(["localhost:8080"]) == ["http://localhost:8080/x"]
+
+
+def test_domain_filter_default_port_and_subdomains():
+    assert _kept(["example.com:443"]) == ["https://api.example.com/v"]
+    assert _kept(["EXAMPLE.com"]) == ["http://example.com/z", "https://api.example.com/v"]
+    assert _kept(["example.com:80"]) == ["http://example.com/z"]
+
+
+def test_domain_filter_ipv6_with_a_port():
+    entries = [_entry("http://[::1]:8080/a"), _entry("http://[::1]:9000/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["[::1]:8080"]))
+    assert [e.url for e in kept] == ["http://[::1]:8080/a"]
+
+
+def test_empty_filter_error_names_the_domain_values(tmp_path):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "http://localhost:8080/x", "method": "GET"},
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+    with pytest.raises(ValueError) as exc:
+        convert_har(path, config=HarImportConfig(allowed_domains=["127.0.0.1:8080"]))
+    message = str(exc.value)
+    assert "'127.0.0.1:8080'" in message
+    assert "localhost:8080" in message
+    assert "a port only when one is given" in message
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("api.example.com", ("api.example.com", None)),
+        (" Localhost:8080 ", ("localhost", 8080)),
+        ("[::1]:8080", ("::1", 8080)),
+        ("::1", ("::1", None)),
+        ("http://localhost:8080/path?q=1", ("localhost", 8080)),
+        ("https://Example.com", ("example.com", 443)),
+        ("fe80::1%eth0", ("fe80::1%eth0", None)),
+        ("0:0:0:0:0:0:0:1", ("::1", None)),
+        ("Example.COM.:8080", ("example.com", 8080)),
+    ],
+)
+def test_split_domain(value, expected):
+    from pywrkr.har_import import _split_domain
+
+    assert _split_domain(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "localhost:99999",
+        "host:abc",
+        "http://localhost:99999/",
+        "host:80:90",
+        ":8080",
+        "",
+        "  ",
+        "localhost:+80",
+        "localhost:",
+        "localhost:0",
+        "localhost#8080",
+        "h:8080?x",
+        "h/8080",
+        "localhost:\u0668\u0660",
+    ],
+)
+def test_split_domain_rejects_a_bad_port(value):
+    from pywrkr.har_import import _split_domain
+
+    with pytest.raises(ValueError, match="expected host or host:port"):
+        _split_domain(value)
+
+
+@pytest.mark.parametrize(
+    "value", ["http://admin:s3cret@staging.test:8080/", "admin:s3cret@staging.test", "u:p@h:99999"]
+)
+def test_split_domain_never_echoes_credentials(value):
+    from pywrkr.har_import import _split_domain
+
+    with pytest.raises(ValueError) as exc:
+        _split_domain(value)
+    assert "s3cret" not in str(exc.value) and ":p@" not in str(exc.value)
+
+
+def test_multi_host_error_masks_userinfo():
+    entries = [_entry("http://user:s3cret@h.test/a"), _entry("http://h.test/b")]
+    with pytest.raises(ValueError) as exc:
+        har_to_scenario(entries, HarImportConfig())
+    message = str(exc.value)
+    assert "s3cret" not in message and "user" not in message
+    assert "http://***@h.test" in message
+
+
+@pytest.mark.parametrize("value", ["http://h?next=a@b", "http://h#x@y"])
+def test_split_domain_at_sign_outside_the_authority_is_not_credentials(value):
+    from pywrkr.har_import import _split_domain
+
+    assert _split_domain(value) == ("h", 80)
+
+
+def test_domain_filter_does_not_decode_a_hostname():
+    entries = [_entry("http://ex%61mple.com/a"), _entry("http://example.com/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["example.com"]))
+    assert [e.url for e in kept] == ["http://example.com/b"]
+
+
+def test_domain_filter_accepts_a_pasted_url():
+    assert _kept(["http://localhost:8080/"]) == ["http://localhost:8080/x"]
+
+
+def test_domain_filter_matches_an_ip_address_exactly():
+    entries = [_entry("http://127.0.0.1:8080/a"), _entry("http://10.0.0.1/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["0.0.1"]))
+    assert kept == []
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["127.0.0.1"]))
+    assert [e.url for e in kept] == ["http://127.0.0.1:8080/a"]
+    # Nor does an IP --domain take in a name ending in it.
+    kept = filter_entries(
+        [_entry("http://foo.10.0.0.1/")], HarImportConfig(allowed_domains=["10.0.0.1"])
+    )
+    assert kept == []
+
+
+@pytest.mark.parametrize(
+    ("domain", "url"),
+    [
+        ("0:0:0:0:0:0:0:1", "http://[::1]:8080/x"),
+        ("fe80::1%eth0", "http://[fe80::1%25eth0]/x"),
+        ("example.com", "http://Example.com./x"),
+        ("example.com.", "http://example.com/x"),
+    ],
+)
+def test_domain_filter_compares_canonical_hosts(domain, url):
+    kept = filter_entries([_entry(url)], HarImportConfig(allowed_domains=[domain]))
+    assert [e.url for e in kept] == [url]
+
+
+@pytest.mark.parametrize(
+    "urls",
+    [
+        ["http://example.com/a", "http://example.com./b"],
+        ["http://[::1]:8080/a", "http://[0:0:0:0:0:0:0:1]:8080/b"],
+    ],
+)
+def test_host_spellings_the_filter_merges_are_one_origin(urls):
+    domain = "example.com" if "example" in urls[0] else "::1"
+    kept = filter_entries([_entry(u) for u in urls], HarImportConfig(allowed_domains=[domain]))
+    assert len(kept) == 2
+    scenario = har_to_scenario(kept, HarImportConfig())
+    assert len(scenario["steps"]) == 2
+
+
+def test_default_port_spelled_out_is_one_origin():
+    """--domain example.com:80 keeps both spellings; the scenario must accept them."""
+    entries = [_entry("http://example.com/a"), _entry("http://Example.com:80/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["example.com:80"]))
+    assert len(kept) == 2
+    scenario = har_to_scenario(kept, HarImportConfig())
+    assert len(scenario["steps"]) == 2
+
+
+def test_empty_filter_hint_strips_userinfo_escapes_and_caps(tmp_path):
+    urls = ["http://user:s3cret@h0.test/x?token=abc", "http://h\x1bx.test/"] + [
+        f"http://h{i}.test/" for i in range(1, 12)
+    ]
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {"request": {"url": u, "method": "GET"}, "response": {"status": 200}} for u in urls
+            ]
+        },
+    )
+    with pytest.raises(ValueError) as exc:
+        convert_har(path, config=HarImportConfig(allowed_domains=["nowhere.test"]))
+    message = str(exc.value)
+    assert "s3cret" not in message and "token" not in message
+    assert "\x1b" not in message
+    assert "h10.test" not in message
+    assert message.endswith(" ....")
+
+
+def test_empty_filter_hint_only_when_domain_emptied_it(tmp_path):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "http://localhost:8080/app.css", "method": "GET"},
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+    with pytest.raises(ValueError) as exc:
+        convert_har(path, config=HarImportConfig(allowed_domains=["localhost"]))
+    assert "--domain was" not in str(exc.value)
+
+
+def test_domain_filter_pasted_https_url_means_that_origin():
+    """https://example.com is the https origin, not http entries as well."""
+    entries = [_entry("http://example.com/a"), _entry("https://example.com/b")]
+    kept = filter_entries(entries, HarImportConfig(allowed_domains=["https://example.com"]))
+    assert [e.url for e in kept] == ["https://example.com/b"]
+
+
+def test_userinfo_keeps_origins_apart():
+    """Merging http://user:pw@h with http://h would replay the credentials on every step."""
+    entries = [_entry("http://user:pw@h.test/a"), _entry("http://h.test/b")]
+    with pytest.raises(ValueError, match="spans multiple hosts"):
+        har_to_scenario(entries, HarImportConfig())
+
+
+def test_empty_filter_hint_brackets_ipv6(tmp_path):
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {
+                    "request": {"url": "http://[::1]:8080/x", "method": "GET"},
+                    "response": {"status": 200},
+                }
+            ]
+        },
+    )
+    with pytest.raises(ValueError) as exc:
+        convert_har(path, config=HarImportConfig(allowed_domains=["[::1]:9000"]))
+    assert "[::1]:8080" in str(exc.value)
+
+
+def test_cli_reports_a_bad_domain_cleanly(tmp_path, capsys):
+    from pywrkr.main import main
+
+    path = _write_har(
+        tmp_path,
+        {
+            "entries": [
+                {"request": {"url": "http://h/x", "method": "GET"}, "response": {"status": 200}}
+            ]
+        },
+    )
+    with patch.object(sys, "argv", ["pywrkr", "har-import", path, "--domain", "localhost:99999"]):
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "expected host or host:port" in err
+    assert "Traceback" not in err

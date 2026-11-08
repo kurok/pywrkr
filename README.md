@@ -118,7 +118,7 @@ pywrkr har-import recording.har --no-think-time -o scenario.json               #
 | `--format` | Output format: `scenario` (default) or `url-file` |
 | `--name` | Scenario name (default: derived from filename) |
 | `--include-static` | Include static assets (CSS, JS, images, fonts) |
-| `--domain` | Only include requests to this domain (repeatable) |
+| `--domain` | Only include requests to this host and its subdomains (repeatable). `host:port` also requires that port; a bare host matches any port |
 | `--exclude` | Exclude URLs matching regex pattern (repeatable) |
 | `--include` | Only include URLs matching regex pattern (repeatable) |
 | `--preserve-headers` | Keep original request headers |

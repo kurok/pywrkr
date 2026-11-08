@@ -9,13 +9,14 @@ HAR spec: http://www.softwareishard.com/blog/har-12-spec/
 import base64
 import binascii
 import bisect
+import ipaddress
 import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from urllib.parse import parse_qsl, unquote_plus, urlparse
+from urllib.parse import ParseResult, parse_qsl, unquote_plus, urlparse, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,116 @@ def parse_har(path: str) -> list[HarEntry]:
     return entries
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _split_domain(value: str) -> tuple[str, int | None]:
+    """``--domain`` value -> (lower-cased host, port or None).
+
+    Accepts ``api.example.com``, ``localhost:8080``, ``[::1]:8080``, and a
+    pasted URL such as ``http://localhost:8080/path`` (its host and port are
+    used; a URL without a port means its scheme's default). A bare IPv6
+    address without brackets is taken as a host.
+
+    Raises:
+        ValueError: The value has no host, or a port that is not a number in
+            1-65535.
+    """
+    text = value.strip()
+    authority = re.split(r"[/?#]", text.partition("://")[2], maxsplit=1)[0]
+    if "@" in authority or ("://" not in text and "@" in text):
+        # Never echo a value that carries credentials.
+        raise ValueError("--domain: give host or host:port, not a URL with user:password@")
+    bad = ValueError(f"--domain {value!r}: expected host or host:port with a port of 1-65535")
+    if not text:
+        raise bad
+    if "://" not in text and any(c in text for c in "/?#"):
+        # urlsplit would cut the value there and drop a port after it.
+        raise bad
+    if "://" not in text and _is_ip_literal(text.split("%", 1)[0]) and ":" in text:
+        # An unbracketed IPv6 address: all of it is the host.
+        return _canon_host(text), None
+    try:
+        parts = urlsplit(text if "://" in text else "//" + text)
+        host = parts.hostname or ""
+        port = parts.port
+    except ValueError:
+        raise bad from None
+    if parts.netloc.endswith(":") or port == 0:
+        # "localhost:" would otherwise match every port, and port 0 nothing.
+        raise bad
+    if port is not None:
+        # urllib's port parsing differs across Python versions (``+80``);
+        # accept only ASCII digits.
+        port_text = parts.netloc.rpartition(":")[2]
+        if not (port_text.isascii() and port_text.isdigit()):
+            raise bad
+    host = _canon_host(host)
+    if not host:
+        raise bad
+    if port is None and parts.scheme in _DEFAULT_PORTS:
+        # A pasted https://example.com means that origin, not every port.
+        port = _DEFAULT_PORTS[parts.scheme]
+    return host, port
+
+
+def _canon_host(host: str) -> str:
+    """Lower-cased host without a trailing dot; an IP address in its standard form.
+
+    So ``Example.com.`` matches ``example.com``, ``0:0:0:0:0:0:0:1`` matches
+    ``[::1]``, and a URL's ``%25``-escaped zone id matches ``fe80::1%eth0``.
+    """
+    # Decode only the %25 of an IPv6 zone id: decoding a name would merge
+    # ex%61mple.com with example.com while base_url keeps the raw spelling.
+    host = host.strip("[]").lower().rstrip(".")
+    if ":" in host:
+        host = host.replace("%25", "%", 1)
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return host
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _effective_port(parsed: ParseResult) -> int | None:
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    return port if port is not None else _DEFAULT_PORTS.get(parsed.scheme)
+
+
+def _domain_allowed(parsed: ParseResult, allowed: list[tuple[str, int | None]]) -> bool:
+    """Whether an entry's URL passes ``--domain``, given pre-split values.
+
+    A bare host matches that host and its subdomains on any port; an IP
+    address matches only itself. A ``host:port`` value also requires the
+    port, where a URL without one counts as its scheme's default (80 / 443).
+    So the address a recording was made against, ``--domain localhost:8080``,
+    is accepted as typed.
+    """
+    host = _canon_host(parsed.hostname or "")
+    host_is_ip = _is_ip_literal(host)
+    port = _effective_port(parsed)
+    for want_host, want_port in allowed:
+        # Subdomain matching is for names: an IP address only matches itself,
+        # so --domain 0.0.1 does not take in 127.0.0.1.
+        if host != want_host and (
+            host_is_ip or _is_ip_literal(want_host) or not host.endswith("." + want_host)
+        ):
+            continue
+        if want_port is None or want_port == port:
+            return True
+    return False
+
+
 def filter_entries(
     entries: list[HarEntry],
     config: HarImportConfig,
@@ -284,7 +395,9 @@ def filter_entries(
     """Apply filters to HAR entries based on HarImportConfig.
 
     Raises:
-        ValueError: If any include or exclude pattern is not a valid regex.
+        ValueError: If any include or exclude pattern is not a valid regex, or
+            an ``allowed_domains`` value is empty, has no host, or has a port
+            that is not a number in 1-65535.
     """
     # Compile user-supplied patterns once up front so an invalid regex fails
     # before we touch any entries, and so each URL is matched against
@@ -292,6 +405,7 @@ def filter_entries(
     excludes = _compile_patterns(config.exclude_patterns)
     includes = _compile_patterns(config.include_patterns)
 
+    allowed_domains = [_split_domain(d) for d in config.allowed_domains]
     result = []
     for entry in entries:
         # Drop non-HTTP(S) pseudo-requests (data:, blob:, about:) and
@@ -308,10 +422,8 @@ def filter_entries(
             continue
 
         # Domain filtering
-        if config.allowed_domains:
-            domain = urlparse(entry.url).hostname or ""
-            if not any(domain == d or domain.endswith("." + d) for d in config.allowed_domains):
-                continue
+        if allowed_domains and not _domain_allowed(parsed, allowed_domains):
+            continue
 
         # Exclude patterns
         if excludes and _matches_patterns(entry.url, excludes):
@@ -420,18 +532,40 @@ def har_to_scenario(
     # http/https mismatch on the same host is caught too. Refuse to produce that
     # silent-wrong-result scenario; surface the mismatch so the user can
     # disambiguate (e.g. --domain filtering).
+    # Keyed on scheme, canonical host and effective port, so example.com,
+    # Example.com.:80 and their IP spellings are one origin -- as --domain
+    # treats them.
     origins = []
+    seen_origins: set[tuple[str, str, str, int | str | None]] = set()
     for entry in entries:
         parsed = urlparse(entry.url)
-        origin = f"{parsed.scheme}://{parsed.netloc}"
-        if parsed.netloc and origin not in origins:
-            origins.append(origin)
+        if not parsed.netloc:
+            continue
+        # Userinfo stays in the key: base_url is the first entry's netloc, so
+        # merging http://user:pw@h with http://h would replay the credentials
+        # on every step. An unparseable port stays distinct too.
+        port: int | str | None = _effective_port(parsed)
+        if port is None and parsed.netloc.rpartition(":")[2] not in ("", parsed.netloc):
+            port = parsed.netloc
+        key = (
+            parsed.scheme,
+            parsed.netloc.rpartition("@")[0],
+            _canon_host(parsed.hostname or ""),
+            port,
+        )
+        if key not in seen_origins:
+            seen_origins.add(key)
+            # Never print credentials: mask the userinfo, keep it visible as
+            # the reason two otherwise equal origins differ.
+            userinfo, _, hostport = parsed.netloc.rpartition("@")
+            origins.append(f"{parsed.scheme}://{'***@' if userinfo else ''}{hostport}")
     if len(origins) > 1:
         raise ValueError(
             "HAR spans multiple hosts "
             f"({', '.join(origins)}); the scenario format uses a single "
             "base_url and would replay all steps against the first host. "
-            "Filter to one host with --domain, or use --format url-file "
+            "Filter to one host with --domain (host:port when they differ only by "
+            "port), or use --format url-file "
             "which preserves absolute URLs."
         )
 
@@ -927,9 +1061,34 @@ def convert_har(
     filtered = filter_entries(entries, config)
 
     if not filtered:
+        hint = ""
+        unfiltered = replace(config, allowed_domains=[])
+        if config.allowed_domains and filter_entries(entries, unfiltered):
+            # --domain is what emptied the result: say what it was compared to.
+            hosts: list[str] = []
+            for e in entries:
+                p = urlparse(e.url)
+                if p.scheme not in ("http", "https") or not p.hostname:
+                    continue
+                host = f"[{p.hostname}]" if ":" in p.hostname else p.hostname
+                try:
+                    shown = host + (f":{p.port}" if p.port is not None else "")
+                except ValueError:
+                    shown = host
+                shown = repr(shown)[1:-1][:80]
+                if shown not in hosts:
+                    hosts.append(shown)
+            hint = (
+                f" --domain was {', '.join(repr(d) for d in config.allowed_domains)}; "
+                "it matches a host and its subdomains (an IP address only itself), "
+                "and a port only when one is given. "
+                f"The recording's hosts are: {', '.join(hosts[:10]) or 'none'}"
+                + (" ..." if len(hosts) > 10 else "")
+                + "."
+            )
         raise ValueError(
             f"No requests remained after filtering {len(entries)} HAR entries. "
-            f"Try --include-static or adjusting --domain / --exclude filters."
+            f"Try --include-static or adjusting --domain / --exclude filters.{hint}"
         )
 
     as_scenario = output_format == "scenario"
