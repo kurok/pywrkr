@@ -8,6 +8,7 @@ HAR spec: http://www.softwareishard.com/blog/har-12-spec/
 
 import base64
 import binascii
+import bisect
 import json
 import logging
 import os
@@ -618,7 +619,7 @@ _CREDENTIAL_TEXT_RE = re.compile(
     r"(?-i:(?![a-z]))",
     re.IGNORECASE,
 )
-# "_" and "=" are left out so "access_token=<long token>" keeps its name.
+# "_" and "=" end a run so "access_token=<long token>" keeps its name.
 _OPAQUE_RUN_RE = re.compile(r"[A-Za-z0-9+/-]{64,}={0,2}")
 # A name is printed in the warning only when it looks like an identifier. A HAR
 # can hold a "field name" that is really a value -- a token used as a JSON key,
@@ -634,10 +635,16 @@ _FORM_BODY_RE = re.compile(r"[^=&\s]+=[^&\s]*(?:&[^=&\s]+=[^&\s]*)*")
 # Deeper JSON than this is kept as a string: encoding it again recurses once
 # per level and overflows the stack on some Python versions.
 _MAX_JSON_DEPTH = 200
+# Longer field names are treated as values, not judged.
+_MAX_NAME_LENGTH = 256
 
 
 def _is_credential_name(name: str) -> bool:
     """Whether a header, query, form or JSON field name looks like a credential."""
+    if len(name) > _MAX_NAME_LENGTH:
+        # A "name" this long is a value (a base64 blob posted as a form body);
+        # judging it would also cost time on every segment.
+        return False
     segments = [seg.lower() for seg in _NAME_SEGMENT_RE.findall(name)]
     compact = "".join(segments)
     # An ordinary word is cut out only where it lines up with the name's own
@@ -645,8 +652,10 @@ def _is_credential_name(name: str) -> bool:
     # (not "monkey"), "presignedUrl" (not "resign") and "login_by_password"
     # (not "bypass") still count.
     bounds = {0}
+    pos = 0
     for seg in segments:
-        bounds.add(max(bounds) + len(seg))
+        pos += len(seg)
+        bounds.add(pos)
     masked = list(compact)
     for word in _ORDINARY_WORDS:
         start = compact.find(word)
@@ -667,8 +676,29 @@ def _is_credential_name(name: str) -> bool:
 
 
 def _text_mentions_credential(text: str) -> bool:
-    """Whether free text names a credential, ignoring base64-like runs."""
-    return bool(_CREDENTIAL_TEXT_RE.search(_OPAQUE_RUN_RE.sub(" ", text)))
+    """Whether free text names a credential.
+
+    Random base64 spells "pwd" now and then, so a match inside a long opaque
+    run counts only when it is set off within the run -- by ``-``, ``/``, ``+``
+    or the run's own edges -- as in ``reset-password/<token>`` or
+    ``api/token/<token>``. A word buried in random characters does not count.
+    """
+    runs = [(m.start(), m.end()) for m in _OPAQUE_RUN_RE.finditer(text)]
+    starts = [start for start, _ in runs]
+    for match in _CREDENTIAL_TEXT_RE.finditer(text):
+        i = bisect.bisect_right(starts, match.start()) - 1
+        if i < 0 or match.end() > runs[i][1]:
+            return True  # not inside an opaque run
+        run_start, run_end = runs[i]
+        before_ok = match.start() == run_start or text[match.start() - 1] in "-/+"
+        after_ok = match.end() >= run_end or text[match.end()] in "-/+="
+        word = match.group()
+        # A short word in mixed case ("PWd") is what random base64 produces;
+        # people write "pwd" or "PWD".
+        case_ok = len(word) >= 5 or word.islower() or word.isupper()
+        if before_ok and after_ok and case_ok:
+            return True
+    return False
 
 
 def _credential_headers(headers: dict[str, str]) -> list[str]:

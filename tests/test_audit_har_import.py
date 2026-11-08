@@ -998,3 +998,74 @@ def test_har_import_cross_segment_names_warn_end_to_end(tmp_path, caplog):
     assert "request body fields common_key, login_by_password" in warning
     assert "S3CRET" not in warning
     assert "hunter2" not in warning
+
+
+def test_long_names_are_judged_in_linear_time():
+    """A base64 blob posted as a form body becomes one huge "field name"."""
+    import time
+
+    from pywrkr.har_import import _is_credential_name
+
+    start = time.perf_counter()
+    _is_credential_name("aB" * 40000)
+    _is_credential_name("aB" * 100)
+    assert time.perf_counter() - start < 1.0
+
+
+def test_har_import_large_form_shaped_base64_body_is_fast_and_quiet(tmp_path, caplog):
+    import base64
+    import random
+    import time
+
+    blob = base64.b64encode(random.Random(313).randbytes(600_000)).decode()
+    path = _body_har(tmp_path, blob, "application/x-www-form-urlencoded")
+
+    start = time.perf_counter()
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+    assert time.perf_counter() - start < 5.0
+    assert not _credential_warnings(caplog)
+
+
+_TOKEN64 = "ab12" * 16
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"https://a.example/reset-password/{_TOKEN64}",
+        f"link: https://a.example/api/token/{_TOKEN64}",
+        f"api-key-{_TOKEN64}",
+        f"client-secret-{_TOKEN64}",
+        f"token-{_TOKEN64}",
+        f"pwd/{_TOKEN64}",
+        f"secret+{_TOKEN64}",
+    ],
+)
+def test_credential_word_joined_to_a_long_token_still_counts(text):
+    from pywrkr.har_import import _text_mentions_credential
+
+    assert _text_mentions_credential(text)
+
+
+def test_har_import_reset_link_in_json_warns(tmp_path, caplog):
+    body = json.dumps({"callback": f"https://a.example/reset-password/{_TOKEN64}"})
+    path = _body_har(tmp_path, body)
+
+    with caplog.at_level(logging.WARNING):
+        convert_har(path)
+
+    warning = _credential_warnings(caplog)
+    assert "1 request body whose text mentions" in warning
+    assert _TOKEN64 not in warning
+
+
+def test_random_base64_does_not_count_as_credential_text():
+    import base64
+    import random
+
+    from pywrkr.har_import import _text_mentions_credential
+
+    for seed in range(100):
+        data = base64.b64encode(random.Random(seed).randbytes(100_000)).decode()
+        assert not _text_mentions_credential(data), seed
