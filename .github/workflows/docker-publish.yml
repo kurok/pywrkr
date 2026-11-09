@@ -163,9 +163,9 @@ jobs:
         run: .github/scripts/check-image.sh "$(echo "$IMAGE_TAGS" | head -n1)"
 
       - name: Attest build provenance
-        # Provenance is attested for the GitHub Container Registry subject only:
-        # the attestation is stored in GitHub's OCI referrers store, which Docker
-        # Hub does not offer. The Docker Hub image carries no attestation.
+        # The attestation is stored as an OCI referrer next to the image, in
+        # every registry the image was pushed to, and names every tag of both
+        # registries -- so the Docker Hub image is attested as well.
         uses: actions/attest-build-provenance@b3e506e8c389afc651c5bacf2b8f2a1ea0557215  # v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
