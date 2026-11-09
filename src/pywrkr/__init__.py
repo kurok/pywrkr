@@ -313,38 +313,6 @@ from pywrkr.workers import (
     run_user_simulation,
 )
 
-# Worker coroutines leaked into the package namespace before the library API
-# existed. They stay importable for one minor release so nothing breaks
-# overnight, but reaching for them now says so.
-_DEPRECATED_ATTRS = {
-    "worker": "pywrkr.workers",
-    "user_worker": "pywrkr.workers",
-    "scenario_worker": "pywrkr.workers",
-    "show_progress": "pywrkr.workers",
-    "create_trace_config": "pywrkr.backends",
-    "make_url": "pywrkr.workers",
-    "LiveDashboard": "pywrkr.workers",
-}
-
-
-def __getattr__(name: str):
-    """Serve deprecated names with a warning (PEP 562)."""
-    module_path = _DEPRECATED_ATTRS.get(name)
-    if module_path is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    import warnings
-
-    warnings.warn(
-        f"pywrkr.{name} is an internal helper and is no longer part of the public "
-        f"API; import it from {module_path} if you really need it. "
-        f"See pywrkr.__all__ for the supported surface.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return getattr(importlib.import_module(module_path), name)
-
-
 try:
     from importlib.metadata import PackageNotFoundError, version
 

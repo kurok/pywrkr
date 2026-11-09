@@ -10,7 +10,6 @@ import re
 import signal
 import tempfile
 import unittest
-import warnings
 from unittest.mock import patch
 
 from aiohttp import web
@@ -49,15 +48,21 @@ class TestPublicSurface(unittest.TestCase):
         for name in ("worker", "user_worker", "scenario_worker", "make_url", "LiveDashboard"):
             self.assertNotIn(name, pywrkr.__all__, name)
 
-    def test_deprecated_names_still_import_with_a_warning(self):
-        for name in ("worker", "user_worker", "scenario_worker", "make_url", "LiveDashboard"):
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                value = getattr(pywrkr, name)
-            self.assertIsNotNone(value, name)
-            self.assertEqual(len(caught), 1, name)
-            self.assertTrue(issubclass(caught[0].category, DeprecationWarning), name)
-            self.assertIn("pywrkr.workers", str(caught[0].message))
+    def test_removed_worker_internals_no_longer_import(self):
+        # The 2.0 deprecation shims are gone; the real homes still work.
+        for name in (
+            "worker",
+            "user_worker",
+            "scenario_worker",
+            "show_progress",
+            "create_trace_config",
+            "make_url",
+            "LiveDashboard",
+        ):
+            with self.assertRaises(AttributeError, msg=name):
+                getattr(pywrkr, name)
+        from pywrkr.backends import create_trace_config  # noqa: F401
+        from pywrkr.workers import make_url, worker  # noqa: F401
 
     def test_unknown_attribute_still_raises(self):
         with self.assertRaises(AttributeError):
