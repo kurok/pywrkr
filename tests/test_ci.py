@@ -892,6 +892,7 @@ class TestInfraHardening(unittest.TestCase):
             "terraform state pull",
             "count_state_resources.py",
             "(404)",
+            "terraform state rm",
         ):
             with self.subTest(marker=marker):
                 self.assertTrue(marker in pipeline, f"the pipeline lacks {marker}")
@@ -946,6 +947,13 @@ class TestInfraHardening(unittest.TestCase):
         )
         self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-loadtest-")[0], 0)
         self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-staging-")[0], 3)
+        # An environment whose name extends this one's is not this one.
+        state = state.replace("pywrkr-loadtest-use1", "pywrkr-dev-eu-use1")
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-dev-")[0], 3)
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-dev-eu-")[0], 0)
+
+    def test_state_resource_count_reports_an_unreadable_state(self):
+        self.assertEqual(self._count_state("{not json")[0], 2)
 
     def test_multi_region_state_does_not_hold_the_worker_secret(self):
         """The secret was a resource attribute, so terraform wrote it to state

@@ -80,7 +80,11 @@ pipeline {
                     def missing = requested.findAll { region ->
                         def name = "/${PROJECT_NAME}-${params.ENVIRONMENT}-${regionCodes[region]}/pywrkr/worker-secret"
                         // A plain String would come back in clear through the data source.
-                        sh(script: "aws ssm describe-parameters --region ${region} --parameter-filters Key=Name,Values=${name} --query 'Parameters[0].Type' --output text | grep -qx SecureString", returnStatus: true) != 0
+                        def type = sh(script: "aws ssm describe-parameters --region ${region} --parameter-filters Key=Name,Values=${name} --query 'Parameters[0].Type' --output text 2>&1 || echo CHECK_FAILED", returnStdout: true).trim()
+                        if (type.contains('CHECK_FAILED')) {
+                            error("Could not check the worker secret in ${region} (permissions or credentials?): ${type}")
+                        }
+                        type != 'SecureString'
                     }
                     if (missing) {
                         error("No SecureString worker secret in ${missing}: create /${PROJECT_NAME}-${params.ENVIRONMENT}-<region code>/pywrkr/worker-secret in each (see infra/multi-region/README.md)")
@@ -251,10 +255,15 @@ tags = {
                             MIGRATE=""
                             if [ -f terraform.tfstate ]; then
                               # Only state written for this ENVIRONMENT may go under its key.
-                              LOCAL=$($COUNT_STATE --name-prefix "${PROJECT_NAME}-${ENVIRONMENT}-" < terraform.tfstate) || {
+                              RC=0
+                              LOCAL=$($COUNT_STATE --name-prefix "${PROJECT_NAME}-${ENVIRONMENT}-" < terraform.tfstate) || RC=$?
+                              if [ "$RC" = "3" ]; then
                                 echo "ERROR: the workspace's terraform.tfstate belongs to another ENVIRONMENT than ${ENVIRONMENT}; run that one, or reconcile by hand."
                                 exit 1
-                              }
+                              elif [ "$RC" != "0" ]; then
+                                echo "ERROR: the workspace's terraform.tfstate could not be read; reconcile it by hand."
+                                exit 1
+                              fi
                               if [ "$LOCAL" = "0" ]; then
                                 # Left by a run that destroyed everything: nothing to keep.
                                 rm -f terraform.tfstate terraform.tfstate.backup
@@ -287,12 +296,23 @@ tags = {
                         // when the state cannot be read, which fails this step.
                         def existing = sh(script: '''
                             set -e
+                            trap 'rm -f .state.json' EXIT
                             terraform state pull > .state.json
                             python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" < .state.json
-                            rm -f .state.json
                         ''', returnStdout: true).trim().toInteger()
                         if (existing > 0 && !params.ADOPT_EXISTING_STATE) {
                             error("ENVIRONMENT '${params.ENVIRONMENT}' already has ${existing} resource(s) in its state, from an earlier run or a manual deployment. Use another ENVIRONMENT, destroy them first, or set ADOPT_EXISTING_STATE.")
+                        }
+                        if (existing > 0) {
+                            // State from before #315 still manages the worker secret. The
+                            // removed blocks forget it on apply, but a destroy ignores them,
+                            // and this build destroys after a failed apply: forget it now.
+                            sh '''
+                                set -e
+                                terraform state list | grep -E '(aws_ssm_parameter|random_password)[.]worker_secret' > .legacy || true
+                                while read -r address; do terraform state rm "$address"; done < .legacy
+                                rm -f .legacy
+                            '''
                         }
                         sh 'terraform plan -out=tfplan'
                         // Set before apply: a partly applied run still needs its destroy.
