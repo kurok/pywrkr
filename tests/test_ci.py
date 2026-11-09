@@ -966,6 +966,22 @@ class TestInfraHardening(unittest.TestCase):
         self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-dev-")[0], 3)
         self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-dev-eu-")[0], 0)
 
+    def test_state_resource_count_accepts_a_shared_only_state(self):
+        """A legacy state holding only the ECR repository is this environment's."""
+        state = json.dumps(
+            {
+                "resources": [
+                    {
+                        "mode": "managed",
+                        "module": "module.shared",
+                        "instances": [{"attributes": {"name": "pywrkr-dev-pywrkr"}}],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-dev-"), (0, "1"))
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-de-")[0], 3)
+
     def test_state_resource_count_reports_an_unreadable_state(self):
         self.assertEqual(self._count_state("{not json")[0], 2)
 

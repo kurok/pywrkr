@@ -25,8 +25,9 @@ import json
 import re
 import sys
 
-# The region codes the stack's names carry (infra/multi-region/terraform/main.tf).
-REGION_CODES = ("use1", "euw1", "apse1")
+# What follows <project>-<environment>- in the stack's names: a region code
+# (infra/multi-region/terraform/main.tf) or the shared ECR repository's "pywrkr".
+NAME_SUFFIXES = ("use1", "euw1", "apse1", "pywrkr")
 
 
 def count_managed(state: dict, module_prefix: str = "") -> int:
@@ -57,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         # The region code must follow the prefix directly, so "pywrkr-dev-"
         # does not accept "pywrkr-dev-eu-use1".
         regional = re.compile(
-            re.escape(args.name_prefix) + "(?:" + "|".join(REGION_CODES) + ")(?![a-z0-9])"
+            re.escape(args.name_prefix) + "(?:" + "|".join(NAME_SUFFIXES) + ")(?![a-z0-9])"
         )
         if not any(regional.search(json.dumps(r)) for r in managed):
             print(f"state does not belong to {args.name_prefix!r}", file=sys.stderr)

@@ -77,17 +77,21 @@ pipeline {
                     }
                     // The worker secret is created out of band (#315): fail here, with
                     // the name to create, rather than at terraform plan.
-                    def missing = requested.findAll { region ->
+                    // A plain String would come back in clear through the data source,
+                    // and the task execution role can decrypt only the aws/ssm key.
+                    def missing = []
+                    for (region in requested) {
                         def name = "/${PROJECT_NAME}-${params.ENVIRONMENT}-${regionCodes[region]}/pywrkr/worker-secret"
-                        // A plain String would come back in clear through the data source.
-                        def type = sh(script: "aws ssm describe-parameters --region ${region} --parameter-filters Key=Name,Values=${name} --query 'Parameters[0].Type' --output text 2>&1 || echo CHECK_FAILED", returnStdout: true).trim()
-                        if (type.contains('CHECK_FAILED')) {
-                            error("Could not check the worker secret in ${region} (permissions or credentials?): ${type}")
+                        def found = sh(script: "aws ssm describe-parameters --region ${region} --parameter-filters Key=Name,Values=${name} --query 'Parameters[0].[Type,KeyId]' --output text 2>ssm-check.err || { echo CHECK_FAILED; cat ssm-check.err; }", returnStdout: true).trim()
+                        if (found.contains('CHECK_FAILED')) {
+                            error("Could not check the worker secret in ${region} (permissions or credentials?): ${found}")
                         }
-                        type != 'SecureString'
+                        if ((found.split(/\s+/) as List) != ['SecureString', 'alias/aws/ssm']) {
+                            missing << region
+                        }
                     }
                     if (missing) {
-                        error("No SecureString worker secret in ${missing}: create /${PROJECT_NAME}-${params.ENVIRONMENT}-<region code>/pywrkr/worker-secret in each (see infra/multi-region/README.md)")
+                        error("No worker secret in ${missing} as a SecureString under the aws/ssm key: create /${PROJECT_NAME}-${params.ENVIRONMENT}-<region code>/pywrkr/worker-secret in each (see infra/multi-region/README.md)")
                     }
                     def regions = params.AWS_REGIONS.split(',').collect { it.trim() }
                     def workerCount = params.WORKER_COUNT_PER_REGION.toInteger()
@@ -251,12 +255,12 @@ tags = {
                         sh '''
                             set -e
                             KEY="pywrkr/multi-region/${ENVIRONMENT}/terraform.tfstate"
-                            COUNT_STATE="python3 ${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py"
+                            count_state() { python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" "$@"; }
                             MIGRATE=""
                             if [ -f terraform.tfstate ]; then
                               # Only state written for this ENVIRONMENT may go under its key.
                               RC=0
-                              LOCAL=$($COUNT_STATE --name-prefix "${PROJECT_NAME}-${ENVIRONMENT}-" < terraform.tfstate) || RC=$?
+                              LOCAL=$(count_state --name-prefix "${PROJECT_NAME}-${ENVIRONMENT}-" < terraform.tfstate) || RC=$?
                               if [ "$RC" = "3" ]; then
                                 echo "ERROR: the workspace's terraform.tfstate belongs to another ENVIRONMENT than ${ENVIRONMENT}; run that one, or reconcile by hand."
                                 exit 1
@@ -312,8 +316,11 @@ tags = {
                             // and this build destroys after a failed apply: forget it now.
                             sh '''
                                 set -e
-                                terraform state list | grep -E '(aws_ssm_parameter|random_password)[.]worker_secret' > .legacy || true
-                                while read -r address; do terraform state rm "$address"; done < .legacy
+                                # Managed resources only, not data.aws_ssm_parameter.worker_secret.
+                                terraform state list | grep -E '[]][.](aws_ssm_parameter|random_password)[.]worker_secret$' > .legacy || true
+                                # One state write, not one per address: each leaves a version.
+                                set -f
+                                if [ -s .legacy ]; then terraform state rm $(cat .legacy); fi
                                 rm -f .legacy
                             '''
                         }
