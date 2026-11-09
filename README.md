@@ -865,7 +865,7 @@ baseline set.
 #### GitHub Action
 
 ```yaml
-- uses: kurok/pywrkr@v2.0.0
+- uses: kurok/pywrkr@v2
   with:
     url: http://localhost:8080/
     args: -c 50 -d 30
@@ -882,7 +882,7 @@ with twenty pushes has one report, not twenty.
 Gate on a baseline instead of, or alongside, absolute thresholds:
 
 ```yaml
-- uses: kurok/pywrkr@v2.0.0
+- uses: kurok/pywrkr@v2
   with:
     url: http://localhost:8080/
     args: -c 50 -d 30
@@ -916,7 +916,7 @@ Outputs: `passed`, `verdict` (`pass` / `threshold` / `regression` / `error`), `p
 downstream step can tell "no data" from "zero".
 
 ```yaml
-- uses: kurok/pywrkr@v2.0.0
+- uses: kurok/pywrkr@v2
   id: perf
   with: { url: http://localhost:8080/, args: -c 50 -d 30, soft-fail: "true" }
 - run: echo "p95 was ${{ steps.perf.outputs.p95 }}s at ${{ steps.perf.outputs.rps }} req/s"
