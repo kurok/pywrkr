@@ -264,8 +264,8 @@ docker pull ghcr.io/kurok/pywrkr:latest
 docker pull docker.io/ryabikov/pywrkr:latest
 ```
 
-Both registries carry the same tags — `latest`, the release version (`1.6.0`), the minor line
-(`1.6`) and the commit (`sha-…`). Run it like the CLI:
+Both registries carry the same tags — `latest`, the release version (`2.0.0`), the minor line
+(`2.0`) and the commit (`sha-…`). Run it like the CLI:
 
 ```bash
 docker run --rm ghcr.io/kurok/pywrkr:latest https://example.com -c 10 -d 5

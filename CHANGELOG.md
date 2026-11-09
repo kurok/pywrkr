@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-09
+
 ### Added
 
 - `--worker-wait-timeout SECONDS` (or `PYWRKR_WORKER_WAIT_TIMEOUT`, or `run_master(..., worker_wait_timeout=)`) sets how long a distributed master waits for its `--expect-workers` workers to connect before giving up and exiting 1. The default stays 300 s; the timeout message now names the window it waited. (#322)
@@ -25,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pip install pywrkr[security]` on Python 3.10 no longer installs `pip-audit` (it still installs `bandit`): pip-audit's file cache needs `filelock`, and no filelock release that fixes GHSA-8mx5-7m5m-r77g supports 3.10. Use Python 3.11+ to run pip-audit. (#312)
 - **Breaking:** `pywrkr --master` on a non-loopback `--bind` — including the default `0.0.0.0` — no longer starts without a worker secret, and `run_master(...)` raises `ValueError` for that case. To upgrade, set the same `PYWRKR_WORKER_SECRET` (or `--worker-secret`) on the master and every worker, or bind a local-only master with `--bind 127.0.0.1`. (#303)
 - **Breaking:** `pywrkr --worker` pointed at a non-loopback master no longer connects without a worker secret, and `run_worker_node(...)` returns 1 for that case. Set the same `PYWRKR_WORKER_SECRET` on the master and every worker, or run both against `127.0.0.1`. (#304)
-- **Terraform upgrade:** both stacks take a sensitive `worker_secret` variable, store it in an SSM SecureString and hand it to the master and every worker as `PYWRKR_WORKER_SECRET` through the container `secrets`; left `null`, a random secret is generated per deployment. **The principal that runs terraform now needs SSM parameter permissions on `parameter/pywrkr-*`** (see the updated policies in `infra/README.md` and `infra/multi-region/README.md`), and `terraform init` pulls two new providers, `hashicorp/random` and `hashicorp/time`. The execution role gets `ssm:GetParameters` on that one parameter only; the secret never appears in the task definition, so `terraform plan` keeps showing container-definition changes. (#303)
+- **Terraform upgrade:** the single-region stack takes a sensitive `worker_secret` variable, store it in an SSM SecureString and hand it to the master and every worker as `PYWRKR_WORKER_SECRET` through the container `secrets`; left `null`, a random secret is generated per deployment. **The principal that runs terraform now needs SSM parameter permissions on `parameter/pywrkr-*`** (see the updated policies in `infra/README.md` and `infra/multi-region/README.md`), and `terraform init` pulls two new providers, `hashicorp/random` and `hashicorp/time`. The execution role gets `ssm:GetParameters` on that one parameter only; the secret never appears in the task definition, so `terraform plan` keeps showing container-definition changes. (#303 The multi-region stack instead reads a SecureString the operator creates per region, and keeps its state in S3: see **Security** (#315) and `infra/multi-region/README.md`.
 
 ### Fixed
 
