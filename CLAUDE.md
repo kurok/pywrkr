@@ -6,7 +6,7 @@ Async Python HTTP benchmarking tool (wrk/ab-inspired) with virtual user simulati
 
 - Python 3.10+, async/await with aiohttp
 - Project packaging via `pyproject.toml` (src layout: `src/pywrkr/`)
-- Optional extras: `[tui]`, `[otel]`, `[dev]`, `[lint]`, `[security]`, `[all]`
+- Optional extras: `[tui]`, `[otel]`, `[http2]`, `[pytest]`, `[dev]`, `[lint]`, `[security]`, `[all]`
 
 ## Commands
 
@@ -83,8 +83,7 @@ Branches MUST use one of these prefixes — other names are **rejected** by GitH
 
 ### Pull Request Requirements (Enforced by Ruleset)
 
-- **1 approving review** required (dismiss stale reviews on new push)
-- **Last push approval** required — the person who pushes last cannot self-approve
+- **No approving review** required (0 approvals since 2026-11-08); a PR can merge itself once checks are green
 - **All review threads must be resolved** before merge
 - **Required linear history** — squash or rebase merges only
 - **Required status check**: `test (ubuntu-latest, 3.12)` must pass
@@ -92,15 +91,20 @@ Branches MUST use one of these prefixes — other names are **rejected** by GitH
 - No force pushes or branch deletion on `main`
 - Admin bypass is available for maintainers
 
-### CI Pipeline (5 Jobs)
+### CI Pipeline (`python-package.yml`)
 
 All jobs run on `push` to main and on every PR:
 
 1. **lint** — ruff format check + ruff lint
 2. **pre-commit** — trailing whitespace, EOF fixer, YAML/JSON check, ruff
-3. **test** — matrix: Ubuntu + macOS × Python 3.10/3.11/3.12/3.13 with coverage (85% threshold)
+3. **test** — Ubuntu × Python 3.10–3.13, macOS × 3.10 and 3.13 only, with coverage (85% threshold)
 4. **typecheck** — mypy with configured overrides
 5. **security** — bandit + pip-audit
+6. **test-otel** — the OTel export tests with the `[otel]` extra installed
+7. **release-build** — builds the sdist/wheel from the hash-pinned `requirements-build.txt`
+8. **all-checks-pass** — gate job that fails unless every job above succeeded
+
+Separate workflows: `codeql.yml` (CodeQL, `security-and-quality` queries), `action-test.yml` (the GitHub Action), `docker-publish.yml`, `release.yml`/`publish.yml` (releases).
 
 Coverage uploads to Codecov from Ubuntu/3.12 job.
 
@@ -138,7 +142,7 @@ for a build with `gh workflow run docker-publish.yml --ref main -f tag=nightly`.
 6. **Push**: `git push -u origin feature/descriptive-name`
 7. **Create PR**: `gh pr create --title "type: description" --body "..."`
 8. **Monitor CI**: `gh run list --branch feature/descriptive-name`
-9. **Merge** (admin): `gh pr merge --admin --squash`
+9. **Merge** once checks are green: `gh pr merge --squash --delete-branch` (auto-merge is enabled)
 
 ## Important Notes
 
