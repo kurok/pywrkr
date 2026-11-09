@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The deprecated package-level aliases `pywrkr.worker`, `pywrkr.user_worker`, `pywrkr.scenario_worker`, `pywrkr.show_progress`, `pywrkr.make_url`, `pywrkr.LiveDashboard` (import them from `pywrkr.workers`) and `pywrkr.create_trace_config` (from `pywrkr.backends`). They had warned with a `DeprecationWarning` since the public API landed (#194); accessing them now raises `AttributeError`. Nothing in `pywrkr.__all__` changes.
+
 ## [2.0.0] - 2026-11-09
 
 ### Added
