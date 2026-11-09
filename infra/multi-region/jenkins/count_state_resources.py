@@ -16,7 +16,7 @@ unless that name continues with a region code (``dev-use1``).
 With ``--module-prefix``, only resources in matching modules are counted:
 the pipeline's guard counts the regional test cells (``module.region_``), not
 the environment's ECR repository, which the image push needs to exist.
-With ``--legacy-secret-addresses``, prints instead the addresses of the
+With ``--legacy-addresses``, prints instead the addresses of the
 worker-secret resources earlier versions managed (``aws_ssm_parameter`` and
 ``random_password`` named ``worker_secret``, with their ``[0]`` index), one
 per line, for ``terraform state rm``; the data source of that name is not one.
@@ -44,14 +44,16 @@ def count_managed(state: dict, module_prefix: str = "") -> int:
     )
 
 
-def legacy_secret_addresses(state: dict) -> list[str]:
+def legacy_addresses(state: dict) -> list[str]:
     addresses = []
     for resource in state.get("resources", []):
         if resource.get("mode") != "managed" or resource.get("name") != "worker_secret":
             continue
         if resource.get("type") not in ("aws_ssm_parameter", "random_password"):
             continue
-        base = ".".join(p for p in (resource.get("module"), resource["type"], "worker_secret") if p)
+        base = ".".join(
+            p for p in (resource.get("module"), resource["type"], resource["name"]) if p
+        )
         for instance in resource.get("instances", []):
             key = instance.get("index_key")
             suffix = "" if key is None else (f"[{key}]" if isinstance(key, int) else f'["{key}"]')
@@ -66,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--module-prefix", default="", help="count only resources in these modules")
     parser.add_argument(
-        "--legacy-secret-addresses",
+        "--legacy-addresses",
         action="store_true",
         help="print the addresses of the formerly managed worker-secret resources",
     )
@@ -77,8 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     except json.JSONDecodeError as exc:
         print(f"not a terraform state: {exc}", file=sys.stderr)
         return 2
-    if args.legacy_secret_addresses:
-        for address in legacy_secret_addresses(state):
+    if args.legacy_addresses:
+        for address in legacy_addresses(state):
             print(address)
         return 0
     print(count_managed(state, args.module_prefix))

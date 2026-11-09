@@ -321,7 +321,7 @@ tags = {
                             set -e
                             trap 'rm -f .state.json .legacy' EXIT
                             python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" \\
-                              --legacy-secret-addresses < .state.json > .legacy
+                              --legacy-addresses < .state.json > .legacy
                             set -f
                             if [ -s .legacy ]; then terraform state rm $(cat .legacy); fi
                         '''
