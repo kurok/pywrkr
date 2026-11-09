@@ -893,6 +893,7 @@ class TestInfraHardening(unittest.TestCase):
             "count_state_resources.py",
             "(404)",
             "terraform state rm",
+            "--legacy-secret-addresses",
         ):
             with self.subTest(marker=marker):
                 self.assertTrue(marker in pipeline, f"the pipeline lacks {marker}")
@@ -981,6 +982,45 @@ class TestInfraHardening(unittest.TestCase):
         )
         self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-dev-"), (0, "1"))
         self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-de-")[0], 3)
+
+    def test_legacy_secret_addresses_include_the_index_and_skip_the_data_source(self):
+        """random_password.worker_secret had count, so its address ends in [0]."""
+        state = json.dumps(
+            {
+                "resources": [
+                    {
+                        "module": "module.region_us_east_1[0]",
+                        "mode": "managed",
+                        "type": "random_password",
+                        "name": "worker_secret",
+                        "instances": [{"index_key": 0}],
+                    },
+                    {
+                        "module": "module.region_us_east_1[0]",
+                        "mode": "managed",
+                        "type": "aws_ssm_parameter",
+                        "name": "worker_secret",
+                        "instances": [{}],
+                    },
+                    {
+                        "module": "module.region_us_east_1[0]",
+                        "mode": "data",
+                        "type": "aws_ssm_parameter",
+                        "name": "worker_secret",
+                        "instances": [{}],
+                    },
+                ]
+            }
+        )
+        rc, out = self._count_state(state, "--legacy-secret-addresses")
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            out.splitlines(),
+            [
+                "module.region_us_east_1[0].random_password.worker_secret[0]",
+                "module.region_us_east_1[0].aws_ssm_parameter.worker_secret",
+            ],
+        )
 
     def test_state_resource_count_reports_an_unreadable_state(self):
         self.assertEqual(self._count_state("{not json")[0], 2)

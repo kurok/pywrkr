@@ -82,7 +82,7 @@ pipeline {
                     def missing = []
                     for (region in requested) {
                         def name = "/${PROJECT_NAME}-${params.ENVIRONMENT}-${regionCodes[region]}/pywrkr/worker-secret"
-                        def found = sh(script: "aws ssm describe-parameters --region ${region} --parameter-filters Key=Name,Values=${name} --query 'Parameters[0].[Type,KeyId]' --output text 2>ssm-check.err || { echo CHECK_FAILED; cat ssm-check.err; }", returnStdout: true).trim()
+                        def found = sh(script: "aws ssm describe-parameters --region ${region} --parameter-filters Key=Name,Values=${name} --query 'Parameters[].[Type,KeyId]' --output text 2>ssm-check.err || { echo CHECK_FAILED; cat ssm-check.err; }", returnStdout: true).trim()
                         if (found.contains('CHECK_FAILED')) {
                             error("Could not check the worker secret in ${region} (permissions or credentials?): ${found}")
                         }
@@ -299,31 +299,32 @@ tags = {
                         // infrastructure this build did not create unless asked to.
                         // `state pull` prints nothing when there is no state and fails
                         // when the state cannot be read, which fails this step.
+                        // One read of the state serves the guard and the legacy cleanup:
+                        // `state pull` prints nothing for no state and fails the step when
+                        // the state cannot be read.
                         def existing = sh(script: '''
                             set -e
-                            trap 'rm -f .state.json' EXIT
                             terraform state pull > .state.json
                             # The regional test cells, not the ECR repository the push needs.
                             python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" \\
                               --module-prefix module.region_ < .state.json
                         ''', returnStdout: true).trim().toInteger()
                         if (existing > 0 && !params.ADOPT_EXISTING_STATE) {
+                            sh 'rm -f .state.json'
                             error("ENVIRONMENT '${params.ENVIRONMENT}' already has ${existing} resource(s) in its state, from an earlier run or a manual deployment. Use another ENVIRONMENT, destroy them first, or set ADOPT_EXISTING_STATE.")
                         }
-                        if (sh(script: 'terraform state list 2>/dev/null | grep -q .', returnStatus: true) == 0) {
-                            // State from before #315 still manages the worker secret. The
-                            // removed blocks forget it on apply, but a destroy ignores them,
-                            // and this build destroys after a failed apply: forget it now.
-                            sh '''
-                                set -e
-                                # Managed resources only, not data.aws_ssm_parameter.worker_secret.
-                                terraform state list | grep -E '[]][.](aws_ssm_parameter|random_password)[.]worker_secret$' > .legacy || true
-                                # One state write, not one per address: each leaves a version.
-                                set -f
-                                if [ -s .legacy ]; then terraform state rm $(cat .legacy); fi
-                                rm -f .legacy
-                            '''
-                        }
+                        // State from before #315 still manages the worker secret. The
+                        // removed blocks forget it on apply, but a destroy ignores them,
+                        // and this build destroys after a failed apply: forget it now,
+                        // in one state write (each write leaves an object version).
+                        sh '''
+                            set -e
+                            trap 'rm -f .state.json .legacy' EXIT
+                            python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" \\
+                              --legacy-secret-addresses < .state.json > .legacy
+                            set -f
+                            if [ -s .legacy ]; then terraform state rm $(cat .legacy); fi
+                        '''
                         sh 'terraform plan -out=tfplan'
                         // Set before apply: a partly applied run still needs its destroy.
                         env.TF_APPLIED = 'true'

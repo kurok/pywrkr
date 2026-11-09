@@ -128,7 +128,9 @@ already has state for that environment).
 ### Worker secret
 
 The master and workers in a region authenticate each other with a shared HMAC secret (#303). Create it
-yourself, once per enabled region, as an SSM SecureString under the AWS-managed `aws/ssm` key:
+yourself, once per enabled region, as an SSM SecureString under the AWS-managed `aws/ssm` key (leave out
+`--key-id`: the task execution role can decrypt only that key, and the pipeline checks for it). Use at
+least 32 random characters; nothing can check the length without decrypting it:
 
 ```bash
 # <prefix> is <project_name>-<environment>-<region code>: use1, euw1 or apse1.
