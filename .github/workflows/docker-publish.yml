@@ -18,10 +18,23 @@ on:
       - "pyproject.toml"
       - ".github/workflows/docker-publish.yml"
       - ".github/scripts/check-image.sh"
+  # An agent (or a maintainer) can publish a build on demand, optionally under
+  # an extra tag. The same tag set is produced for both registries.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Extra tag to publish (e.g. 1.6.0, nightly). Empty = the usual semver/sha/latest set."
+        required: false
+        type: string
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Docker Hub, for the images agents pull. The username and token are
+  # repository secrets; without them the Docker Hub steps are skipped and the
+  # GitHub Container Registry publish still happens.
+  DOCKERHUB_REGISTRY: docker.io
+  DOCKERHUB_IMAGE: docker.io/ryabikov/pywrkr
 
 # Read-only by default. The write scopes are granted only to the job that
 # pushes, and that job never runs for a pull request, so a pull request's
@@ -73,6 +86,13 @@ jobs:
       id-token: write
       attestations: write
 
+    env:
+      # A Docker Hub access token with Read & Write on the repository. Kept in
+      # the environment rather than inlined, so the token never reaches a
+      # command line in the job's logs.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
@@ -83,16 +103,45 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        # Skipped when the repository has no Docker Hub secrets, so a fork (or
+        # a clone without them) still publishes to GitHub Container Registry.
+        if: env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
+        with:
+          registry: ${{ env.DOCKERHUB_REGISTRY }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # One metadata step, both registries: the tag set is identical, so a
+          # tag that exists on GitHub Container Registry exists on Docker Hub.
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
+
+      # The optional extra tag is a step of its own rather than another entry in
+      # the list above: metadata-action evaluates `enable=` with its own
+      # expression parser, which does not understand GitHub's `${{ }}`
+      # expressions. A plain `if:` on the step does.
+      - name: Extract metadata (the extra tag, when one was given)
+        id: meta-extra
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.DOCKERHUB_IMAGE }}
+          tags: |
+            type=raw,value=${{ inputs.tag }}
 
       - name: Build and push Docker image
         id: push
@@ -103,7 +152,9 @@ jobs:
           # Loaded into the local daemon as well, so the checks below run
           # against the image that was actually built.
           load: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ steps.meta-extra.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: The image does not run as root and has a health check
@@ -112,6 +163,9 @@ jobs:
         run: .github/scripts/check-image.sh "$(echo "$IMAGE_TAGS" | head -n1)"
 
       - name: Attest build provenance
+        # Provenance is attested for the GitHub Container Registry subject only:
+        # the attestation is stored in GitHub's OCI referrers store, which Docker
+        # Hub does not offer. The Docker Hub image carries no attestation.
         uses: actions/attest-build-provenance@b3e506e8c389afc651c5bacf2b8f2a1ea0557215  # v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}

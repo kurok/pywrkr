@@ -104,6 +104,23 @@ All jobs run on `push` to main and on every PR:
 
 Coverage uploads to Codecov from Ubuntu/3.12 job.
 
+### Container image publishing
+
+`.github/workflows/docker-publish.yml` builds the image and pushes it to **GitHub Container Registry**
+(`ghcr.io/kurok/pywrkr`) and to **Docker Hub** (`docker.io/ryabikov/pywrkr`). It runs on a release,
+on pushes to `main` that touch the image, and on `workflow_dispatch` (the optional `tag` input
+publishes an extra tag). Pull requests build the image and check it, but push nothing, and the job
+that pushes never runs for a pull request — so a pull request's Dockerfile is never built while a
+write-scoped token is in reach.
+
+The Docker Hub steps need two repository secrets — `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
+(a Docker Hub access token with Read & Write on the repository). When they are absent the Docker Hub
+steps are skipped and the GitHub Container Registry publish still happens, so a fork or a fresh
+clone of the workflow keeps working.
+
+An agent that needs the image can pull it (`docker pull docker.io/ryabikov/pywrkr:latest`) or ask
+for a build with `gh workflow run docker-publish.yml --ref main -f tag=nightly`.
+
 ## Workflow: Creating a Clean PR
 
 1. **Sync with main**: `git fetch origin main && git checkout main && git pull`
