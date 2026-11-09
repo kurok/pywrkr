@@ -119,7 +119,7 @@ terraform init -backend-config=backend.hcl
 
 The Jenkins pipeline passes the same settings with `-backend-config`, using the key
 `pywrkr/multi-region/<ENVIRONMENT>/terraform.tfstate`. Keep manual deployments under a different key:
-a build refuses to apply over state that already holds resources unless `ADOPT_EXISTING_STATE` is set,
+a build refuses to apply over state that already holds regional test cells (VPCs, NAT gateways, ECS services; the environment's ECR repository does not count) unless `ADOPT_EXISTING_STATE` is set,
 and with `CLEANUP_AFTER_RUN` it then destroys them. The pipeline cleans its workspace after every run,
 because nothing in it is needed once the state is in S3. A workspace that still holds a local
 `terraform.tfstate` from before this change is migrated to S3 by the next build (or the build stops if S3

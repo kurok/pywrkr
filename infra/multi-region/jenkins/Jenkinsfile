@@ -278,7 +278,8 @@ tags = {
                                 esac
                               fi
                             fi
-                            terraform init -input=false ${MIGRATE} \\
+                            # -reconfigure: a kept workspace may still name another key.
+                            terraform init -input=false ${MIGRATE:--reconfigure} \\
                               -backend-config="bucket=${TF_STATE_BUCKET}" \\
                               -backend-config="key=${KEY}" \\
                               -backend-config="region=${HOME_REGION}" \\
@@ -298,12 +299,14 @@ tags = {
                             set -e
                             trap 'rm -f .state.json' EXIT
                             terraform state pull > .state.json
-                            python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" < .state.json
+                            # The regional test cells, not the ECR repository the push needs.
+                            python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" \\
+                              --module-prefix module.region_ < .state.json
                         ''', returnStdout: true).trim().toInteger()
                         if (existing > 0 && !params.ADOPT_EXISTING_STATE) {
                             error("ENVIRONMENT '${params.ENVIRONMENT}' already has ${existing} resource(s) in its state, from an earlier run or a manual deployment. Use another ENVIRONMENT, destroy them first, or set ADOPT_EXISTING_STATE.")
                         }
-                        if (existing > 0) {
+                        if (sh(script: 'terraform state list 2>/dev/null | grep -q .', returnStatus: true) == 0) {
                             // State from before #315 still manages the worker secret. The
                             // removed blocks forget it on apply, but a destroy ignores them,
                             // and this build destroys after a failed apply: forget it now.

@@ -932,6 +932,20 @@ class TestInfraHardening(unittest.TestCase):
         )
         self.assertEqual(self._count_state(state), (0, "2"))
 
+    def test_state_resource_count_can_count_only_the_regional_cells(self):
+        """The ECR repository lives in the same state and must exist for the
+        image push, so it must not trip the pipeline's takeover guard."""
+        state = json.dumps(
+            {
+                "resources": [
+                    {"mode": "managed", "module": "module.shared", "instances": [{}]},
+                    {"mode": "managed", "module": "module.region_us_east_1[0]", "instances": [{}]},
+                    {"mode": "managed", "module": "module.region_eu_west_1[0]", "instances": []},
+                ]
+            }
+        )
+        self.assertEqual(self._count_state(state, "--module-prefix", "module.region_"), (0, "1"))
+
     def test_state_resource_count_rejects_another_environments_state(self):
         """Legacy local state is migrated under this ENVIRONMENT's key only if
         it was written for it."""

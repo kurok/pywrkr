@@ -12,6 +12,9 @@ With ``--name-prefix`` (``<project>-<environment>-``), also exits 3 unless a
 managed resource carries a regional name under exactly that prefix, such as
 ``pywrkr-dev-use1``: a state written for another environment, including one
 whose name merely starts with this one (``dev-eu`` for ``dev``), has none.
+With ``--module-prefix``, only resources in matching modules are counted:
+the pipeline's guard counts the regional test cells (``module.region_``), not
+the environment's ECR repository, which the image push needs to exist.
 An unreadable state exits 2.
 """
 
@@ -26,11 +29,12 @@ import sys
 REGION_CODES = ("use1", "euw1", "apse1")
 
 
-def count_managed(state: dict) -> int:
+def count_managed(state: dict, module_prefix: str = "") -> int:
     return sum(
-        len(resource.get("instances", [])) or 1
+        len(resource.get("instances", []))
         for resource in state.get("resources", [])
         if resource.get("mode") == "managed"
+        and resource.get("module", "").startswith(module_prefix)
     )
 
 
@@ -39,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--name-prefix", help="<project>-<environment>- the state's regional names must use"
     )
+    parser.add_argument("--module-prefix", default="", help="count only resources in these modules")
     args = parser.parse_args(argv)
     text = sys.stdin.read().strip()
     try:
@@ -46,9 +51,8 @@ def main(argv: list[str] | None = None) -> int:
     except json.JSONDecodeError as exc:
         print(f"not a terraform state: {exc}", file=sys.stderr)
         return 2
-    count = count_managed(state)
-    print(count)
-    if args.name_prefix and count:
+    print(count_managed(state, args.module_prefix))
+    if args.name_prefix and count_managed(state):
         managed = [r for r in state.get("resources", []) if r.get("mode") == "managed"]
         # The region code must follow the prefix directly, so "pywrkr-dev-"
         # does not accept "pywrkr-dev-eu-use1".
