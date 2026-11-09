@@ -273,8 +273,9 @@ docker run --rm ghcr.io/kurok/pywrkr:latest https://example.com -c 10 -d 5
 ```
 
 The image runs as a non-root user (uid 10001) and has a `HEALTHCHECK`. The image built for a
-release is attested with build provenance on GitHub Container Registry; Docker Hub does not offer
-an attestation store, so the Docker Hub image carries no attestation.
+release carries a SLSA build-provenance attestation on **both** registries: the attestation is stored
+as an OCI referrer next to the image and names every tag of both registries, and it pins the two
+digest-pinned build inputs (the Python base image and the `uv` builder).
 
 ## Quick Start
 
