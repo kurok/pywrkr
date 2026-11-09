@@ -237,8 +237,9 @@ samples stay reachable: `result.percentiles.p95`, `result.percentiles["p99.9"]`.
 `pywrkr.__all__` is the supported surface and is what the versioning promise covers: breaking
 changes to those names require a major release. Everything else is an implementation detail. A
 few worker internals that leaked into the package namespace before this API existed
-(`pywrkr.worker`, `pywrkr.make_url`, …) still import for one more minor release but emit a
-`DeprecationWarning` pointing at `pywrkr.workers`.
+(`pywrkr.worker`, `pywrkr.make_url`, …) still import in 2.0 but emit a `DeprecationWarning`
+pointing at their real module (`pywrkr.workers` or `pywrkr.backends`); they will be removed in a
+future release.
 
 The package ships a `py.typed` marker, so type checkers see the annotations.
 
@@ -337,24 +338,34 @@ pywrkr -n 500 -c 20 -m POST -b '{"key":"val"}' \
 
 ```
 usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
-              [-t THREADS] [-m METHOD] [-H NAME:VALUE] [-b BODY]
-              [-p POST_FILE] [-A user:pass] [-C COOKIE] [-k]
-              [--no-keepalive] [-l] [-v VERBOSITY] [--timeout TIMEOUT]
-              [--ssl-verify] [--ca-bundle FILE] [-R] [-e FILE] [-w]
-              [--json FILE] [--html-report FILE] [--live]
-              [--latency-breakdown] [--follow-redirects] [--tag TAGS]
-              [--otel-endpoint URL]
-              [--prom-remote-write URL] [--threshold THRESHOLDS]
-              [-u USERS] [--ramp-up RAMP_UP] [--think-time THINK_TIME]
+              [-t THREADS] [-m METHOD] [-H HEADERS] [-b BODY] [-p POST_FILE]
+              [-A user:pass] [-C COOKIES] [--no-session-cookies]
+              [--allow-partial] [--follow-redirects] [--http2]
+              [-k | --keepalive | --no-keepalive] [-l] [-v VERBOSITY]
+              [--timeout TIMEOUT] [--ssl-verify] [--ca-bundle FILE]
+              [--no-read-body] [-R] [-e FILE] [-w] [--json FILE]
+              [--html-report FILE] [--live] [--latency-breakdown] [--tag TAGS]
+              [--otel-endpoint URL] [--prom-remote-write URL]
+              [--baseline FILE_OR_GLOB] [--save-baseline FILE]
+              [--fail-on EXPR] [--strict-config]
+              [--compare-format {table,markdown,json}]
+              [--export-interval SECONDS] [--threshold THRESHOLDS] [-u USERS]
+              [--ramp-up RAMP_UP] [--think-time THINK_TIME]
               [--think-jitter THINK_JITTER] [--rate RATE]
               [--rate-ramp RATE_RAMP] [--traffic-profile PROFILE]
-              [--scenario FILE] [--autofind]
+              [--scenario FILE] [--data NAME=FILE]
+              [--data-strategy NAME=STRATEGY] [--autofind]
               [--max-error-rate MAX_ERROR_RATE] [--max-p95 MAX_P95]
               [--step-duration STEP_DURATION] [--start-users START_USERS]
               [--max-users MAX_USERS] [--step-multiplier STEP_MULTIPLIER]
-              [--url-file FILE] [--master] [--worker HOST:PORT]
-              [--worker-secret SECRET] [--expect-workers N] [--bind ADDR]
-              [--port PORT] [--worker-wait-timeout SECONDS]
+              [--url-file FILE] [--master] [--expect-workers N] [--bind HOST]
+              [--port PORT] [--worker HOST:PORT]
+              [--worker-wait-timeout SECONDS] [--worker-secret SECRET]
+              [--ws-message TEXT] [--ws-message-interval SECONDS]
+              [--ws-expect-reply] [--ws-reply-timeout SECONDS]
+              [--ws-subprotocol NAME] [--ws-ping-interval SECONDS]
+              [--ws-max-message-size BYTES] [--ws-close-timeout SECONDS]
+              [--ws-reconnect] [--ws-reconnect-delay SECONDS]
               [url]
 ```
 
@@ -365,7 +376,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | `url` | | Target URL to benchmark (required) |
 | `-c` | `--connections` | Number of concurrent connections (default: 10) |
 | `-d` | `--duration` | Test duration in seconds (default: 10) |
-| `-n` | `--num-requests` | Total number of requests (ab-style, overrides `-d`) |
+| `-n` | `--num-requests` | Total number of requests (ab-style; cannot be combined with `-d`) |
 | `-t` | `--threads` | Number of worker groups (default: 4) |
 | `-m` | `--method` | HTTP method: GET, POST, PUT, DELETE, etc. (default: GET) |
 | `-H` | `--header` | Custom header, e.g. `-H "Content-Type: application/json"` (repeatable) |
@@ -384,6 +395,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--compare-format` | Baseline comparison format: `table` (default), `markdown`, `json` |
 | `-k` | `--keepalive` | Enable keep-alive (default: on) |
 | | `--no-keepalive` | Disable keep-alive |
+| | `--no-read-body` | Release the connection instead of reading the response body (opt-in; changes what latency and `total_bytes` measure — see [Skipping the Response Body](#skipping-the-response-body)) |
 | `-l` | `--verify-length` | Verify response Content-Length consistency |
 | `-v` | `--verbosity` | 0=quiet, 2=warnings, 3=status codes, 4=full detail |
 | | `--timeout` | Request timeout in seconds (default: 30) |
@@ -406,6 +418,8 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--export-interval` | Stream metric snapshots every N seconds instead of only at the end (needs an export endpoint) |
 | | `--ssl-verify` / `PYWRKR_SSL_VERIFY` | Enable TLS certificate verification (default: disabled). Recommended when using `--basic-auth` or `--cookie` against `https://` targets |
 | | `--ca-bundle PATH` / `PYWRKR_CA_BUNDLE` | Path to a custom CA certificate bundle (PEM format). Used when `--ssl-verify` is enabled and the target uses a private or corporate CA |
+
+WebSocket options (`--ws-*`) are listed under [WebSocket Benchmarking](#websocket-benchmarking), distributed options (`--master`, `--worker`, `--allow-partial`, ...) under [Distributed Mode](#distributed-mode), and autofind options under [Auto-Ramping / Step Load](#auto-ramping--step-load-autofind).
 
 ### User Simulation Options
 
@@ -852,7 +866,7 @@ baseline set.
 #### GitHub Action
 
 ```yaml
-- uses: kurok/pywrkr@v1
+- uses: kurok/pywrkr@v2
   with:
     url: http://localhost:8080/
     args: -c 50 -d 30
@@ -869,7 +883,7 @@ with twenty pushes has one report, not twenty.
 Gate on a baseline instead of, or alongside, absolute thresholds:
 
 ```yaml
-- uses: kurok/pywrkr@v1
+- uses: kurok/pywrkr@v2
   with:
     url: http://localhost:8080/
     args: -c 50 -d 30
@@ -903,7 +917,7 @@ Outputs: `passed`, `verdict` (`pass` / `threshold` / `regression` / `error`), `p
 downstream step can tell "no data" from "zero".
 
 ```yaml
-- uses: kurok/pywrkr@v1
+- uses: kurok/pywrkr@v2
   id: perf
   with: { url: http://localhost:8080/, args: -c 50 -d 30, soft-fail: "true" }
 - run: echo "p95 was ${{ steps.perf.outputs.p95 }}s at ${{ steps.perf.outputs.rps }} req/s"
@@ -1914,6 +1928,12 @@ pip install pywrkr[tui]
 # With OpenTelemetry export
 pip install pywrkr[otel]
 
+# With the HTTP/2 backend (--http2)
+pip install pywrkr[http2]
+
+# With the pytest plugin dependency
+pip install pywrkr[pytest]
+
 # Everything
 pip install pywrkr[all]
 ```
@@ -1952,6 +1972,9 @@ The test suite includes unit and integration tests covering:
 - Multi-URL mode tests (URL file loading, entry parsing)
 - Distributed mode tests (config/stats serialization, merge operations, TCP protocol)
 - Worker utility tests (URL construction, headers, stats merging, breakdown aggregation)
+- Scenario tests (extraction/correlation, step assertions, feeders, template functions, per-VU cookie jars)
+- Baseline comparison, `summary`, GitHub Action and pytest-plugin tests
+- HTTP/2 backend, WebSocket mode, streaming export and OpenAPI import tests
 
 ## Contributing
 
