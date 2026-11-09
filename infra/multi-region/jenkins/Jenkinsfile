@@ -29,6 +29,7 @@ pipeline {
         string(name: 'SCENARIO_FILE', defaultValue: '', description: 'Scenario file path in container (e.g., /scenarios/api-flow.json)')
         choice(name: 'EGRESS_MODE', choices: ['nat_eip', 'public_ip'], description: 'Egress: nat_eip (stable IPs) or public_ip (cheaper)')
         booleanParam(name: 'CLEANUP_AFTER_RUN', defaultValue: true, description: 'Destroy infrastructure after test')
+        booleanParam(name: 'ADOPT_EXISTING_STATE', defaultValue: false, description: "Apply over (and, with CLEANUP_AFTER_RUN, destroy) infrastructure already recorded in this ENVIRONMENT's state, from an earlier run or a manual deployment")
         string(name: 'CONFIRM_PRODUCTION_TARGET', defaultValue: 'no', description: 'Must be "yes" for non-internal targets')
         string(name: 'OTEL_ENDPOINT', defaultValue: '', description: 'OpenTelemetry collector endpoint (optional)')
         string(name: 'PROM_REMOTE_WRITE', defaultValue: '', description: 'Prometheus pushgateway URL (optional)')
@@ -43,6 +44,10 @@ pipeline {
         DOCKER_DIR    = "${WORKSPACE}/infra/multi-region"
         PROJECT_NAME  = 'pywrkr'
         HOME_REGION   = 'us-east-1'
+        // Remote, locked, encrypted state (#315): the same bucket and lock
+        // table as the single-region pipeline, under a key per environment.
+        TF_STATE_BUCKET = 'pywrkr-terraform-state'
+        TF_LOCK_TABLE   = 'pywrkr-terraform-locks'
     }
 
     stages {
@@ -55,6 +60,39 @@ pipeline {
         stage('Validate Parameters') {
             steps {
                 script {
+                    // ENVIRONMENT names the state key and every resource, and these
+                    // values are interpolated into shell commands: allow only plain values.
+                    if (!(params.ENVIRONMENT ==~ /[a-z0-9][a-z0-9-]{0,30}/)) {
+                        error("ENVIRONMENT '${params.ENVIRONMENT}' must be lower-case letters, digits and '-' (at most 31)")
+                    }
+                    if (!(params.IMAGE_TAG ==~ /[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/)) {
+                        error("IMAGE_TAG '${params.IMAGE_TAG}' is not a valid image tag")
+                    }
+                    // The regions the terraform stack defines, with the code in their names.
+                    def regionCodes = ['us-east-1': 'use1', 'eu-west-1': 'euw1', 'ap-southeast-1': 'apse1']
+                    def requested = params.AWS_REGIONS.split(',').collect { it.trim() }
+                    def unknown = requested.findAll { !regionCodes.containsKey(it) }
+                    if (unknown) {
+                        error("AWS_REGIONS has unsupported region(s) ${unknown}; supported: ${regionCodes.keySet()}")
+                    }
+                    // The worker secret is created out of band (#315): fail here, with
+                    // the name to create, rather than at terraform plan.
+                    // A plain String would come back in clear through the data source,
+                    // and the task execution role can decrypt only the aws/ssm key.
+                    def missing = []
+                    for (region in requested) {
+                        def name = "/${PROJECT_NAME}-${params.ENVIRONMENT}-${regionCodes[region]}/pywrkr/worker-secret"
+                        def found = sh(script: "aws ssm describe-parameters --region ${region} --parameter-filters Key=Name,Values=${name} --query 'Parameters[].[Type,KeyId]' --output text 2>ssm-check.err || { echo CHECK_FAILED; cat ssm-check.err; }", returnStdout: true).trim()
+                        if (found.contains('CHECK_FAILED')) {
+                            error("Could not check the worker secret in ${region} (permissions or credentials?): ${found}")
+                        }
+                        if ((found.split(/\s+/) as List) != ['SecureString', 'alias/aws/ssm']) {
+                            missing << region
+                        }
+                    }
+                    if (missing) {
+                        error("No worker secret in ${missing} as a SecureString under the aws/ssm key: create /${PROJECT_NAME}-${params.ENVIRONMENT}-<region code>/pywrkr/worker-secret in each (see infra/multi-region/README.md)")
+                    }
                     def regions = params.AWS_REGIONS.split(',').collect { it.trim() }
                     def workerCount = params.WORKER_COUNT_PER_REGION.toInteger()
                     def maxWorkers = 10
@@ -210,8 +248,86 @@ tags = {
                     writeFile file: "${TF_DIR}/jenkins.auto.tfvars", text: tfvars
 
                     dir(TF_DIR) {
-                        sh 'terraform init'
+                        // A workspace from before #315 can still hold local state for
+                        // infrastructure a CLEANUP_AFTER_RUN=false run left running.
+                        // Move it to S3 rather than lose it, unless S3 already has
+                        // state for this environment, which needs a person to reconcile.
+                        sh '''
+                            set -e
+                            KEY="pywrkr/multi-region/${ENVIRONMENT}/terraform.tfstate"
+                            count_state() { python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" "$@"; }
+                            MIGRATE=""
+                            if [ -f terraform.tfstate ]; then
+                              # Only state written for this ENVIRONMENT may go under its key.
+                              RC=0
+                              LOCAL=$(count_state --name-prefix "${PROJECT_NAME}-${ENVIRONMENT}-" < terraform.tfstate) || RC=$?
+                              if [ "$RC" = "3" ]; then
+                                echo "ERROR: the workspace's terraform.tfstate belongs to another ENVIRONMENT than ${ENVIRONMENT}; run that one, or reconcile by hand."
+                                exit 1
+                              elif [ "$RC" != "0" ]; then
+                                echo "ERROR: the workspace's terraform.tfstate could not be read; reconcile it by hand."
+                                exit 1
+                              fi
+                              if [ "$LOCAL" = "0" ]; then
+                                # Left by a run that destroyed everything: nothing to keep.
+                                rm -f terraform.tfstate terraform.tfstate.backup
+                              else
+                                if ERR=$(aws s3api head-object --region "${HOME_REGION}" --bucket "${TF_STATE_BUCKET}" --key "${KEY}" 2>&1 >/dev/null); then
+                                  echo "ERROR: the workspace has state for ${LOCAL} resource(s) and s3://${TF_STATE_BUCKET}/${KEY} exists too; reconcile them by hand."
+                                  exit 1
+                                fi
+                                case "$ERR" in
+                                  *"(404)"*|*"Not Found"*) MIGRATE="-migrate-state -force-copy" ;;
+                                  *) echo "ERROR: could not tell whether s3://${TF_STATE_BUCKET}/${KEY} exists: $ERR"; exit 1 ;;
+                                esac
+                              fi
+                            fi
+                            # -reconfigure: a kept workspace may still name another key.
+                            terraform init -input=false ${MIGRATE:--reconfigure} \\
+                              -backend-config="bucket=${TF_STATE_BUCKET}" \\
+                              -backend-config="key=${KEY}" \\
+                              -backend-config="region=${HOME_REGION}" \\
+                              -backend-config="dynamodb_table=${TF_LOCK_TABLE}" \\
+                              -backend-config="encrypt=true"
+                            if [ -n "${MIGRATE}" ]; then
+                              # The local copies hold the old secret in plain text.
+                              rm -f terraform.tfstate terraform.tfstate.backup
+                              echo "WARNING: the migrated state held the worker secret in plain text. Rotate it in every region and delete the old versions of s3://${TF_STATE_BUCKET}/${KEY} (infra/multi-region/README.md, Upgrading)."
+                            fi
+                        '''
+                        // The state is shared now: do not apply over, and then destroy,
+                        // infrastructure this build did not create unless asked to.
+                        // `state pull` prints nothing when there is no state and fails
+                        // when the state cannot be read, which fails this step.
+                        // One read of the state serves the guard and the legacy cleanup:
+                        // `state pull` prints nothing for no state and fails the step when
+                        // the state cannot be read.
+                        def existing = sh(script: '''
+                            set -e
+                            terraform state pull > .state.json
+                            # The regional test cells, not the ECR repository the push needs.
+                            python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" \\
+                              --module-prefix module.region_ < .state.json
+                        ''', returnStdout: true).trim().toInteger()
+                        if (existing > 0 && !params.ADOPT_EXISTING_STATE) {
+                            sh 'rm -f .state.json'
+                            error("ENVIRONMENT '${params.ENVIRONMENT}' already has ${existing} resource(s) in its state, from an earlier run or a manual deployment. Use another ENVIRONMENT, destroy them first, or set ADOPT_EXISTING_STATE.")
+                        }
+                        // State from before #315 still manages the worker secret. The
+                        // removed blocks forget it on apply, but a destroy ignores them,
+                        // and this build destroys after a failed apply: forget it now,
+                        // in one state write (each write leaves an object version).
+                        sh '''
+                            set -e
+                            trap 'rm -f .state.json .legacy' EXIT
+                            python3 "${WORKSPACE}/infra/multi-region/jenkins/count_state_resources.py" \\
+                              --legacy-addresses < .state.json > .legacy
+                            set -f
+                            if [ -s .legacy ]; then terraform state rm $(cat .legacy); fi
+                        '''
                         sh 'terraform plan -out=tfplan'
+                        // Set before apply: a partly applied run still needs its destroy.
+                        env.TF_APPLIED = 'true'
                         sh 'terraform apply tfplan'
                     }
                 }
@@ -290,14 +406,31 @@ tags = {
     post {
         always {
             script {
-                if (params.CLEANUP_AFTER_RUN) {
+                if (env.TF_APPLIED != 'true') {
+                    echo 'Nothing applied by this build; nothing to destroy.'
+                } else if (params.CLEANUP_AFTER_RUN) {
                     echo 'Cleaning up infrastructure (CLEANUP_AFTER_RUN=true)...'
                     dir(TF_DIR) {
-                        sh 'terraform destroy -auto-approve || true'
+                        // A failed destroy leaves NAT gateways and EIPs billing: say so.
+                        if (sh(script: 'terraform destroy -auto-approve', returnStatus: true) != 0) {
+                            currentBuild.result = 'FAILURE'
+                            echo "ERROR: terraform destroy failed; infrastructure for ENVIRONMENT '${params.ENVIRONMENT}' may still be running. Its state is in S3: destroy it from Jenkins or by hand."
+                        }
                     }
                 } else {
                     echo 'Skipping cleanup (CLEANUP_AFTER_RUN=false). Infrastructure remains running.'
-                    echo 'To destroy manually: cd infra/multi-region/terraform && terraform destroy'
+                    echo 'To destroy it later: re-run with CLEANUP_AFTER_RUN=true and ADOPT_EXISTING_STATE=true, or see infra/multi-region/README.md'
+                }
+            }
+            script {
+                // The state lives in S3, so nothing here is needed after the run:
+                // drop the plan, the generated tfvars and the provider cache. A
+                // local state file left behind (a migration that did not happen)
+                // is the only record of what it describes: keep it.
+                if (fileExists('infra/multi-region/terraform/terraform.tfstate')) {
+                    echo 'WARNING: infra/multi-region/terraform/terraform.tfstate was not migrated; keeping the workspace.'
+                } else {
+                    cleanWs()
                 }
             }
         }

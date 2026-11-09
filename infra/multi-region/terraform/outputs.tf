@@ -81,3 +81,12 @@ output "cloudmap_namespaces" {
     try(var.regions["ap-southeast-1"].enabled, false) ? { "ap-southeast-1" = module.region_ap_southeast_1[0].namespace_name } : {},
   )
 }
+
+output "worker_secret_parameter_names" {
+  description = "Map of region to the SSM SecureString holding that region's master/worker secret"
+  value = merge(
+    try(var.regions["us-east-1"].enabled, false) ? { "us-east-1" = module.region_us_east_1[0].worker_secret_parameter_name } : {},
+    try(var.regions["eu-west-1"].enabled, false) ? { "eu-west-1" = module.region_eu_west_1[0].worker_secret_parameter_name } : {},
+    try(var.regions["ap-southeast-1"].enabled, false) ? { "ap-southeast-1" = module.region_ap_southeast_1[0].worker_secret_parameter_name } : {},
+  )
+}

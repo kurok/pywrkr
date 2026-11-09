@@ -851,6 +851,196 @@ class TestInfraHardening(unittest.TestCase):
             versions, r'(?m)^\s*#\s*backend\s+"s3"', "the backend block is still commented out"
         )
 
+    def test_multi_region_terraform_declares_a_remote_backend(self):
+        """#315: the multi-region stack still wrote its state, worker secret
+        included, to a plain file in the Jenkins workspace."""
+        backend = (self._root / "infra/multi-region/terraform/backend.tf").read_text()
+        self.assertRegex(
+            backend, r'(?m)^\s*backend\s+"s3"\s*\{', "multi-region state is not remote"
+        )
+        self.assertNotRegex(
+            backend, r'(?m)^\s*#\s*backend\s+"s3"', "the backend block is still commented out"
+        )
+
+    def test_multi_region_pipeline_configures_the_backend(self):
+        pipeline = (self._root / "infra/multi-region/jenkins/Jenkinsfile").read_text()
+        start = pipeline.find("terraform init")
+        self.assertNotEqual(start, -1, "the pipeline does not run terraform init")
+        # The init command and its continuation lines, up to the end of the sh block.
+        init = pipeline[start : pipeline.find("'''", start)]
+        for setting in ("bucket=", "key=", "region=", "dynamodb_table=", "encrypt=true"):
+            with self.subTest(setting=setting):
+                self.assertTrue(
+                    f'-backend-config="{setting}' in init,
+                    f"terraform init is not given -backend-config {setting}",
+                )
+        # With the state remote, nothing in the workspace is needed afterwards,
+        # but the cleanup must come after the destroy that still reads it.
+        post = pipeline[pipeline.rindex("post {") :]
+        always = post[post.index("always {") : post.index("failure {")]
+        self.assertTrue("cleanWs()" in always, "the workspace is not cleaned in post.always")
+        self.assertLess(always.index("terraform destroy"), always.index("cleanWs()"))
+
+    def test_multi_region_pipeline_does_not_lose_or_take_over_state(self):
+        """Review of #315: a pre-change workspace's local state must be migrated,
+        not wiped, and a build must not apply over (then destroy) another
+        deployment's resources unless asked to."""
+        pipeline = (self._root / "infra/multi-region/jenkins/Jenkinsfile").read_text()
+        for marker in (
+            "-migrate-state",
+            "ADOPT_EXISTING_STATE",
+            "terraform state pull",
+            "count_state_resources.py",
+            "(404)",
+            "terraform state rm",
+            "--legacy-addresses",
+        ):
+            with self.subTest(marker=marker):
+                self.assertTrue(marker in pipeline, f"the pipeline lacks {marker}")
+        always = pipeline[pipeline.rindex("post {") :]
+        self.assertTrue(
+            "TF_APPLIED" in always, "the destroy does not depend on this build applying"
+        )
+        # A failed destroy leaves resources billing: it must not be swallowed.
+        self.assertFalse("destroy -auto-approve || true" in pipeline, "a failed destroy is ignored")
+
+    def _count_state(self, state: str, *args: str) -> tuple[int, str]:
+        import subprocess
+        import sys
+
+        script = self._root / "infra/multi-region/jenkins/count_state_resources.py"
+        proc = subprocess.run(
+            [sys.executable, str(script), *args],
+            input=state,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode, proc.stdout.strip()
+
+    def test_state_resource_count_treats_no_state_as_empty(self):
+        """`terraform state pull` prints nothing when there is no state yet."""
+        self.assertEqual(self._count_state(""), (0, "0"))
+
+    def test_state_resource_count_counts_managed_instances_only(self):
+        state = json.dumps(
+            {
+                "resources": [
+                    {"mode": "data", "instances": [{}]},
+                    {"mode": "managed", "instances": [{}, {}]},
+                ]
+            }
+        )
+        self.assertEqual(self._count_state(state), (0, "2"))
+
+    def test_state_resource_count_can_count_only_the_regional_cells(self):
+        """The ECR repository lives in the same state and must exist for the
+        image push, so it must not trip the pipeline's takeover guard."""
+        state = json.dumps(
+            {
+                "resources": [
+                    {"mode": "managed", "module": "module.shared", "instances": [{}]},
+                    {"mode": "managed", "module": "module.region_us_east_1[0]", "instances": [{}]},
+                    {"mode": "managed", "module": "module.region_eu_west_1[0]", "instances": []},
+                ]
+            }
+        )
+        self.assertEqual(self._count_state(state, "--module-prefix", "module.region_"), (0, "1"))
+
+    def test_state_resource_count_rejects_another_environments_state(self):
+        """Legacy local state is migrated under this ENVIRONMENT's key only if
+        it was written for it."""
+        state = json.dumps(
+            {
+                "resources": [
+                    {
+                        "mode": "managed",
+                        "instances": [{"attributes": {"name": "pywrkr-loadtest-use1-vpc"}}],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-loadtest-")[0], 0)
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-staging-")[0], 3)
+        # An environment whose name extends this one's is not this one.
+        state = state.replace("pywrkr-loadtest-use1", "pywrkr-dev-eu-use1")
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-dev-")[0], 3)
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-dev-eu-")[0], 0)
+
+    def test_state_resource_count_accepts_a_shared_only_state(self):
+        """A legacy state holding only the ECR repository is this environment's."""
+        state = json.dumps(
+            {
+                "resources": [
+                    {
+                        "mode": "managed",
+                        "module": "module.shared",
+                        "instances": [{"attributes": {"name": "pywrkr-dev-pywrkr"}}],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-dev-"), (0, "1"))
+        self.assertEqual(self._count_state(state, "--name-prefix", "pywrkr-de-")[0], 3)
+
+    def test_legacy_addresses_include_the_index_and_skip_the_data_source(self):
+        """random_password.worker_secret had count, so its address ends in [0]."""
+        state = json.dumps(
+            {
+                "resources": [
+                    {
+                        "module": "module.region_us_east_1[0]",
+                        "mode": "managed",
+                        "type": "random_password",
+                        "name": "worker_secret",
+                        "instances": [{"index_key": 0}],
+                    },
+                    {
+                        "module": "module.region_us_east_1[0]",
+                        "mode": "managed",
+                        "type": "aws_ssm_parameter",
+                        "name": "worker_secret",
+                        "instances": [{}],
+                    },
+                    {
+                        "module": "module.region_us_east_1[0]",
+                        "mode": "data",
+                        "type": "aws_ssm_parameter",
+                        "name": "worker_secret",
+                        "instances": [{}],
+                    },
+                ]
+            }
+        )
+        rc, out = self._count_state(state, "--legacy-addresses")
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            out.splitlines(),
+            [
+                "module.region_us_east_1[0].random_password.worker_secret[0]",
+                "module.region_us_east_1[0].aws_ssm_parameter.worker_secret",
+            ],
+        )
+
+    def test_state_resource_count_reports_an_unreadable_state(self):
+        self.assertEqual(self._count_state("{not json")[0], 2)
+
+    def test_multi_region_state_does_not_hold_the_worker_secret(self):
+        """The secret was a resource attribute, so terraform wrote it to state
+        in the clear. It is now created out of band and only referenced."""
+        modules = self._root / "infra/multi-region/terraform"
+        for path in sorted(modules.rglob("*.tf")):
+            text = path.read_text()
+            rel = path.relative_to(self._root)
+            with self.subTest(file=str(rel)):
+                self.assertNotRegex(text, r'(?m)^resource\s+"random_password"', f"{rel}")
+                self.assertNotRegex(text, r'(?m)^resource\s+"aws_ssm_parameter"', f"{rel}")
+        regional = (modules / "modules/regional/main.tf").read_text()
+        data = re.search(r'(?ms)^data\s+"aws_ssm_parameter"\s+"worker_secret"\s*\{.*?^\}', regional)
+        self.assertIsNotNone(data, "the worker secret is not read from SSM")
+        assert data is not None
+        self.assertRegex(data.group(0), r"with_decryption\s*=\s*false")
+
     def test_destroy_requires_confirmation(self):
         """-auto-approve against state the run did not create destroys
         whatever that state happens to describe, and there is no undo."""

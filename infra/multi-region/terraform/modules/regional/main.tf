@@ -1,26 +1,52 @@
-# A master bound to 0.0.0.0 refuses to start without a secret (#303), so one is
-# always set: the caller's, or a random one shared by this deployment's nodes.
-resource "random_password" "worker_secret" {
-  count   = var.worker_secret == null ? 1 : 0
-  length  = 48
-  special = false
-}
-
+# A master bound to 0.0.0.0 refuses to start without a secret (#303), so every
+# node gets one. The operator creates it out of band, one SecureString per
+# region, at this name (#315):
+#
+#   aws ssm put-parameter --region <region> --type SecureString \
+#     --name /<name_prefix>/pywrkr/worker-secret --value "$(openssl rand -hex 32)"
+#
+# Terraform never holds the plaintext. It reads only the parameter's ARN and
+# version, with_decryption = false, so its state records the KMS ciphertext at
+# most, and a plan fails here when the parameter has not been created. A
+# terraform-managed value would be a resource attribute, written to state in
+# the clear.
 locals {
-  worker_secret = var.worker_secret != null ? var.worker_secret : random_password.worker_secret[0].result
+  worker_secret_parameter_name = "/${var.name_prefix}/pywrkr/worker-secret"
 }
 
-# Delivered through the containers' `secrets`, not `environment`: a sensitive
-# value inside jsonencode() would mark every container definition sensitive and
-# hide image/command/target changes from `terraform plan`, and an environment
-# entry would put the plaintext secret in DescribeTaskDefinition output.
-resource "aws_ssm_parameter" "worker_secret" {
-  name        = "/${var.name_prefix}/pywrkr/worker-secret"
-  description = "pywrkr master/worker HMAC secret (PYWRKR_WORKER_SECRET)"
-  type        = "SecureString"
-  value       = local.worker_secret
-  tags        = var.tags
+data "aws_ssm_parameter" "worker_secret" {
+  name            = local.worker_secret_parameter_name
+  with_decryption = false
+
+  lifecycle {
+    # A plain String would be returned, and stored in state, in clear text.
+    postcondition {
+      condition     = self.type == "SecureString"
+      error_message = "${local.worker_secret_parameter_name} must be a SecureString."
+    }
+  }
 }
+
+# Earlier versions generated the secret and created this parameter here.
+# Forget both without deleting them: the existing parameter, at the same name,
+# becomes the out-of-band one the data source reads.
+removed {
+  from = aws_ssm_parameter.worker_secret
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = random_password.worker_secret
+  lifecycle {
+    destroy = false
+  }
+}
+
+# Delivered through the containers' `secrets`, not `environment`: an
+# environment entry would put the plaintext secret in DescribeTaskDefinition
+# output.
 
 # The execution role fetches `secrets` at task start. The parameter uses the
 # AWS-managed aws/ssm key, which needs no separate kms:Decrypt grant.
@@ -32,7 +58,7 @@ resource "aws_iam_role_policy" "read_worker_secret" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["ssm:GetParameters"]
-      Resource = aws_ssm_parameter.worker_secret.arn
+      Resource = data.aws_ssm_parameter.worker_secret.arn
     }]
   })
 }
@@ -129,8 +155,8 @@ module "master" {
   pywrkr_tags           = var.pywrkr_tags
   otel_endpoint         = var.otel_endpoint
   prom_remote_write     = var.prom_remote_write
-  worker_secret_arn     = aws_ssm_parameter.worker_secret.arn
-  worker_secret_version = aws_ssm_parameter.worker_secret.version
+  worker_secret_arn     = data.aws_ssm_parameter.worker_secret.arn
+  worker_secret_version = data.aws_ssm_parameter.worker_secret.version
   tags                  = var.tags
 }
 
@@ -158,6 +184,6 @@ module "workers" {
   tags              = var.tags
 
   depends_on            = [module.master]
-  worker_secret_arn     = aws_ssm_parameter.worker_secret.arn
-  worker_secret_version = aws_ssm_parameter.worker_secret.version
+  worker_secret_arn     = data.aws_ssm_parameter.worker_secret.arn
+  worker_secret_version = data.aws_ssm_parameter.worker_secret.version
 }
