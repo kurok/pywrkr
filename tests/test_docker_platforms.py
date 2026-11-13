@@ -86,9 +86,10 @@ def test_every_platform_is_built_and_checked_before_the_push(job, platform, work
 
 
 def test_the_attestation_names_the_pushed_index(workflow):
-    attest = next(
-        s
-        for s in _steps(workflow, "build-and-push")
-        if s.get("uses", "").startswith("actions/attest-build-provenance@")
-    )
+    steps = _steps(workflow, "build-and-push")
+    attest_at = _index(steps, "actions/attest-build-provenance@")
+    push_at = next(i for i, s in enumerate(steps) if s.get("id") == "push")
+    attest = steps[attest_at]
+    assert attest_at > push_at, "the digest only exists once the push has run"
     assert attest["with"]["subject-digest"] == "${{ steps.push.outputs.digest }}"
+    assert attest["with"]["push-to-registry"] is True
