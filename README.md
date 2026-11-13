@@ -272,6 +272,16 @@ Both registries carry the same tags — `latest`, the release version (`2.0.0`),
 docker run --rm ghcr.io/kurok/pywrkr:latest https://example.com -c 10 -d 5
 ```
 
+The working directory is the runtime user's home, `/home/pywrkr`, so a relative report path such as
+`--json results.json` is written there. To get the report on the host, mount a directory and work in it:
+
+```bash
+docker run --rm -v "$PWD:/w" -w /w ghcr.io/kurok/pywrkr:latest \
+    https://example.com -c 10 -d 5 --json results.json
+```
+
+The mounted directory has to be writable by uid 10001.
+
 The image runs as a non-root user (uid 10001) and has a `HEALTHCHECK`. The image built for a
 release carries a SLSA build-provenance attestation on **both** registries: the attestation is stored
 as an OCI referrer next to the image and names every tag of both registries, and it pins the two

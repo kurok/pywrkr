@@ -71,7 +71,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: The image does not run as root and has a health check
+      - name: Check the image (non-root, health check, writable working directory)
         env:
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: .github/scripts/check-image.sh "$(echo "$IMAGE_TAGS" | head -n1)"
@@ -157,7 +157,7 @@ jobs:
             ${{ steps.meta-extra.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: The image does not run as root and has a health check
+      - name: Check the image (non-root, health check, writable working directory)
         env:
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: .github/scripts/check-image.sh "$(echo "$IMAGE_TAGS" | head -n1)"
