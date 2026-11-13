@@ -247,7 +247,7 @@ Runnable examples: [`examples/library_usage.py`](examples/library_usage.py).
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 
 ```bash
 pip install pywrkr

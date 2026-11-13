@@ -4,7 +4,7 @@ Async Python HTTP benchmarking tool (wrk/ab-inspired) with virtual user simulati
 
 ## Tech Stack
 
-- Python 3.10+, async/await with aiohttp
+- Python 3.11+, async/await with aiohttp
 - Project packaging via `pyproject.toml` (src layout: `src/pywrkr/`)
 - Optional extras: `[tui]`, `[otel]`, `[http2]`, `[pytest]`, `[dev]`, `[lint]`, `[security]`, `[all]`
 
@@ -97,7 +97,7 @@ All jobs run on `push` to main and on every PR:
 
 1. **lint** — ruff format check + ruff lint
 2. **pre-commit** — trailing whitespace, EOF fixer, YAML/JSON check, ruff
-3. **test** — Ubuntu × Python 3.10–3.13, macOS × 3.10 and 3.13 only, with coverage (85% threshold)
+3. **test** — Ubuntu × Python 3.11–3.14, macOS × 3.11 and 3.14 only, with coverage (85% threshold)
 4. **typecheck** — mypy with configured overrides
 5. **security** — bandit + pip-audit
 6. **test-otel** — the OTel export tests with the `[otel]` extra installed
