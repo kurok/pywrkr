@@ -26,7 +26,11 @@ LABEL org.opencontainers.image.licenses="MIT"
 # uv is not copied here. The wheel is installed with the interpreter's own pip,
 # so the runtime image carries no extra tooling.
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
+# The extras every documented CLI capability needs: --http2 (http2),
+# --otel-endpoint (otel), --live (tui) and YAML scenario files (yaml). The
+# base wheel alone made those fail inside the container (#340). The [all]
+# extra is not used because it also carries pytest.
+RUN set -- /tmp/*.whl && pip install --no-cache-dir "$1[http2,otel,tui,yaml]" && rm /tmp/*.whl
 
 # A load generator has no reason to be uid 0. It opens sockets and writes
 # reports; neither needs root, and this one runs on Fargate.

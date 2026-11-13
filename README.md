@@ -282,6 +282,10 @@ docker run --rm -v "$PWD:/w" -w /w ghcr.io/kurok/pywrkr:latest \
 
 The mounted directory has to be writable by uid 10001.
 
+The image carries the `http2`, `otel`, `tui` and `yaml` extras, so `--http2`, `--otel-endpoint`,
+`--live` and YAML scenario files work in the container as they do in a `pip install 'pywrkr[all]'`
+install. (The `pytest` extra is left out: the image runs the CLI, not a test suite.)
+
 The image is published for `linux/amd64` and `linux/arm64`, so it pulls natively on Apple Silicon and
 other arm64 hosts. It runs as a non-root user (uid 10001) and has a `HEALTHCHECK`. The image built for a
 release carries a SLSA build-provenance attestation on **both** registries: the attestation is stored
