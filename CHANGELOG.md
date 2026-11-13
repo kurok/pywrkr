@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### CI
+
+- The container image is now built and published for `linux/arm64` as well as `linux/amd64`, so `docker pull` works on Apple Silicon and other arm64 hosts without `--platform`. Every tag on both registries is a manifest list holding both platforms; the base image stays pinned by the same multi-platform digest, and the build-provenance attestation names the pushed index. Each platform is built and run through the image check (non-root, health check, writable working directory) before anything is pushed; the arm64 check runs under QEMU. (#339)
+
 ### Fixed
 
 - The container image's working directory is now `/home/pywrkr`, the runtime user's home, instead of the base image's `/`, which the non-root user cannot write to. A relative `--json`, `--csv`, `--html-report`, `--save-baseline` or `--output` path failed with `PermissionError` after the benchmark had run; it now lands in the working directory. The image check in `docker-publish` runs the built image with `--json results.json` and fails if no report is written, and the README shows the mount-and-work (`-v "$PWD:/w" -w /w`) pattern. (#341)
