@@ -19,6 +19,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 DOCKERFILE = ROOT / "Dockerfile"
 REQUIREMENTS = ROOT / "requirements-image.txt"
+SOURCE = ROOT / "requirements-image.in"
 WORKFLOW = ROOT / ".github" / "workflows" / "docker-publish.yml"
 
 
@@ -92,6 +93,7 @@ def test_the_file_is_compiled_for_the_image_interpreter():
     runtime = [ln for ln in DOCKERFILE.read_text().splitlines() if ln.startswith("FROM ")][-1]
     base = re.match(r"FROM python:(\d+\.\d+)-alpine@sha256:", runtime)
     assert base, f"runtime base is not python:<x.y>-alpine pinned by digest: {runtime}"
+    assert header.split("uv pip compile ", 1)[1].startswith("requirements-image.in ")
     assert f"--python-version {base.group(1)}" in header
     assert "--generate-hashes" in header
     assert "-unknown-linux-musl" in header
@@ -103,8 +105,7 @@ def test_every_direct_dependency_of_the_image_is_pinned():
     A dependency added to pyproject.toml without regenerating the file would
     otherwise fail only at image build time, in `pip check`.
     """
-    header = REQUIREMENTS.read_text().split("\n", 3)[1]
-    extras = set(re.findall(r"--extra (\S+)", header))
+    extras = _source_extras()
     pinned = set(_requirements())
     missing = []
     for req in requires("pywrkr") or []:
@@ -121,6 +122,37 @@ def test_every_direct_dependency_of_the_image_is_pinned():
                 if sub not in pinned:
                     missing.append(sub)
     assert not missing, f"not in requirements-image.txt (regenerate it): {sorted(set(missing))}"
+
+
+def _source_extras() -> set[str]:
+    line = re.search(r"^# extras: (.+)$", SOURCE.read_text(), re.M)
+    assert line, "requirements-image.in does not name its extras"
+    return {e.strip() for e in line.group(1).split(",")}
+
+
+def _source_requirements() -> set[str]:
+    return {
+        _normalize(line.strip())
+        for line in SOURCE.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+
+def test_the_source_lists_exactly_pywrkrs_requirements_for_the_image():
+    """requirements-image.in is pywrkr's base plus the named extras, as declared.
+
+    It restates pyproject.toml so Dependabot can re-compile it; this keeps the
+    two from drifting -- a range changed in one and not the other fails here.
+    """
+    extras = _source_extras()
+    expected = set()
+    for req in requires("pywrkr") or []:
+        name, _, marker = req.partition(";")
+        extra = re.search(r"extra\s*==\s*['\"]([^'\"]+)['\"]", marker)
+        if extra and extra.group(1) not in extras:
+            continue
+        expected.add(_normalize(name.strip().replace(" ", "")))
+    assert _source_requirements() == expected
 
 
 def _extra_requirements(dist: str, extras: set[str]) -> set[str]:

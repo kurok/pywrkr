@@ -1,21 +1,12 @@
 version: 2
 updates:
+  # Besides uv.lock, the uv updater picks up every *.in / *.txt in the
+  # directory: requirements-build.in/.txt (#331) and requirements-image.in/.txt
+  # (#342). It pairs each .txt with its .in by name and re-runs the
+  # `uv pip compile` in the .txt header, keeping --generate-hashes, so a bump
+  # re-resolves the whole pinned set. A separate "pip" entry would run
+  # pip-tools against the same files and open competing PRs.
   - package-ecosystem: "uv"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    commit-message:
-      prefix: "fix(deps)"
-    labels:
-      - "dependencies"
-    open-pull-requests-limit: 10
-
-  # The hash-pinned requirements files: requirements-build.txt (the release
-  # pipeline's build inputs, #331) and requirements-image.txt (the container
-  # image's Python stack, #342). The uv ecosystem above watches uv.lock only,
-  # so without this entry those pins never move. Each file's header has the
-  # uv pip compile command that regenerates it.
-  - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
