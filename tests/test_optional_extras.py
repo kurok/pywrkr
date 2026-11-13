@@ -84,15 +84,15 @@ def test_no_extra_is_checked_when_no_flag_asks_for_one():
     assert config is not None
 
 
-def _dockerfile_extras() -> set[str]:
-    text = (ROOT / "Dockerfile").read_text()
-    found = re.findall(r'pip install [^\n]*\[([a-z0-9_,]+)\]"', text)
-    assert len(found) == 1, f"expected one extras install in the Dockerfile, found {found}"
-    return set(found[0].split(","))
+def _image_extras() -> set[str]:
+    # The image installs from requirements-image.txt (#342), compiled from
+    # pyproject.toml with one --extra per extra; the header records them.
+    header = (ROOT / "requirements-image.txt").read_text().split("\n", 3)[1]
+    return set(re.findall(r"--extra (\S+)", header))
 
 
 def test_the_image_installs_the_extras_the_cli_flags_need():
-    assert _dockerfile_extras() == IMAGE_EXTRAS
+    assert _image_extras() == IMAGE_EXTRAS
 
 
 def test_every_image_extra_is_declared_by_the_package():

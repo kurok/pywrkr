@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths:
       - "Dockerfile"
+      - "requirements-image.txt"
       - "src/**"
       - "pyproject.toml"
       - ".github/workflows/docker-publish.yml"
@@ -14,6 +15,7 @@ on:
   pull_request:
     paths:
       - "Dockerfile"
+      - "requirements-image.txt"
       - "src/**"
       - "pyproject.toml"
       - ".github/workflows/docker-publish.yml"
@@ -216,6 +218,10 @@ jobs:
           # output is the index's, which is what the attestation names.
           platforms: linux/amd64,linux/arm64
           push: true
+          # An SPDX SBOM per platform, stored with the image, lists every
+          # Python package installed from requirements-image.txt -- the build
+          # provenance names only the base images (#342).
+          sbom: true
           tags: |
             ${{ steps.meta.outputs.tags }}
             ${{ steps.meta-extra.outputs.tags }}

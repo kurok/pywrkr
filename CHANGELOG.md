@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- The container image's Python dependencies are pinned by version and sha256 in the committed `requirements-image.txt` (compiled from `pyproject.toml` with the image's extras, for the image's Python 3.13 on musl) and installed with `pip --require-hashes --only-binary :all: --no-deps`; the locally built pywrkr wheel is installed with `--no-deps`, `pip check` fails the build if an installed package's requirements are unmet, and a test fails if a direct dependency of pywrkr or of the image's extras is missing from the file. A rebuild of the same commit therefore installs the same packages, and anything the index serves that is not the pinned artifact is refused. The published image now carries an SPDX SBOM per platform listing those packages, since the build provenance names only the base images. (#342)
+
 - The container image now installs the `http2`, `otel`, `tui` and `yaml` extras, so `--http2`, `--otel-endpoint`, `--live` and YAML scenario files work inside it; before, it carried the base wheel only. The image check imports each extra's packages in the built image. (#340)
 
 - The container image is now built and published for `linux/arm64` as well as `linux/amd64`, so `docker pull` works on Apple Silicon and other arm64 hosts without `--platform`. Every tag on both registries is a manifest list holding both platforms; the base image stays pinned by the same multi-platform digest, and the build-provenance attestation names the pushed index. Each platform is built and run through the image check (non-root, health check, writable working directory) before anything is pushed; the arm64 check runs under QEMU. (#339)
