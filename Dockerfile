@@ -23,14 +23,27 @@ LABEL org.opencontainers.image.source="https://github.com/kurok/pywrkr"
 LABEL org.opencontainers.image.description="pywrkr — Python HTTP benchmarking tool"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# uv is not copied here. The wheel is installed with the interpreter's own pip,
-# so the runtime image carries no extra tooling.
+# uv is not copied here. Everything is installed with the interpreter's own
+# pip, so the runtime image carries no extra tooling.
+#
+# The dependencies come from requirements-image.txt, pinned by version and
+# sha256 (#342): --require-hashes makes pip refuse anything the index serves
+# that is not the pinned artifact, and --only-binary refuses to compile, so
+# the image's Python stack is a function of the repository rather than of the
+# index on the day of the build. The file is compiled from pyproject.toml with
+# the http2, otel, tui and yaml extras, the ones every documented CLI flag
+# needs (#340); its header carries the regenerate command.
+#
+# The pywrkr wheel itself is built from this checkout in the builder stage, so
+# it has no index hash; --no-deps keeps pip from resolving anything for it,
+# and `pip check` fails the build if the pinned set does not satisfy it.
+COPY requirements-image.txt /tmp/
 COPY --from=builder /build/dist/*.whl /tmp/
-# The extras every documented CLI capability needs: --http2 (http2),
-# --otel-endpoint (otel), --live (tui) and YAML scenario files (yaml). The
-# base wheel alone made those fail inside the container (#340). The [all]
-# extra is not used because it also carries pytest.
-RUN set -- /tmp/*.whl && pip install --no-cache-dir "$1[http2,otel,tui,yaml]" && rm /tmp/*.whl
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: --no-deps \
+        -r /tmp/requirements-image.txt \
+    && pip install --no-cache-dir --no-deps /tmp/*.whl \
+    && pip check \
+    && rm /tmp/*.whl /tmp/requirements-image.txt
 
 # A load generator has no reason to be uid 0. It opens sockets and writes
 # reports; neither needs root, and this one runs on Fargate.
