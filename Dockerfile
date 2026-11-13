@@ -35,8 +35,11 @@ LABEL org.opencontainers.image.licenses="MIT"
 # needs (#340); its header carries the regenerate command.
 #
 # The pywrkr wheel itself is built from this checkout in the builder stage, so
-# it has no index hash; --no-deps keeps pip from resolving anything for it,
-# and `pip check` fails the build if the pinned set does not satisfy it.
+# it has no index hash; --no-deps keeps pip from resolving anything for it.
+# `pip check` then fails the build if an installed package's own requirements
+# are unmet -- it reads pywrkr's base requirements only, not its extras, so
+# the extras are guarded by tests/test_docker_pinned_deps.py and by the
+# import probe in .github/scripts/check-image.sh.
 COPY requirements-image.txt /tmp/
 COPY --from=builder /build/dist/*.whl /tmp/
 RUN pip install --no-cache-dir --require-hashes --only-binary :all: --no-deps \

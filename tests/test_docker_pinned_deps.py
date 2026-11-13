@@ -10,7 +10,7 @@ and the committed requirements file consistent with ``pyproject.toml``.
 from __future__ import annotations
 
 import re
-from importlib.metadata import requires
+from importlib.metadata import PackageNotFoundError, requires
 from pathlib import Path
 
 import pytest
@@ -87,8 +87,11 @@ def test_the_requirements_file_is_copied_into_the_image():
 
 def test_the_file_is_compiled_for_the_image_interpreter():
     header = REQUIREMENTS.read_text().split("\n", 3)[1]
-    base = re.search(r"^FROM python:(\d+\.\d+)-alpine@", DOCKERFILE.read_text(), re.M)
-    assert base, "runtime base image is not python:<x.y>-alpine pinned by digest"
+    # The last FROM is the runtime stage, the one the file is installed into;
+    # the builder stage's interpreter does not matter here.
+    runtime = [ln for ln in DOCKERFILE.read_text().splitlines() if ln.startswith("FROM ")][-1]
+    base = re.match(r"FROM python:(\d+\.\d+)-alpine@sha256:", runtime)
+    assert base, f"runtime base is not python:<x.y>-alpine pinned by digest: {runtime}"
     assert f"--python-version {base.group(1)}" in header
     assert "--generate-hashes" in header
     assert "-unknown-linux-musl" in header
@@ -112,7 +115,27 @@ def test_every_direct_dependency_of_the_image_is_pinned():
         bare = _normalize(re.split(r"[=<>!~ \[(]", name.strip(), maxsplit=1)[0])
         if bare not in pinned:
             missing.append(bare)
+        # And the extras of that dependency, e.g. httpx[http2] -> h2.
+        for dep_extra in re.findall(r"\[([^\]]+)\]", name):
+            for sub in _extra_requirements(bare, {e.strip() for e in dep_extra.split(",")}):
+                if sub not in pinned:
+                    missing.append(sub)
     assert not missing, f"not in requirements-image.txt (regenerate it): {sorted(set(missing))}"
+
+
+def _extra_requirements(dist: str, extras: set[str]) -> set[str]:
+    """Names a dependency adds for *extras*, read from its installed metadata."""
+    try:
+        reqs = requires(dist) or []
+    except PackageNotFoundError:
+        pytest.skip(f"{dist} is not installed here, so its extras cannot be read")
+    names = set()
+    for req in reqs:
+        name, _, marker = req.partition(";")
+        found = re.search(r"extra\s*==\s*['\"]([^'\"]+)['\"]", marker)
+        if found and found.group(1) in extras:
+            names.add(_normalize(re.split(r"[=<>!~ \[(]", name.strip(), maxsplit=1)[0]))
+    return names
 
 
 @pytest.fixture(scope="module")
