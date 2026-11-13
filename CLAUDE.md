@@ -86,7 +86,7 @@ Branches MUST use one of these prefixes — other names are **rejected** by GitH
 - **No approving review** required (0 approvals since 2026-11-08); a PR can merge itself once checks are green
 - **All review threads must be resolved** before merge
 - **Required linear history** — squash or rebase merges only
-- **Required status check**: `test (ubuntu-latest, 3.12)` must pass
+- **Required status checks**: `test (ubuntu-latest, 3.14)` and `test (macos-latest, 3.15)` must pass
 - **CodeQL** analysis must pass (high_or_higher security threshold)
 - No force pushes or branch deletion on `main`
 - Admin bypass is available for maintainers
@@ -97,7 +97,7 @@ All jobs run on `push` to main and on every PR:
 
 1. **lint** — ruff format check + ruff lint
 2. **pre-commit** — trailing whitespace, EOF fixer, YAML/JSON check, ruff
-3. **test** — Ubuntu × Python 3.11–3.14, macOS × 3.11 and 3.14 only, with coverage (85% threshold)
+3. **test** — each OS with the Python its users get: ubuntu-latest × 3.14 (Ubuntu 26.04 LTS python3), macos-latest × 3.15 (Homebrew python3 on macOS 27); coverage (85% threshold) from Ubuntu
 4. **typecheck** — mypy with configured overrides
 5. **security** — bandit + pip-audit
 6. **test-otel** — the OTel export tests with the `[otel]` extra installed
@@ -106,7 +106,7 @@ All jobs run on `push` to main and on every PR:
 
 Separate workflows: `codeql.yml` (CodeQL, `security-and-quality` queries), `action-test.yml` (the GitHub Action), `docker-publish.yml`, `release.yml`/`publish.yml` (releases).
 
-Coverage uploads to Codecov from Ubuntu/3.12 job.
+Coverage uploads to Codecov from the Ubuntu/3.14 job.
 
 ### Container image publishing
 
