@@ -1898,6 +1898,7 @@ all = [
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "rich" },
 ]
 dev = [
@@ -1931,6 +1932,9 @@ security = [
 tui = [
     { name = "rich" },
 ]
+yaml = [
+    { name = "pyyaml" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1954,12 +1958,14 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'pytest'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
+    { name = "pyyaml", marker = "extra == 'all'", specifier = ">=6.0" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "pyyaml", marker = "extra == 'yaml'", specifier = ">=6.0" },
     { name = "rich", marker = "extra == 'all'", specifier = ">=13.0" },
     { name = "rich", marker = "extra == 'tui'", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'lint'", specifier = ">=0.1.0" },
 ]
-provides-extras = ["tui", "otel", "http2", "all", "dev", "lint", "security", "pytest"]
+provides-extras = ["tui", "otel", "http2", "yaml", "all", "dev", "lint", "security", "pytest"]
 
 [[package]]
 name = "pyyaml"

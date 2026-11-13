@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A `yaml` extra (`pip install 'pywrkr[yaml]'`) for YAML scenario files and YAML OpenAPI specs; `all` includes it. The missing-pyyaml error now names it. (#340)
+
+### Changed
+
+- `--otel-endpoint` without the `otel` extra and `--live` without the `tui` extra are now startup errors (exit 2) that name the extra to install. Before, the benchmark ran first and only then reported that the export failed or that the dashboard had fallen back to plain progress, so the result looked complete when it was not. (#340)
+
 ### CI
+
+- The container image now installs the `http2`, `otel`, `tui` and `yaml` extras, so `--http2`, `--otel-endpoint`, `--live` and YAML scenario files work inside it; before, it carried the base wheel only. The image check imports each extra's packages in the built image. (#340)
 
 - The container image is now built and published for `linux/arm64` as well as `linux/amd64`, so `docker pull` works on Apple Silicon and other arm64 hosts without `--platform`. Every tag on both registries is a manifest list holding both platforms; the base image stays pinned by the same multi-platform digest, and the build-provenance attestation names the pushed index. Each platform is built and run through the image check (non-root, health check, writable working directory) before anything is pushed; the arm64 check runs under QEMU. (#339)
 

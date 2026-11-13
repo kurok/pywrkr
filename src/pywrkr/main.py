@@ -18,7 +18,7 @@ import os
 import sys
 from urllib.parse import urlparse
 
-from pywrkr import ci
+from pywrkr import ci, reporting
 from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
 from pywrkr.compare import (
     COMPARE_FORMATS,
@@ -1439,6 +1439,26 @@ def _validate_http2(parser: argparse.ArgumentParser, args: argparse.Namespace) -
         )
 
 
+def _validate_optional_extras(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Reject --otel-endpoint and --live when their optional extra is missing.
+
+    Without this the run went ahead and the missing package surfaced only
+    afterwards -- an OTel export that never happened, a dashboard that fell
+    back to plain progress -- so a report looked complete when it was not
+    (#340). --http2 has its own check in :func:`_validate_http2`.
+    """
+    if getattr(args, "otel_endpoint", None) and not reporting.OTEL_AVAILABLE:
+        parser.error(
+            "--otel-endpoint requires the OpenTelemetry packages, which are not "
+            "installed. Install them with: pip install 'pywrkr[otel]'"
+        )
+    if getattr(args, "live", False) and not reporting.RICH_AVAILABLE:
+        parser.error(
+            "--live requires the 'rich' package, which is not installed. "
+            "Install it with: pip install 'pywrkr[tui]'"
+        )
+
+
 def _validate_load_params(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -1722,6 +1742,7 @@ def _parse_and_validate_args(
     """
     _validate_url_and_mode(parser, args)
     _validate_http2(parser, args)
+    _validate_optional_extras(parser, args)
     _validate_export_interval(parser, args)
 
     duration = _validate_load_params(parser, args)

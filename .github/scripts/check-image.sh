@@ -34,3 +34,9 @@ if ! docker run --rm --entrypoint sh "$image" -c \
   exit 1
 fi
 echo "writes a relative report in $(docker inspect --format '{{.Config.WorkingDir}}' "$image")"
+
+# The extras the CLI flags need (#340): --http2, --otel-endpoint, --live and
+# YAML scenarios all failed inside an image that carried the base wheel only.
+docker run --rm --entrypoint python "$image" -c \
+  'import httpx, h2, opentelemetry.sdk, opentelemetry.exporter.otlp.proto.http, rich, yaml'
+echo "carries the http2, otel, tui and yaml extras"

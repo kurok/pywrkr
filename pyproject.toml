@@ -30,7 +30,9 @@ dependencies = [
 tui = ["rich>=13.0"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20"]
 http2 = ["httpx[http2]>=0.27"]
-all = ["rich>=13.0", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20", "httpx[http2]>=0.27", "pytest>=7.0"]
+# YAML scenario files (--scenario flow.yaml) and YAML OpenAPI specs.
+yaml = ["pyyaml>=6.0"]
+all = ["rich>=13.0", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20", "httpx[http2]>=0.27", "pyyaml>=6.0", "pytest>=7.0"]
 # pyyaml is test-only: the structural checks on action.yml and the workflows
 # must run for real, not importorskip themselves into silence.
 dev = ["pytest>=9.0.3", "pytest-xdist>=3.0", "pytest-cov>=4.0", "aiohttp>=3.14.0", "httpx[http2]>=0.27", "hypercorn>=0.17", "pyyaml>=6.0"]

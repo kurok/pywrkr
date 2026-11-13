@@ -1062,7 +1062,8 @@ def load_scenario(path: str) -> Scenario:
             import yaml
         except ImportError:
             raise ImportError(
-                "pyyaml is required for YAML scenario files. Install with: pip install pyyaml"
+                "pyyaml is required for YAML scenario files. "
+                "Install with: pip install 'pywrkr[yaml]'"
             ) from None
         data = yaml.safe_load(content)
     elif ext == ".json":
