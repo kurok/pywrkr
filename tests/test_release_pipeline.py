@@ -9,15 +9,11 @@ version and hash rather than resolved from the index at release time.
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
-
-try:  # Python 3.11+
-    import tomllib
-except ImportError:  # pragma: no cover - Python 3.10
-    import tomli as tomllib  # type: ignore[no-redef]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RELEASE_WORKFLOWS = ["publish.yml", "release.yml"]
