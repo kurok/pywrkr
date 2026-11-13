@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The container image's working directory is now `/home/pywrkr`, the runtime user's home, instead of the base image's `/`, which the non-root user cannot write to. A relative `--json`, `--csv`, `--html-report`, `--save-baseline` or `--output` path failed with `PermissionError` after the benchmark had run; it now lands in the working directory. The image check in `docker-publish` runs the built image with `--json results.json` and fails if no report is written, and the README shows the mount-and-work (`-v "$PWD:/w" -w /w`) pattern. (#341)
+
 ### Removed
 
 - The deprecated package-level aliases `pywrkr.worker`, `pywrkr.user_worker`, `pywrkr.scenario_worker`, `pywrkr.show_progress`, `pywrkr.make_url`, `pywrkr.LiveDashboard` (import them from `pywrkr.workers`) and `pywrkr.create_trace_config` (from `pywrkr.backends`). They had warned with a `DeprecationWarning` since the public API landed (#194); accessing them now raises `AttributeError`. Nothing in `pywrkr.__all__` changes.

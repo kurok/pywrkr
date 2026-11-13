@@ -33,6 +33,12 @@ RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 RUN adduser -D -u 10001 pywrkr
 USER pywrkr
 
+# The runtime user is non-root, so the working directory has to be one it can
+# write to: under the base image's "/" a relative --json/--csv/--html-report
+# path fails with PermissionError after the benchmark has already run.
+# adduser created /home/pywrkr owned by the user, so no mkdir or chown.
+WORKDIR /home/pywrkr
+
 # --help, not --version: pywrkr has no --version flag, so that check would
 # have failed on every probe and marked the container permanently unhealthy.
 # This matches infra/docker/Dockerfile, and proves the entrypoint is installed
