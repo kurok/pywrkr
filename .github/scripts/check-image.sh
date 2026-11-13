@@ -29,7 +29,7 @@ docker run --rm "$image" --help > /dev/null
 # writable by the runtime user. The target is a closed port, so the run records
 # connection errors, but it still writes its report and exits 0.
 if ! docker run --rm --entrypoint sh "$image" -c \
-    'pywrkr http://127.0.0.1:1/ -n 1 --json results.json > /dev/null 2>&1 && test -s results.json'; then
+    'pywrkr http://127.0.0.1:1/ -n 1 --json results.json > /dev/null && test -s results.json'; then
   echo "::error::the image cannot write a relative --json report in its working directory ($(docker inspect --format '{{.Config.WorkingDir}}' "$image"))"
   exit 1
 fi
