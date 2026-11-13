@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Python 3.10 is no longer supported**: `requires-python` is now `>=3.11`, and Python 3.14 is added to the supported versions and the CI matrix (Ubuntu × 3.11–3.14, macOS × 3.11 and 3.14). The `security` extra installs `pip-audit` unconditionally, and the regex-shape checks use `re._parser` directly instead of falling back to the deprecated `sre_parse`.
+
 ### Added
 
 - A `yaml` extra (`pip install 'pywrkr[yaml]'`) for YAML scenario files and YAML OpenAPI specs; `all` includes it. The missing-pyyaml error now names it. (#340)

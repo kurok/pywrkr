@@ -3,7 +3,6 @@
 
 import json
 import os
-import sys
 import tempfile
 import unittest
 from io import StringIO
@@ -855,7 +854,6 @@ class TestAssertionRegexBounds(unittest.TestCase):
             with self.subTest(pattern=pattern):
                 self.assertFalse(_has_nested_repetition(pattern))
 
-    @unittest.skipIf(sys.version_info < (3, 11), "atomic groups and possessive repeats are 3.11+")
     def test_atomic_and_possessive_shapes(self):
         from pywrkr.assertions import _has_nested_repetition
 
@@ -905,7 +903,6 @@ class TestAssertionRegexBounds(unittest.TestCase):
                 self.assertEqual(len(failures), 1)
                 self.assertIn("scan limit", failures[0].key)
 
-    @unittest.skipIf(sys.version_info < (3, 11), "atomic groups and possessive repeats are 3.11+")
     def test_atomic_and_possessive_constructs_are_undecided_on_a_cut_body(self):
         from pywrkr.assertions import _ASSERT_MATCH_MAX as n
 

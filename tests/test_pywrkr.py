@@ -2731,17 +2731,10 @@ class TestPackaging(unittest.TestCase):
         path = os.path.join(os.path.dirname(__file__), "..", "pyproject.toml")
         self.assertTrue(os.path.isfile(path), "pyproject.toml not found")
         # Parse TOML
-        if sys.version_info >= (3, 11):
-            import tomllib
+        import tomllib
 
-            with open(path, "rb") as f:
-                data = tomllib.load(f)
-        else:
-            # For Python 3.10, just verify it exists and is readable
-            with open(path) as f:
-                content = f.read()
-            self.assertIn("[project]", content)
-            return
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
         self.assertIn("project", data)
         self.assertEqual(data["project"]["name"], "pywrkr")
         version = data["project"]["version"]

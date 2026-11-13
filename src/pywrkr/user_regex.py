@@ -15,13 +15,8 @@ from __future__ import annotations
 
 import functools
 import re
-import sys
+import re._parser as _sre_parse
 from typing import Any, Final, Iterator
-
-if sys.version_info >= (3, 11):
-    import re._parser as _sre_parse
-else:  # pragma: no cover - Python 3.10
-    import sre_parse as _sre_parse
 
 __all__ = [
     "SCAN_MAX",
