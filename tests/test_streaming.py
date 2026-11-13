@@ -308,8 +308,12 @@ class TestStreamingExporter(unittest.IsolatedAsyncioTestCase):
 
 class TestExportIntervalCli(unittest.TestCase):
     def _parse(self, argv):
+        # These test --export-interval, not the otel extra: an --otel-endpoint
+        # without the extra is a startup error of its own (#340), and the CI
+        # test jobs do not install it.
         parser = _build_parser()
-        return _parse_and_validate_args(parser, parser.parse_args(argv))
+        with patch("pywrkr.reporting.OTEL_AVAILABLE", True):
+            return _parse_and_validate_args(parser, parser.parse_args(argv))
 
     def _expect_error(self, argv):
         with self.assertRaises(SystemExit), patch("sys.stderr", new_callable=StringIO) as err:
