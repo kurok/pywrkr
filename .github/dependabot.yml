@@ -2,10 +2,14 @@ version: 2
 updates:
   # Besides uv.lock, the uv updater picks up every *.in / *.txt in the
   # directory: requirements-build.in/.txt (#331) and requirements-image.in/.txt
-  # (#342). It pairs each .txt with its .in by name and re-runs the
-  # `uv pip compile` in the .txt header, keeping --generate-hashes, so a bump
-  # re-resolves the whole pinned set. A separate "pip" entry would run
-  # pip-tools against the same files and open competing PRs.
+  # (#342). It pairs each .txt with its .in by name and re-compiles it with
+  # `uv pip compile`, so a bump re-resolves the whole pinned set. It keeps
+  # --generate-hashes and the header's --python-version, but not
+  # --python-platform; that does not change today's output (no dependency has
+  # a platform marker, and every published file's hash is emitted), and the
+  # image's --only-binary install fails loudly if it ever does. A separate
+  # "pip" entry would run pip-tools against the same files and open competing
+  # PRs.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:

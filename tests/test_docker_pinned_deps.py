@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCKERFILE = ROOT / "Dockerfile"
@@ -130,9 +132,21 @@ def _source_extras() -> set[str]:
     return {e.strip() for e in line.group(1).split(",")}
 
 
-def _source_requirements() -> set[str]:
+def _requirement_key(text: str) -> tuple[str, frozenset[str], str, str]:
+    """A requirement as comparable parts, so spelling and ordering do not matter.
+
+    Name canonicalised, extras as a set, specifiers sorted, and the marker with
+    any ``extra == ...`` clause dropped (it says which extra, not where).
+    """
+    req = Requirement(text)
+    marker = "" if req.marker is None or "extra" in str(req.marker) else str(req.marker)
+    specs = ",".join(sorted(str(s) for s in req.specifier))
+    return canonicalize_name(req.name), frozenset(req.extras), specs, marker
+
+
+def _source_requirements() -> set[tuple[str, frozenset[str], str, str]]:
     return {
-        _normalize(line.strip())
+        _requirement_key(line.strip())
         for line in SOURCE.read_text().splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
@@ -151,7 +165,7 @@ def test_the_source_lists_exactly_pywrkrs_requirements_for_the_image():
         extra = re.search(r"extra\s*==\s*['\"]([^'\"]+)['\"]", marker)
         if extra and extra.group(1) not in extras:
             continue
-        expected.add(_normalize(name.strip().replace(" ", "")))
+        expected.add(_requirement_key(req))
     assert _source_requirements() == expected
 
 
