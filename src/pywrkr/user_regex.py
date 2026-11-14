@@ -15,8 +15,14 @@ from __future__ import annotations
 
 import functools
 import re
-import re._parser as _sre_parse
-from typing import Any, Final, Iterator
+from typing import TYPE_CHECKING, Any, Final, Iterator
+
+if TYPE_CHECKING:
+    # typeshed has no stub for re._parser; sre_parse is the same module
+    # under its deprecated name, so the checker still sees real types.
+    import sre_parse as _sre_parse
+else:
+    import re._parser as _sre_parse
 
 __all__ = [
     "SCAN_MAX",

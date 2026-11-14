@@ -6,7 +6,7 @@ Thank you for your interest in contributing to pywrkr! This guide will help you 
 
 ### Prerequisites
 
-- Python 3.10 or newer
+- Python 3.11 or newer
 - Git
 
 ### Development Setup
