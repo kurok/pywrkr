@@ -30,9 +30,10 @@ LABEL org.opencontainers.image.licenses="MIT"
 # sha256 (#342): --require-hashes makes pip refuse anything the index serves
 # that is not the pinned artifact, and --only-binary refuses to compile, so
 # the image's Python stack is a function of the repository rather than of the
-# index on the day of the build. The file is compiled from pyproject.toml with
-# the http2, otel, tui and yaml extras, the ones every documented CLI flag
-# needs (#340); its header carries the regenerate command.
+# index on the day of the build. The file is compiled from
+# requirements-image.in -- pywrkr's requirements plus the http2, otel, tui and
+# yaml extras every documented CLI flag needs (#340) -- and its header carries
+# the regenerate command.
 #
 # The pywrkr wheel itself is built from this checkout in the builder stage, so
 # it has no index hash; --no-deps keeps pip from resolving anything for it.

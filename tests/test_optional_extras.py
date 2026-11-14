@@ -86,9 +86,12 @@ def test_no_extra_is_checked_when_no_flag_asks_for_one():
 
 def _image_extras() -> set[str]:
     # The image installs from requirements-image.txt (#342), compiled from
-    # pyproject.toml with one --extra per extra; the header records them.
-    header = (ROOT / "requirements-image.txt").read_text().split("\n", 3)[1]
-    return set(re.findall(r"--extra (\S+)", header))
+    # requirements-image.in, whose "# extras:" line names the extras it covers;
+    # tests/test_docker_pinned_deps.py checks the requirements match them.
+    source = (ROOT / "requirements-image.in").read_text()
+    line = re.search(r"^# extras: (.+)$", source, re.M)
+    assert line, "requirements-image.in does not name its extras"
+    return {e.strip() for e in line.group(1).split(",")}
 
 
 def test_the_image_installs_the_extras_the_cli_flags_need():

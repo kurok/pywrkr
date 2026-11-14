@@ -1,0 +1,20 @@
+# The container image's Python dependencies (#342): pywrkr's own requirements
+# plus those of the extras the image ships (#340). Kept in step with
+# pyproject.toml by tests/test_docker_pinned_deps.py.
+#
+# extras: http2, otel, tui, yaml
+#
+# Compiled to requirements-image.txt, pinned by version and hash, for the
+# image's interpreter (python:3.13-alpine, musl). Dependabot's uv updater
+# re-compiles it when a pin moves (with --generate-hashes and the header's
+# --python-version; it does not carry --python-platform over, which today
+# yields identical output). Regenerate by hand with:
+#   uv pip compile requirements-image.in --generate-hashes --python-version 3.13 \
+#     --python-platform x86_64-unknown-linux-musl -o requirements-image.txt
+aiohttp~=3.14
+httpx[http2]>=0.27
+opentelemetry-api>=1.20
+opentelemetry-sdk>=1.20
+opentelemetry-exporter-otlp-proto-http>=1.20
+rich>=13.0
+pyyaml>=6.0
