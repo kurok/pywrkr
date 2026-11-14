@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Python 3.10 is no longer supported**: `requires-python` is now `>=3.11`, and Python 3.14 is added to the supported versions and the CI matrix (Ubuntu × 3.11–3.14, macOS × 3.11 and 3.14). The `security` extra installs `pip-audit` unconditionally, and the regex-shape checks use `re._parser` directly instead of falling back to the deprecated `sre_parse`.
+- **Python 3.10 is no longer supported**: `requires-python` is now `>=3.11`, and Python 3.14 is added to the supported versions. The CI test matrix now mirrors what users of the latest OS releases actually run instead of every minor version: Ubuntu 26.04 LTS's python3 (3.14) on `ubuntu-latest` and Homebrew's python3 (3.15) on `macos-latest`, since macOS 27's bundled `/usr/bin/python3` is 3.9.6. The other single-version CI jobs moved from 3.12 to 3.14. The GitHub Action fails with a clear error when the runner's `python3` is older than 3.11. The `security` extra installs `pip-audit` unconditionally, and the regex-shape checks use `re._parser` directly instead of falling back to the deprecated `sre_parse`.
 
 ### Added
 

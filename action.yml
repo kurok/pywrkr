@@ -127,6 +127,13 @@ runs:
       run: |
         set -euo pipefail
         VENV="${RUNNER_TEMP}/pywrkr-venv"
+        # pywrkr needs Python 3.11+. On an older runner python3 (ubuntu-22.04
+        # ships 3.10) pip would quietly install the last release that still
+        # supported it, or fail on a pinned one; say so plainly instead.
+        if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+          echo "::error::pywrkr needs Python 3.11 or newer; the runner's python3 is $(python3 -V 2>&1). Add actions/setup-python before this step or use a newer runner image."
+          exit 1
+        fi
         python3 -m venv "$VENV"
         "$VENV/bin/python" -m pip install --quiet --upgrade pip
         case "$PYWRKR_VERSION" in

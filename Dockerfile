@@ -13,7 +13,7 @@ RUN uv build --wheel --out-dir dist/
 # 3.13 rather than 3.15-rc: the published image ran an RC interpreter, which
 # has no prebuilt musllinux wheels, so aiohttp and its C extensions were
 # compiled from source at build time. pyproject declares requires-python
-# >= 3.10, so nothing here needs an unreleased interpreter.
+# >= 3.11, so nothing here needs an unreleased interpreter.
 #
 # Both images are pinned by digest. A floating tag makes the build-provenance
 # attestation attest to inputs that can change underneath it.
