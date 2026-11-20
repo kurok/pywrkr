@@ -1112,10 +1112,13 @@ class TestRegexExtractorBounds(unittest.TestCase):
                 compile_regex_extractor("v", expr)
 
     def test_both_paths_share_one_bound(self):
-        from pywrkr import assertions, user_regex
+        import pywrkr.assertions
+        import pywrkr.user_regex
 
-        self.assertEqual(assertions._ASSERT_MATCH_MAX, user_regex.SCAN_MAX)
-        self.assertIs(assertions._has_nested_repetition, user_regex.has_nested_repetition)
+        self.assertEqual(pywrkr.assertions._ASSERT_MATCH_MAX, pywrkr.user_regex.SCAN_MAX)
+        self.assertIs(
+            pywrkr.assertions._has_nested_repetition, pywrkr.user_regex.has_nested_repetition
+        )
 
 
 if __name__ == "__main__":
